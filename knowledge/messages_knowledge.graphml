@@ -1,0 +1,945 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="d0" for="node" attr.name="label" attr.type="string"/>
+  <key id="d1" for="node" attr.name="type" attr.type="string"/>
+  <key id="d2" for="node" attr.name="actor" attr.type="string"/>
+  <key id="d3" for="node" attr.name="timestamp" attr.type="string"/>
+  <graph edgedefault="directed">
+    <node id="project:mastertrading">
+      <data key="d0">mastertrading</data>
+      <data key="d1">Project</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:1">
+      <data key="d0">Supervisi�n activa del bot (iniciado: 2026-02-20)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20</data>
+    </node>
+    <node id="entry:2">
+      <data key="d0">Investigación del 20-Feb-2026: ¿Por qué perdimos 7 de 8 trades?</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">research</data>
+      <data key="d3">20-Feb-2026</data>
+    </node>
+    <node id="entry:3">
+      <data key="d0">1. Datos duros: ADX al momento de cada entrada</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">log</data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:4">
+      <data key="d0">2. Problemas identificados en el código</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">log</data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">ALLOCATOR_MIN_MODULES_ACTIVE</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:MAX_OPEN_POSITIONS">
+      <data key="d0">MAX_OPEN_POSITIONS</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:MODULE_ADX_TREND_MIN">
+      <data key="d0">MODULE_ADX_TREND_MIN</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:SIGNAL_COOLDOWN_AFTER_SL_MINUTES">
+      <data key="d0">SIGNAL_COOLDOWN_AFTER_SL_MINUTES</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:SIGNAL_COOLDOWN_MINUTES">
+      <data key="d0">SIGNAL_COOLDOWN_MINUTES</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:config_settings.py">
+      <data key="d0">config/settings.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:execution_tasks.py">
+      <data key="d0">execution/tasks.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:risk_models.py">
+      <data key="d0">risk/models.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:signals_allocator.py">
+      <data key="d0">signals/allocator.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:signals_modules_trend.py">
+      <data key="d0">signals/modules/trend.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:5">
+      <data key="d0">3. Propuestas de cambio (priorizadas)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">log</data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:6">
+      <data key="d0">4. Recomendación de implementación inmediata</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">log</data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:7">
+      <data key="d0">5. Pregunta para ti</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">log</data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:8">
+      <data key="d0">Observaci�n del supervisor (2026-02-20 18:35:26)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20 18:35:26</data>
+    </node>
+    <node id="entry:9">
+      <data key="d0">Observaci�n del supervisor (2026-02-20 18:38:12)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20 18:38:12</data>
+    </node>
+    <node id="entry:10">
+      <data key="d0">Observacion del supervisor (2026-02-20 18:38:48)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20 18:38:48</data>
+    </node>
+    <node id="setting:MAX_DAILY_TRADES_LOW_ADX">
+      <data key="d0">MAX_DAILY_TRADES_LOW_ADX</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:.env">
+      <data key="d0">.env</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:11">
+      <data key="d0">Respuesta del agente (2026-02-20 ~19:00)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">agent</data>
+      <data key="d3">2026-02-20</data>
+    </node>
+    <node id="setting:MARKET_REGIME_ADX_MIN">
+      <data key="d0">MARKET_REGIME_ADX_MIN</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:12">
+      <data key="d0">Status de implementación (2026-02-20 ~22:15)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20</data>
+    </node>
+    <node id="entry:13">
+      <data key="d0">Observacion del supervisor (2026-02-20 19:17:08)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20 19:17:08</data>
+    </node>
+    <node id="file:messages.md">
+      <data key="d0">messages.md</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:14">
+      <data key="d0">Respuesta del agente (2026-02-20 ~22:20)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20</data>
+    </node>
+    <node id="entry:15">
+      <data key="d0">Auditoría completa del proyecto — Oportunidades de mejora para más ganancias</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">agent</data>
+      <data key="d3">2026-02-20</data>
+    </node>
+    <node id="entry:16">
+      <data key="d0">0. Performance actual (últimos 14 días, datos reales de DB)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">log</data>
+      <data key="d3"></data>
+    </node>
+    <node id="symbol:ADAUSDT">
+      <data key="d0">ADAUSDT</data>
+      <data key="d1">Symbol</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="symbol:BTCUSDT">
+      <data key="d0">BTCUSDT</data>
+      <data key="d1">Symbol</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="symbol:DOGEUSDT">
+      <data key="d0">DOGEUSDT</data>
+      <data key="d1">Symbol</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="symbol:ETHUSDT">
+      <data key="d0">ETHUSDT</data>
+      <data key="d1">Symbol</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="symbol:LINKUSDT">
+      <data key="d0">LINKUSDT</data>
+      <data key="d1">Symbol</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="symbol:SOLUSDT">
+      <data key="d0">SOLUSDT</data>
+      <data key="d1">Symbol</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="symbol:XRPUSDT">
+      <data key="d0">XRPUSDT</data>
+      <data key="d1">Symbol</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:17">
+      <data key="d0">1. OPORTUNIDADES DE ALTO IMPACTO</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">research</data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:ATR_MULT_TP">
+      <data key="d0">ATR_MULT_TP</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:PER_INSTRUMENT_DIRECTION">
+      <data key="d0">PER_INSTRUMENT_DIRECTION</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">PER_INSTRUMENT_RISK</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:SIGNAL_FLIP_MIN_AGE_MINUTES">
+      <data key="d0">SIGNAL_FLIP_MIN_AGE_MINUTES</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:SIGNAL_FLIP_MIN_PNL_PCT">
+      <data key="d0">SIGNAL_FLIP_MIN_PNL_PCT</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:TAKE_PROFIT_DYNAMIC_MULT">
+      <data key="d0">TAKE_PROFIT_DYNAMIC_MULT</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:TAKE_PROFIT_PCT">
+      <data key="d0">TAKE_PROFIT_PCT</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:18">
+      <data key="d0">2. OPORTUNIDADES DE IMPACTO MEDIO</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">log</data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:FUNDING_EXTREME_PERCENTILE">
+      <data key="d0">FUNDING_EXTREME_PERCENTILE</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:ML_ENTRY_FILTER_ENABLED">
+      <data key="d0">ML_ENTRY_FILTER_ENABLED</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:MODULE_ADX_RANGE_MAX">
+      <data key="d0">MODULE_ADX_RANGE_MAX</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:MODULE_CARRY_FUNDING_MULT">
+      <data key="d0">MODULE_CARRY_FUNDING_MULT</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="setting:PARTIAL_CLOSE_AT_R">
+      <data key="d0">PARTIAL_CLOSE_AT_R</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:19">
+      <data key="d0">3. OPORTUNIDADES DE IMPACTO BAJO/ARQUITECTURAL</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">log</data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:backtest_engine.py">
+      <data key="d0">backtest/engine.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:entry_guards.py">
+      <data key="d0">entry_guards.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:exit_logic.py">
+      <data key="d0">exit_logic.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:position_manager.py">
+      <data key="d0">position_manager.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:risk_checks.py">
+      <data key="d0">risk_checks.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:20">
+      <data key="d0">4. Tabla resumen priorizada</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">research</data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:21">
+      <data key="d0">5. Mis recomendaciones top 3 para empezar</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">research</data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:22">
+      <data key="d0">Observacion del supervisor (2026-02-20 19:46:47)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20 19:46:47</data>
+    </node>
+    <node id="setting:SHORT_SCORE_PENALTY">
+      <data key="d0">SHORT_SCORE_PENALTY</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:23">
+      <data key="d0">Respuesta del agente (2026-02-20 ~22:50)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20</data>
+    </node>
+    <node id="setting:SIGNAL_FLIP_MIN_AGE_ENABLED">
+      <data key="d0">SIGNAL_FLIP_MIN_AGE_ENABLED</data>
+      <data key="d1">Setting</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:24">
+      <data key="d0">Status de implementación — Ronda 2 (2026-02-20 ~23:55)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20</data>
+    </node>
+    <node id="file:adapters_kucoin.py">
+      <data key="d0">adapters/kucoin.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="file:execution_models.py">
+      <data key="d0">execution/models.py</data>
+      <data key="d1">File</data>
+      <data key="d2"></data>
+      <data key="d3"></data>
+    </node>
+    <node id="entry:25">
+      <data key="d0">Observacion del supervisor (2026-02-20 20:59:17)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20 20:59:17</data>
+    </node>
+    <node id="entry:26">
+      <data key="d0">Observacion del supervisor (2026-02-20 21:04:24)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20 21:04:24</data>
+    </node>
+    <node id="entry:27">
+      <data key="d0">Observacion del supervisor (2026-02-20 21:05:32)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">supervisor</data>
+      <data key="d3">2026-02-20 21:05:32</data>
+    </node>
+    <node id="entry:28">
+      <data key="d0">Respuesta del agente (2026-02-21 ~00:10)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">agent</data>
+      <data key="d3">2026-02-21</data>
+    </node>
+    <node id="entry:29">
+      <data key="d0">Evaluacion del PDF "Mejorar ganancias posibles (1)" (2026-02-20 21:47:55)</data>
+      <data key="d1">ContextEntry</data>
+      <data key="d2">research</data>
+      <data key="d3">2026-02-20 21:47:55</data>
+    </node>
+    <edge id="e1" source="entry:1" target="entry:2">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e2" source="entry:10" target="entry:11">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e3" source="entry:10" target="file:.env">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e4" source="entry:10" target="file:execution_tasks.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e5" source="entry:10" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e6" source="entry:10" target="setting:MAX_DAILY_TRADES_LOW_ADX">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e7" source="entry:10" target="setting:MAX_OPEN_POSITIONS">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e8" source="entry:10" target="setting:SIGNAL_COOLDOWN_AFTER_SL_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e9" source="entry:10" target="setting:SIGNAL_COOLDOWN_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e10" source="entry:11" target="entry:12">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e11" source="entry:11" target="file:.env">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e12" source="entry:11" target="file:execution_tasks.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e13" source="entry:11" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e14" source="entry:11" target="setting:MARKET_REGIME_ADX_MIN">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e15" source="entry:11" target="setting:MAX_DAILY_TRADES_LOW_ADX">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e16" source="entry:12" target="entry:13">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e17" source="entry:12" target="file:.env">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e18" source="entry:12" target="file:config_settings.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e19" source="entry:12" target="file:signals_modules_trend.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e20" source="entry:12" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e21" source="entry:12" target="setting:MARKET_REGIME_ADX_MIN">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e22" source="entry:12" target="setting:MAX_DAILY_TRADES_LOW_ADX">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e23" source="entry:12" target="setting:MAX_OPEN_POSITIONS">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e24" source="entry:13" target="entry:14">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e25" source="entry:13" target="file:.env">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e26" source="entry:13" target="file:config_settings.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e27" source="entry:13" target="file:execution_tasks.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e28" source="entry:13" target="file:messages.md">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e29" source="entry:13" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e30" source="entry:13" target="setting:MARKET_REGIME_ADX_MIN">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e31" source="entry:13" target="setting:MAX_DAILY_TRADES_LOW_ADX">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e32" source="entry:14" target="entry:15">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e33" source="entry:14" target="file:.env">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e34" source="entry:14" target="file:signals_modules_trend.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e35" source="entry:14" target="setting:SIGNAL_COOLDOWN_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e36" source="entry:15" target="entry:16">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e37" source="entry:16" target="entry:17">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e38" source="entry:16" target="symbol:ADAUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e39" source="entry:16" target="symbol:BTCUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e40" source="entry:16" target="symbol:DOGEUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e41" source="entry:16" target="symbol:ETHUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e42" source="entry:16" target="symbol:LINKUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e43" source="entry:16" target="symbol:SOLUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e44" source="entry:16" target="symbol:XRPUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e45" source="entry:17" target="entry:18">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e46" source="entry:17" target="setting:ATR_MULT_TP">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e47" source="entry:17" target="setting:PER_INSTRUMENT_DIRECTION">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e48" source="entry:17" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e49" source="entry:17" target="setting:SIGNAL_FLIP_MIN_AGE_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e50" source="entry:17" target="setting:SIGNAL_FLIP_MIN_PNL_PCT">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e51" source="entry:17" target="setting:TAKE_PROFIT_DYNAMIC_MULT">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e52" source="entry:17" target="setting:TAKE_PROFIT_PCT">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e53" source="entry:17" target="symbol:BTCUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e54" source="entry:18" target="entry:19">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e55" source="entry:18" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e56" source="entry:18" target="setting:FUNDING_EXTREME_PERCENTILE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e57" source="entry:18" target="setting:ML_ENTRY_FILTER_ENABLED">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e58" source="entry:18" target="setting:MODULE_ADX_RANGE_MAX">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e59" source="entry:18" target="setting:MODULE_CARRY_FUNDING_MULT">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e60" source="entry:18" target="setting:PARTIAL_CLOSE_AT_R">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e61" source="entry:18" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e62" source="entry:19" target="entry:20">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e63" source="entry:19" target="file:backtest_engine.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e64" source="entry:19" target="file:entry_guards.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e65" source="entry:19" target="file:exit_logic.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e66" source="entry:19" target="file:position_manager.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e67" source="entry:19" target="file:risk_checks.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e68" source="entry:2" target="entry:3">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e69" source="entry:20" target="entry:21">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e70" source="entry:21" target="entry:22">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e71" source="entry:21" target="setting:PER_INSTRUMENT_DIRECTION">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e72" source="entry:21" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e73" source="entry:21" target="symbol:BTCUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e74" source="entry:22" target="entry:23">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e75" source="entry:22" target="file:execution_tasks.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e76" source="entry:22" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e77" source="entry:22" target="setting:SHORT_SCORE_PENALTY">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e78" source="entry:22" target="setting:SIGNAL_FLIP_MIN_AGE_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e79" source="entry:23" target="entry:24">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e80" source="entry:23" target="file:.env">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e81" source="entry:23" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e82" source="entry:23" target="setting:SIGNAL_FLIP_MIN_AGE_ENABLED">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e83" source="entry:23" target="setting:SIGNAL_FLIP_MIN_AGE_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e84" source="entry:23" target="symbol:BTCUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e85" source="entry:24" target="entry:25">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e86" source="entry:24" target="file:.env">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e87" source="entry:24" target="file:adapters_kucoin.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e88" source="entry:24" target="file:config_settings.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e89" source="entry:24" target="file:execution_models.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e90" source="entry:24" target="file:execution_tasks.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e91" source="entry:24" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e92" source="entry:24" target="setting:SIGNAL_FLIP_MIN_AGE_ENABLED">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e93" source="entry:24" target="setting:SIGNAL_FLIP_MIN_AGE_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e94" source="entry:24" target="symbol:BTCUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e95" source="entry:24" target="symbol:ETHUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e96" source="entry:25" target="entry:26">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e97" source="entry:25" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e98" source="entry:25" target="setting:MARKET_REGIME_ADX_MIN">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e99" source="entry:25" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e100" source="entry:25" target="setting:SIGNAL_FLIP_MIN_AGE_ENABLED">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e101" source="entry:25" target="symbol:BTCUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e102" source="entry:26" target="entry:27">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e103" source="entry:26" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e104" source="entry:27" target="entry:28">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e105" source="entry:28" target="entry:29">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e106" source="entry:28" target="file:.env">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e107" source="entry:28" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e108" source="entry:28" target="setting:MARKET_REGIME_ADX_MIN">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e109" source="entry:28" target="setting:MAX_DAILY_TRADES_LOW_ADX">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e110" source="entry:28" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e111" source="entry:28" target="setting:SIGNAL_FLIP_MIN_AGE_ENABLED">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e112" source="entry:28" target="setting:SIGNAL_FLIP_MIN_AGE_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e113" source="entry:28" target="symbol:BTCUSDT">
+      <data key="d0">MENTIONS_SYMBOL</data>
+    </edge>
+    <edge id="e114" source="entry:29" target="setting:PER_INSTRUMENT_RISK">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e115" source="entry:3" target="entry:4">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e116" source="entry:4" target="entry:5">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e117" source="entry:4" target="file:config_settings.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e118" source="entry:4" target="file:execution_tasks.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e119" source="entry:4" target="file:risk_models.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e120" source="entry:4" target="file:signals_allocator.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e121" source="entry:4" target="file:signals_modules_trend.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e122" source="entry:4" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e123" source="entry:4" target="setting:MAX_OPEN_POSITIONS">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e124" source="entry:4" target="setting:MODULE_ADX_TREND_MIN">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e125" source="entry:4" target="setting:SIGNAL_COOLDOWN_AFTER_SL_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e126" source="entry:4" target="setting:SIGNAL_COOLDOWN_MINUTES">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e127" source="entry:5" target="entry:6">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e128" source="entry:5" target="file:config_settings.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e129" source="entry:5" target="file:execution_tasks.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e130" source="entry:5" target="file:signals_modules_trend.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e131" source="entry:5" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e132" source="entry:5" target="setting:MAX_OPEN_POSITIONS">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e133" source="entry:6" target="entry:7">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e134" source="entry:6" target="file:signals_modules_trend.py">
+      <data key="d0">MENTIONS_FILE</data>
+    </edge>
+    <edge id="e135" source="entry:6" target="setting:ALLOCATOR_MIN_MODULES_ACTIVE">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e136" source="entry:6" target="setting:MAX_OPEN_POSITIONS">
+      <data key="d0">MENTIONS_SETTING</data>
+    </edge>
+    <edge id="e137" source="entry:7" target="entry:8">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e138" source="entry:8" target="entry:9">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e139" source="entry:9" target="entry:10">
+      <data key="d0">NEXT</data>
+    </edge>
+    <edge id="e140" source="project:mastertrading" target="entry:1">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e141" source="project:mastertrading" target="entry:10">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e142" source="project:mastertrading" target="entry:11">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e143" source="project:mastertrading" target="entry:12">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e144" source="project:mastertrading" target="entry:13">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e145" source="project:mastertrading" target="entry:14">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e146" source="project:mastertrading" target="entry:15">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e147" source="project:mastertrading" target="entry:16">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e148" source="project:mastertrading" target="entry:17">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e149" source="project:mastertrading" target="entry:18">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e150" source="project:mastertrading" target="entry:19">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e151" source="project:mastertrading" target="entry:2">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e152" source="project:mastertrading" target="entry:20">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e153" source="project:mastertrading" target="entry:21">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e154" source="project:mastertrading" target="entry:22">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e155" source="project:mastertrading" target="entry:23">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e156" source="project:mastertrading" target="entry:24">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e157" source="project:mastertrading" target="entry:25">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e158" source="project:mastertrading" target="entry:26">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e159" source="project:mastertrading" target="entry:27">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e160" source="project:mastertrading" target="entry:28">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e161" source="project:mastertrading" target="entry:29">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e162" source="project:mastertrading" target="entry:3">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e163" source="project:mastertrading" target="entry:4">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e164" source="project:mastertrading" target="entry:5">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e165" source="project:mastertrading" target="entry:6">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e166" source="project:mastertrading" target="entry:7">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e167" source="project:mastertrading" target="entry:8">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+    <edge id="e168" source="project:mastertrading" target="entry:9">
+      <data key="d0">HAS_ENTRY</data>
+    </edge>
+  </graph>
+</graphml>

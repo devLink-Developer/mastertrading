@@ -1,0 +1,72 @@
+{
+  "start": "2026-01-01T00:00:00+00:00",
+  "end": "2026-01-08T00:00:00+00:00",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "LINKUSDT",
+    "SOLUSDT"
+  ],
+  "summary": [
+    {
+      "name": "v15_baseline",
+      "total_pnl": 43.5534,
+      "profit_factor": 1.306,
+      "total_trades": 34,
+      "max_drawdown_pct": 3.79,
+      "win_rate": 47.06,
+      "session_skips_dead": 0,
+      "session_skips_score": 0
+    },
+    {
+      "name": "v17_dead_zone_only",
+      "total_pnl": 43.0963,
+      "profit_factor": 1.315,
+      "total_trades": 32,
+      "max_drawdown_pct": 3.86,
+      "win_rate": 43.75,
+      "session_skips_dead": 499,
+      "session_skips_score": 0
+    },
+    {
+      "name": "v17_dead_zone_score",
+      "total_pnl": 43.0963,
+      "profit_factor": 1.315,
+      "total_trades": 32,
+      "max_drawdown_pct": 3.86,
+      "win_rate": 43.75,
+      "session_skips_dead": 499,
+      "session_skips_score": 0
+    },
+    {
+      "name": "v17_full_session",
+      "total_pnl": 43.0963,
+      "profit_factor": 1.315,
+      "total_trades": 32,
+      "max_drawdown_pct": 3.86,
+      "win_rate": 43.75,
+      "session_skips_dead": 499,
+      "session_skips_score": 0
+    }
+  ],
+  "acceptance": {
+    "v17_dead_zone_only": {
+      "pf_ok": true,
+      "trades_ok": true,
+      "dd_ok": true
+    },
+    "v17_dead_zone_score": {
+      "pf_ok": true,
+      "trades_ok": true,
+      "dd_ok": true
+    },
+    "v17_full_session": {
+      "pf_ok": true,
+      "trades_ok": true,
+      "dd_ok": true
+    }
+  }
+}

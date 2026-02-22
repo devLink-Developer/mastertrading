@@ -1,0 +1,87 @@
+{
+  "start": "2026-01-01T00:00:00+00:00",
+  "end": "2026-01-22T00:00:00+00:00",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "LINKUSDT",
+    "SOLUSDT"
+  ],
+  "results": [
+    {
+      "name": "baseline_off",
+      "total_pnl": 54.413,
+      "profit_factor": 1.142,
+      "total_trades": 80,
+      "max_drawdown_pct": 9.97,
+      "win_rate": 40.0
+    },
+    {
+      "name": "ema_b002_p000_soft",
+      "total_pnl": 54.413,
+      "profit_factor": 1.142,
+      "total_trades": 80,
+      "max_drawdown_pct": 9.97,
+      "win_rate": 40.0
+    },
+    {
+      "name": "ema_b004_p000_soft",
+      "total_pnl": 54.413,
+      "profit_factor": 1.142,
+      "total_trades": 80,
+      "max_drawdown_pct": 9.97,
+      "win_rate": 40.0
+    },
+    {
+      "name": "ema_b006_p000_soft",
+      "total_pnl": 54.413,
+      "profit_factor": 1.142,
+      "total_trades": 80,
+      "max_drawdown_pct": 9.97,
+      "win_rate": 40.0
+    },
+    {
+      "name": "ema_b004_p002_soft",
+      "total_pnl": 50.8839,
+      "profit_factor": 1.131,
+      "total_trades": 81,
+      "max_drawdown_pct": 10.54,
+      "win_rate": 39.51
+    },
+    {
+      "name": "ema_b006_p004_soft",
+      "total_pnl": 50.8839,
+      "profit_factor": 1.131,
+      "total_trades": 81,
+      "max_drawdown_pct": 10.54,
+      "win_rate": 39.51
+    },
+    {
+      "name": "ema_b006_p010_soft",
+      "total_pnl": 50.8838,
+      "profit_factor": 1.131,
+      "total_trades": 81,
+      "max_drawdown_pct": 10.54,
+      "win_rate": 39.51
+    },
+    {
+      "name": "ema_b004_p002_hard",
+      "total_pnl": -11.4898,
+      "profit_factor": 0.96,
+      "total_trades": 56,
+      "max_drawdown_pct": 9.24,
+      "win_rate": 35.71
+    },
+    {
+      "name": "ema_b006_p004_hard",
+      "total_pnl": -11.4898,
+      "profit_factor": 0.96,
+      "total_trades": 56,
+      "max_drawdown_pct": 9.24,
+      "win_rate": 35.71
+    }
+  ]
+}

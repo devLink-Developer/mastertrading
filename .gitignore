@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Django / local runtime
+db.sqlite3
+celerybeat-schedule
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+credenciales.md
+
+# Logs and temp
+*.log
+tmp/
+
+# IDE / local agent state
+.vscode/
+.continue/
+.agent/
+.agents/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc local binaries
+Antigravity.exe

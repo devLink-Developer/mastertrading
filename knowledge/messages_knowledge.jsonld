@@ -1,0 +1,1217 @@
+{
+  "@context": {
+    "@vocab": "https://example.org/mt#",
+    "name": "http://schema.org/name",
+    "path": "http://schema.org/path",
+    "summary": "http://schema.org/description",
+    "timestamp": "http://schema.org/dateCreated"
+  },
+  "@graph": [
+    {
+      "@id": "project:mastertrading",
+      "@type": "Project",
+      "name": "mastertrading",
+      "hasEntry": [
+        {
+          "@id": "entry:1"
+        },
+        {
+          "@id": "entry:2"
+        },
+        {
+          "@id": "entry:3"
+        },
+        {
+          "@id": "entry:4"
+        },
+        {
+          "@id": "entry:5"
+        },
+        {
+          "@id": "entry:6"
+        },
+        {
+          "@id": "entry:7"
+        },
+        {
+          "@id": "entry:8"
+        },
+        {
+          "@id": "entry:9"
+        },
+        {
+          "@id": "entry:10"
+        },
+        {
+          "@id": "entry:11"
+        },
+        {
+          "@id": "entry:12"
+        },
+        {
+          "@id": "entry:13"
+        },
+        {
+          "@id": "entry:14"
+        },
+        {
+          "@id": "entry:15"
+        },
+        {
+          "@id": "entry:16"
+        },
+        {
+          "@id": "entry:17"
+        },
+        {
+          "@id": "entry:18"
+        },
+        {
+          "@id": "entry:19"
+        },
+        {
+          "@id": "entry:20"
+        },
+        {
+          "@id": "entry:21"
+        },
+        {
+          "@id": "entry:22"
+        },
+        {
+          "@id": "entry:23"
+        },
+        {
+          "@id": "entry:24"
+        },
+        {
+          "@id": "entry:25"
+        },
+        {
+          "@id": "entry:26"
+        },
+        {
+          "@id": "entry:27"
+        },
+        {
+          "@id": "entry:28"
+        },
+        {
+          "@id": "entry:29"
+        }
+      ]
+    },
+    {
+      "@id": "entry:1",
+      "@type": "ContextEntry",
+      "title": "Supervisi�n activa del bot (iniciado: 2026-02-20)",
+      "actor": "supervisor",
+      "category": "note",
+      "timestamp": "2026-02-20",
+      "summary": "# Supervisi�n activa del bot (iniciado: 2026-02-20) ## C�mo vamos a trabajar - Escribe cada idea/cambio con: objetivo, archivos tocados, riesgo, y c�mo lo vas a probar. - Yo te respondo con: riesgos cr�ticos, ajustes t�cnicos, pruebas m�nimas, y criterio go/no",
+      "tags": [
+        "backtest",
+        "ops"
+      ],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:2",
+      "@type": "ContextEntry",
+      "title": "Investigación del 20-Feb-2026: ¿Por qué perdimos 7 de 8 trades?",
+      "actor": "research",
+      "category": "analysis",
+      "timestamp": "20-Feb-2026",
+      "summary": "# Investigación del 20-Feb-2026: ¿Por qué perdimos 7 de 8 trades? ## Resumen ejecutivo El bot abrió **8 trades entre 23:10 UTC del 19-Feb y 13:25 UTC del 20-Feb**. De esos, **7 fueron perdedores** con reversión inmediata. Después de las 13:25 UTC el bot se blo",
+      "tags": [
+        "signals",
+        "assets"
+      ],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:3",
+      "@type": "ContextEntry",
+      "title": "1. Datos duros: ADX al momento de cada entrada",
+      "actor": "log",
+      "category": "review",
+      "timestamp": "",
+      "summary": "## 1. Datos duros: ADX al momento de cada entrada | Momento | Trade | ADX 5m (LTF) | ADX 1h (HTF) | BTC ADX 1h | |---|---|---|---|---| | 19-Feb 23:10 | XRP short #1 | 18.9 | 25.9 | **15.2** | | 20-Feb 04:22 | ADA short | 20.9 | 17.9 | **13.0** | | 20-Feb 04:22",
+      "tags": [
+        "execution",
+        "signals",
+        "assets"
+      ],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:4",
+      "@type": "ContextEntry",
+      "title": "2. Problemas identificados en el código",
+      "actor": "log",
+      "category": "note",
+      "timestamp": "",
+      "summary": "## 2. Problemas identificados en el código ### Problema A: El trend module filtra ADX en 5m, no en 1h - **Archivo**: `signals/modules/trend.py`, línea ~52 - **Qué hace**: `if adx < MODULE_ADX_TREND_MIN:` donde `adx` viene de velas de 5m. - **Impacto**: En un m",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "assets"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:MAX_OPEN_POSITIONS"
+        },
+        {
+          "@id": "setting:MODULE_ADX_TREND_MIN"
+        },
+        {
+          "@id": "setting:SIGNAL_COOLDOWN_AFTER_SL_MINUTES"
+        },
+        {
+          "@id": "setting:SIGNAL_COOLDOWN_MINUTES"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:config_settings.py"
+        },
+        {
+          "@id": "file:execution_tasks.py"
+        },
+        {
+          "@id": "file:risk_models.py"
+        },
+        {
+          "@id": "file:signals_allocator.py"
+        },
+        {
+          "@id": "file:signals_modules_trend.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:5",
+      "@type": "ContextEntry",
+      "title": "3. Propuestas de cambio (priorizadas)",
+      "actor": "log",
+      "category": "note",
+      "timestamp": "",
+      "summary": "## 3. Propuestas de cambio (priorizadas) ### Propuesta 1: Activar el Regime Filter con ADX (RIESGO BAJO, IMPACTO ALTO) - **Qué**: Activar `RegimeFilterConfig` con `filter_type=\"adx\"`, `adx_min=18`, `enabled=True`. - **Archivo**: Solo cambio en base de datos (a",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "backtest",
+        "strategy",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:MAX_OPEN_POSITIONS"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:config_settings.py"
+        },
+        {
+          "@id": "file:execution_tasks.py"
+        },
+        {
+          "@id": "file:signals_modules_trend.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:6",
+      "@type": "ContextEntry",
+      "title": "4. Recomendación de implementación inmediata",
+      "actor": "log",
+      "category": "note",
+      "timestamp": "",
+      "summary": "## 4. Recomendación de implementación inmediata **Fase 1 (hoy, sin tocar código):** 1. Activar `RegimeFilterConfig` con `adx_min=18`, `filter_type=\"adx\"`, `enabled=True` → cambio en admin/DB. **Fase 2 (esta semana, cambios mínimos):** 2. Agregar `MAX_OPEN_POSI",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "backtest",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:MAX_OPEN_POSITIONS"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:signals_modules_trend.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:7",
+      "@type": "ContextEntry",
+      "title": "5. Pregunta para ti",
+      "actor": "log",
+      "category": "note",
+      "timestamp": "",
+      "summary": "## 5. Pregunta para ti 1. ¿Activo el regime filter (Propuesta 1) ahora mismo? Es el cambio de menor riesgo y mayor impacto—solo es un toggle en la DB. 2. ¿Qué te parece `adx_min=18` como umbral? (20 es más conservador pero bloquea más). 3. ¿Quieres que corra b",
+      "tags": [
+        "risk",
+        "signals",
+        "backtest",
+        "ops"
+      ],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:8",
+      "@type": "ContextEntry",
+      "title": "Observaci�n del supervisor (2026-02-20 18:35:26)",
+      "actor": "supervisor",
+      "category": "note",
+      "timestamp": "2026-02-20 18:35:26",
+      "summary": "## Observaci�n del supervisor (2026-02-20 18:35:26) Estado actual: - A�n no hay una entrada de idea/cambio; el archivo tiene solo la plantilla. Para habilitar revisi�n t�cnica inmediata, completa una entrada con: - Fecha - Idea/Cambio - Motivo - Impacto espera",
+      "tags": [],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:9",
+      "@type": "ContextEntry",
+      "title": "Observaci�n del supervisor (2026-02-20 18:38:12)",
+      "actor": "supervisor",
+      "category": "note",
+      "timestamp": "2026-02-20 18:38:12",
+      "summary": "## Observaci�n del supervisor (2026-02-20 18:38:12) Revisi�n actual: - Sigue sin aparecer una propuesta t�cnica nueva despu�s de la observaci�n anterior. Acci�n para avanzar: - A�ade una entrada concreta (aunque sea breve) con `Idea/Cambio` y `Plan de prueba`.",
+      "tags": [],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:10",
+      "@type": "ContextEntry",
+      "title": "Observacion del supervisor (2026-02-20 18:38:48)",
+      "actor": "supervisor",
+      "category": "analysis",
+      "timestamp": "2026-02-20 18:38:48",
+      "summary": "## Observacion del supervisor (2026-02-20 18:38:48) Revision de tu investigacion contra codigo actual: 1) Problema A (trend ADX en 5m) - Confirmado. - `signals/modules/trend.py:19-24` filtra ADX usando `df_ltf`. 2) Problema B (`ALLOCATOR_MIN_MODULES_ACTIVE = 1",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "backtest",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:MAX_DAILY_TRADES_LOW_ADX"
+        },
+        {
+          "@id": "setting:MAX_OPEN_POSITIONS"
+        },
+        {
+          "@id": "setting:SIGNAL_COOLDOWN_AFTER_SL_MINUTES"
+        },
+        {
+          "@id": "setting:SIGNAL_COOLDOWN_MINUTES"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:.env"
+        },
+        {
+          "@id": "file:execution_tasks.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:11",
+      "@type": "ContextEntry",
+      "title": "Respuesta del agente (2026-02-20 ~19:00)",
+      "actor": "agent",
+      "category": "note",
+      "timestamp": "2026-02-20",
+      "summary": "## Respuesta del agente (2026-02-20 ~19:00) Gracias por la revisión detallada. Acepto los go/no-go. Procedo así: ### GO inmediato — lo implemento ahora: **1. `ALLOCATOR_MIN_MODULES_ACTIVE` de 1 → 2 en `.env`** - Archivo: `.env` línea 161 - El default en `confi",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "backtest",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:MARKET_REGIME_ADX_MIN"
+        },
+        {
+          "@id": "setting:MAX_DAILY_TRADES_LOW_ADX"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:.env"
+        },
+        {
+          "@id": "file:execution_tasks.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:12",
+      "@type": "ContextEntry",
+      "title": "Status de implementación (2026-02-20 ~22:15)",
+      "actor": "supervisor",
+      "category": "implementation",
+      "timestamp": "2026-02-20",
+      "summary": "## Status de implementación (2026-02-20 ~22:15) Todos los cambios GO-inmediato están **LIVE**, containers reiniciados y verificados. ### Cambios aplicados: | # | Cambio | Archivo | Antes | Después | Verificado | |---|---|---|---|---|---| | 1 | `ALLOCATOR_MIN_M",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "backtest",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:MARKET_REGIME_ADX_MIN"
+        },
+        {
+          "@id": "setting:MAX_DAILY_TRADES_LOW_ADX"
+        },
+        {
+          "@id": "setting:MAX_OPEN_POSITIONS"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:.env"
+        },
+        {
+          "@id": "file:config_settings.py"
+        },
+        {
+          "@id": "file:signals_modules_trend.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:13",
+      "@type": "ContextEntry",
+      "title": "Observacion del supervisor (2026-02-20 19:17:08)",
+      "actor": "supervisor",
+      "category": "review",
+      "timestamp": "2026-02-20 19:17:08",
+      "summary": "## Observacion del supervisor (2026-02-20 19:17:08) Auditoria de tu bloque \"Status de implementacion\": ### Confirmado (codigo + env) - `.env`: - `ALLOCATOR_MIN_MODULES_ACTIVE=2` - `MAX_DAILY_TRADES_LOW_ADX=3` - `MARKET_REGIME_ADX_MIN=18.0` - `execution/tasks.p",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "backtest",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:MARKET_REGIME_ADX_MIN"
+        },
+        {
+          "@id": "setting:MAX_DAILY_TRADES_LOW_ADX"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:.env"
+        },
+        {
+          "@id": "file:config_settings.py"
+        },
+        {
+          "@id": "file:execution_tasks.py"
+        },
+        {
+          "@id": "file:messages.md"
+        }
+      ]
+    },
+    {
+      "@id": "entry:14",
+      "@type": "ContextEntry",
+      "title": "Respuesta del agente (2026-02-20 ~22:20)",
+      "actor": "supervisor",
+      "category": "note",
+      "timestamp": "2026-02-20",
+      "summary": "## Respuesta del agente (2026-02-20 ~22:20) ### Hallazgos del supervisor atendidos: **1. Comentario `config/settings.py:82` — corregido.** - El default en settings.py es `base=1440min (24h)`, `SL=360min (6h)` → ahí SL ES más rápido. Correcto. - La inconsistenc",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "backtest",
+        "strategy",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:SIGNAL_COOLDOWN_MINUTES"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:.env"
+        },
+        {
+          "@id": "file:signals_modules_trend.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:15",
+      "@type": "ContextEntry",
+      "title": "Auditoría completa del proyecto — Oportunidades de mejora para más ganancias",
+      "actor": "agent",
+      "category": "note",
+      "timestamp": "2026-02-20",
+      "summary": "# Auditoría completa del proyecto — Oportunidades de mejora para más ganancias **Fecha:** 2026-02-20 **Autor:** Agente (análisis de código + datos reales de los últimos 14 días)",
+      "tags": [],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:16",
+      "@type": "ContextEntry",
+      "title": "0. Performance actual (últimos 14 días, datos reales de DB)",
+      "actor": "log",
+      "category": "note",
+      "timestamp": "",
+      "summary": "## 0. Performance actual (últimos 14 días, datos reales de DB) | Métrica | Valor | |---|---| | Total trades | 274 | | Win rate | 48.5% | | PnL total | **+1.51%** | | Avg win | +0.33% | | Avg loss | -0.31% | | Avg duración | 45 min (mediana: 1 min!) | | TP hits",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "strategy",
+        "assets"
+      ],
+      "mentionsSetting": [],
+      "mentionsSymbol": [
+        {
+          "@id": "symbol:ADAUSDT"
+        },
+        {
+          "@id": "symbol:BTCUSDT"
+        },
+        {
+          "@id": "symbol:DOGEUSDT"
+        },
+        {
+          "@id": "symbol:ETHUSDT"
+        },
+        {
+          "@id": "symbol:LINKUSDT"
+        },
+        {
+          "@id": "symbol:SOLUSDT"
+        },
+        {
+          "@id": "symbol:XRPUSDT"
+        }
+      ],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:17",
+      "@type": "ContextEntry",
+      "title": "1. OPORTUNIDADES DE ALTO IMPACTO",
+      "actor": "research",
+      "category": "analysis",
+      "timestamp": "",
+      "summary": "## 1. OPORTUNIDADES DE ALTO IMPACTO ### 1A. Eliminar o reducir \"exchange_close\" — CRÍTICO **Problema:** 73 trades (27%) se cierran como \"exchange_close\" con WR=34% y PnL=-17.90%. Es la mayor fuente de pérdidas. **¿Qué es exchange_close?** El exchange cierra la",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "strategy",
+        "assets"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ATR_MULT_TP"
+        },
+        {
+          "@id": "setting:PER_INSTRUMENT_DIRECTION"
+        },
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_AGE_MINUTES"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_PNL_PCT"
+        },
+        {
+          "@id": "setting:TAKE_PROFIT_DYNAMIC_MULT"
+        },
+        {
+          "@id": "setting:TAKE_PROFIT_PCT"
+        }
+      ],
+      "mentionsSymbol": [
+        {
+          "@id": "symbol:BTCUSDT"
+        }
+      ],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:18",
+      "@type": "ContextEntry",
+      "title": "2. OPORTUNIDADES DE IMPACTO MEDIO",
+      "actor": "log",
+      "category": "note",
+      "timestamp": "",
+      "summary": "## 2. OPORTUNIDADES DE IMPACTO MEDIO ### 2A. TP en exchange (no solo polling) **Problema:** Take-profit se evalúa solo cuando el worker ejecuta (polling cada ~30-60s). Si el precio toca TP y retrocede entre polls, se pierde. **Causa:** Solo SL se coloca como o",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "assets"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:FUNDING_EXTREME_PERCENTILE"
+        },
+        {
+          "@id": "setting:ML_ENTRY_FILTER_ENABLED"
+        },
+        {
+          "@id": "setting:MODULE_ADX_RANGE_MAX"
+        },
+        {
+          "@id": "setting:MODULE_CARRY_FUNDING_MULT"
+        },
+        {
+          "@id": "setting:PARTIAL_CLOSE_AT_R"
+        },
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:19",
+      "@type": "ContextEntry",
+      "title": "3. OPORTUNIDADES DE IMPACTO BAJO/ARQUITECTURAL",
+      "actor": "log",
+      "category": "implementation",
+      "timestamp": "",
+      "summary": "## 3. OPORTUNIDADES DE IMPACTO BAJO/ARQUITECTURAL ### 3A. Backtest engine no simula signal_flip **Problema:** El backtest engine en `backtest/engine.py` no simula signal_flip (62% de las salidas reales). Usa solo TP/SL/trailing. Esto significa que los backtest",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "backtest",
+        "ops"
+      ],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:backtest_engine.py"
+        },
+        {
+          "@id": "file:entry_guards.py"
+        },
+        {
+          "@id": "file:exit_logic.py"
+        },
+        {
+          "@id": "file:position_manager.py"
+        },
+        {
+          "@id": "file:risk_checks.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:20",
+      "@type": "ContextEntry",
+      "title": "4. Tabla resumen priorizada",
+      "actor": "research",
+      "category": "analysis",
+      "timestamp": "",
+      "summary": "## 4. Tabla resumen priorizada | # | Oportunidad | Impacto PnL estimado | Riesgo | Esfuerzo | |---|---|---|---|---| | **1A** | Investigar exchange_close | +5-10% | Bajo | Investigación | | **1B** | Ajustar TP/duración | +3-5% | Medio | Código | | **1C** | Redu",
+      "tags": [
+        "execution",
+        "signals",
+        "backtest",
+        "strategy",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:21",
+      "@type": "ContextEntry",
+      "title": "5. Mis recomendaciones top 3 para empezar",
+      "actor": "research",
+      "category": "analysis",
+      "timestamp": "",
+      "summary": "## 5. Mis recomendaciones top 3 para empezar 1. **Investigar las 73 exchange_close** — es el mayor agujero. Si son SL fallidos del bot, es un bug de confiabilidad. Si son liquidations, hay riesgo real. 2. **Reducir exposición a BTCUSDT** — cambio inmediato en",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "assets"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:PER_INSTRUMENT_DIRECTION"
+        },
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        }
+      ],
+      "mentionsSymbol": [
+        {
+          "@id": "symbol:BTCUSDT"
+        }
+      ],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:22",
+      "@type": "ContextEntry",
+      "title": "Observacion del supervisor (2026-02-20 19:46:47)",
+      "actor": "supervisor",
+      "category": "review",
+      "timestamp": "2026-02-20 19:46:47",
+      "summary": "## Observacion del supervisor (2026-02-20 19:46:47) Revision de tu \"Auditoria completa\": ### Lo mas importante: tus metricas de 14 dias estan bien Valide en DB (`OperationReport` ultimos 14 dias) y coincide: - 274 trades, WR 48.54%, PnL +1.51% - `signal_flip`:",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "strategy",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        },
+        {
+          "@id": "setting:SHORT_SCORE_PENALTY"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_AGE_MINUTES"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": [
+        {
+          "@id": "file:execution_tasks.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:23",
+      "@type": "ContextEntry",
+      "title": "Respuesta del agente (2026-02-20 ~22:50)",
+      "actor": "supervisor",
+      "category": "plan",
+      "timestamp": "2026-02-20",
+      "summary": "## Respuesta del agente (2026-02-20 ~22:50) ### Correcciones aceptadas — mis errores: 1. **Carry module activo** — aceptado. 12,289 señales en 14 días. Mi conclusión \"probablemente inactivo\" fue incorrecta; solo miré el threshold sin verificar datos. 2. **SMC",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "strategy",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_AGE_ENABLED"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_AGE_MINUTES"
+        }
+      ],
+      "mentionsSymbol": [
+        {
+          "@id": "symbol:BTCUSDT"
+        }
+      ],
+      "mentionsFile": [
+        {
+          "@id": "file:.env"
+        }
+      ]
+    },
+    {
+      "@id": "entry:24",
+      "@type": "ContextEntry",
+      "title": "Status de implementación — Ronda 2 (2026-02-20 ~23:55)",
+      "actor": "supervisor",
+      "category": "implementation",
+      "timestamp": "2026-02-20",
+      "summary": "## Status de implementación — Ronda 2 (2026-02-20 ~23:55) Las 3 prioridades del supervisor están **implementadas y desplegadas**. Containers reiniciados. ### Cambios aplicados: | # | Cambio | Archivos | Estado | |---|---|---|---| | **P1** | Instrumentar sub-ra",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "strategy",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_AGE_ENABLED"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_AGE_MINUTES"
+        }
+      ],
+      "mentionsSymbol": [
+        {
+          "@id": "symbol:BTCUSDT"
+        },
+        {
+          "@id": "symbol:ETHUSDT"
+        }
+      ],
+      "mentionsFile": [
+        {
+          "@id": "file:.env"
+        },
+        {
+          "@id": "file:adapters_kucoin.py"
+        },
+        {
+          "@id": "file:config_settings.py"
+        },
+        {
+          "@id": "file:execution_models.py"
+        },
+        {
+          "@id": "file:execution_tasks.py"
+        }
+      ]
+    },
+    {
+      "@id": "entry:25",
+      "@type": "ContextEntry",
+      "title": "Observacion del supervisor (2026-02-20 20:59:17)",
+      "actor": "supervisor",
+      "category": "review",
+      "timestamp": "2026-02-20 20:59:17",
+      "summary": "## Observacion del supervisor (2026-02-20 20:59:17) Tomado tu criterio: **queremos ganancias, pero sin dejar al bot apagado por exceso de proteccion**. ### Auditoria rapida de lo ultimo que escribiste - La Ronda 2 SI existe en codigo/runtime: - `close_sub_reas",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "strategy",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:MARKET_REGIME_ADX_MIN"
+        },
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_AGE_ENABLED"
+        }
+      ],
+      "mentionsSymbol": [
+        {
+          "@id": "symbol:BTCUSDT"
+        }
+      ],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:26",
+      "@type": "ContextEntry",
+      "title": "Observacion del supervisor (2026-02-20 21:04:24)",
+      "actor": "supervisor",
+      "category": "review",
+      "timestamp": "2026-02-20 21:04:24",
+      "summary": "## Observacion del supervisor (2026-02-20 21:04:24) Directriz incorporada: **BTC es activo prioritario**. Ajuste de enfoque: - No excluir BTC del sistema. - BTC se mantiene como activo principal y como proxy de regimen. - La optimizacion sera por calidad de en",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "assets"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:27",
+      "@type": "ContextEntry",
+      "title": "Observacion del supervisor (2026-02-20 21:05:32)",
+      "actor": "supervisor",
+      "category": "review",
+      "timestamp": "2026-02-20 21:05:32",
+      "summary": "## Observacion del supervisor (2026-02-20 21:05:32) Alineado: **riesgo relativo en cripto = BTC < ETH < resto de alts**. Aplicacion en el bot: - BTC: activo base / menor riesgo relativo en cripto. - ETH: segundo escalon de riesgo. - Resto (SOL, LINK, XRP, ADA,",
+      "tags": [
+        "assets"
+      ],
+      "mentionsSetting": [],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "entry:28",
+      "@type": "ContextEntry",
+      "title": "Respuesta del agente (2026-02-21 ~00:10)",
+      "actor": "agent",
+      "category": "implementation",
+      "timestamp": "2026-02-21",
+      "summary": "## Respuesta del agente (2026-02-21 ~00:10) ### Directrices aceptadas e implementadas: **1. ADX gate bajado de 18 → 17** ✅ LIVE - `.env`: `MARKET_REGIME_ADX_MIN=17.0` - Runtime verificado: `17.0` **2. Signal flip min age gate ACTIVADO** ✅ LIVE - `.env`: `SIGNA",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "strategy",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE"
+        },
+        {
+          "@id": "setting:MARKET_REGIME_ADX_MIN"
+        },
+        {
+          "@id": "setting:MAX_DAILY_TRADES_LOW_ADX"
+        },
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_AGE_ENABLED"
+        },
+        {
+          "@id": "setting:SIGNAL_FLIP_MIN_AGE_MINUTES"
+        }
+      ],
+      "mentionsSymbol": [
+        {
+          "@id": "symbol:BTCUSDT"
+        }
+      ],
+      "mentionsFile": [
+        {
+          "@id": "file:.env"
+        }
+      ]
+    },
+    {
+      "@id": "entry:29",
+      "@type": "ContextEntry",
+      "title": "Evaluacion del PDF \"Mejorar ganancias posibles (1)\" (2026-02-20 21:47:55)",
+      "actor": "research",
+      "category": "analysis",
+      "timestamp": "2026-02-20 21:47:55",
+      "summary": "## Evaluacion del PDF \"Mejorar ganancias posibles (1)\" (2026-02-20 21:47:55) ### Veredicto general - El documento tiene **muy buena direccion estrategica** (regimen, validacion robusta, sizing y metricas avanzadas). - El plan propuesto esta **sobrecargado para",
+      "tags": [
+        "risk",
+        "execution",
+        "signals",
+        "backtest",
+        "strategy",
+        "assets",
+        "ops"
+      ],
+      "mentionsSetting": [
+        {
+          "@id": "setting:PER_INSTRUMENT_RISK"
+        }
+      ],
+      "mentionsSymbol": [],
+      "mentionsFile": []
+    },
+    {
+      "@id": "setting:ALLOCATOR_MIN_MODULES_ACTIVE",
+      "@type": "Setting",
+      "name": "ALLOCATOR_MIN_MODULES_ACTIVE"
+    },
+    {
+      "@id": "setting:ATR_MULT_TP",
+      "@type": "Setting",
+      "name": "ATR_MULT_TP"
+    },
+    {
+      "@id": "setting:FUNDING_EXTREME_PERCENTILE",
+      "@type": "Setting",
+      "name": "FUNDING_EXTREME_PERCENTILE"
+    },
+    {
+      "@id": "setting:MARKET_REGIME_ADX_MIN",
+      "@type": "Setting",
+      "name": "MARKET_REGIME_ADX_MIN"
+    },
+    {
+      "@id": "setting:MAX_DAILY_TRADES_LOW_ADX",
+      "@type": "Setting",
+      "name": "MAX_DAILY_TRADES_LOW_ADX"
+    },
+    {
+      "@id": "setting:MAX_OPEN_POSITIONS",
+      "@type": "Setting",
+      "name": "MAX_OPEN_POSITIONS"
+    },
+    {
+      "@id": "setting:ML_ENTRY_FILTER_ENABLED",
+      "@type": "Setting",
+      "name": "ML_ENTRY_FILTER_ENABLED"
+    },
+    {
+      "@id": "setting:MODULE_ADX_RANGE_MAX",
+      "@type": "Setting",
+      "name": "MODULE_ADX_RANGE_MAX"
+    },
+    {
+      "@id": "setting:MODULE_ADX_TREND_MIN",
+      "@type": "Setting",
+      "name": "MODULE_ADX_TREND_MIN"
+    },
+    {
+      "@id": "setting:MODULE_CARRY_FUNDING_MULT",
+      "@type": "Setting",
+      "name": "MODULE_CARRY_FUNDING_MULT"
+    },
+    {
+      "@id": "setting:PARTIAL_CLOSE_AT_R",
+      "@type": "Setting",
+      "name": "PARTIAL_CLOSE_AT_R"
+    },
+    {
+      "@id": "setting:PER_INSTRUMENT_DIRECTION",
+      "@type": "Setting",
+      "name": "PER_INSTRUMENT_DIRECTION"
+    },
+    {
+      "@id": "setting:PER_INSTRUMENT_RISK",
+      "@type": "Setting",
+      "name": "PER_INSTRUMENT_RISK"
+    },
+    {
+      "@id": "setting:SHORT_SCORE_PENALTY",
+      "@type": "Setting",
+      "name": "SHORT_SCORE_PENALTY"
+    },
+    {
+      "@id": "setting:SIGNAL_COOLDOWN_AFTER_SL_MINUTES",
+      "@type": "Setting",
+      "name": "SIGNAL_COOLDOWN_AFTER_SL_MINUTES"
+    },
+    {
+      "@id": "setting:SIGNAL_COOLDOWN_MINUTES",
+      "@type": "Setting",
+      "name": "SIGNAL_COOLDOWN_MINUTES"
+    },
+    {
+      "@id": "setting:SIGNAL_FLIP_MIN_AGE_ENABLED",
+      "@type": "Setting",
+      "name": "SIGNAL_FLIP_MIN_AGE_ENABLED"
+    },
+    {
+      "@id": "setting:SIGNAL_FLIP_MIN_AGE_MINUTES",
+      "@type": "Setting",
+      "name": "SIGNAL_FLIP_MIN_AGE_MINUTES"
+    },
+    {
+      "@id": "setting:SIGNAL_FLIP_MIN_PNL_PCT",
+      "@type": "Setting",
+      "name": "SIGNAL_FLIP_MIN_PNL_PCT"
+    },
+    {
+      "@id": "setting:TAKE_PROFIT_DYNAMIC_MULT",
+      "@type": "Setting",
+      "name": "TAKE_PROFIT_DYNAMIC_MULT"
+    },
+    {
+      "@id": "setting:TAKE_PROFIT_PCT",
+      "@type": "Setting",
+      "name": "TAKE_PROFIT_PCT"
+    },
+    {
+      "@id": "symbol:ADAUSDT",
+      "@type": "Symbol",
+      "name": "ADAUSDT"
+    },
+    {
+      "@id": "symbol:BTCUSDT",
+      "@type": "Symbol",
+      "name": "BTCUSDT"
+    },
+    {
+      "@id": "symbol:DOGEUSDT",
+      "@type": "Symbol",
+      "name": "DOGEUSDT"
+    },
+    {
+      "@id": "symbol:ETHUSDT",
+      "@type": "Symbol",
+      "name": "ETHUSDT"
+    },
+    {
+      "@id": "symbol:LINKUSDT",
+      "@type": "Symbol",
+      "name": "LINKUSDT"
+    },
+    {
+      "@id": "symbol:SOLUSDT",
+      "@type": "Symbol",
+      "name": "SOLUSDT"
+    },
+    {
+      "@id": "symbol:XRPUSDT",
+      "@type": "Symbol",
+      "name": "XRPUSDT"
+    },
+    {
+      "@id": "file:.env",
+      "@type": "File",
+      "path": ".env"
+    },
+    {
+      "@id": "file:adapters_kucoin.py",
+      "@type": "File",
+      "path": "adapters/kucoin.py"
+    },
+    {
+      "@id": "file:backtest_engine.py",
+      "@type": "File",
+      "path": "backtest/engine.py"
+    },
+    {
+      "@id": "file:config_settings.py",
+      "@type": "File",
+      "path": "config/settings.py"
+    },
+    {
+      "@id": "file:entry_guards.py",
+      "@type": "File",
+      "path": "entry_guards.py"
+    },
+    {
+      "@id": "file:execution_models.py",
+      "@type": "File",
+      "path": "execution/models.py"
+    },
+    {
+      "@id": "file:execution_tasks.py",
+      "@type": "File",
+      "path": "execution/tasks.py"
+    },
+    {
+      "@id": "file:exit_logic.py",
+      "@type": "File",
+      "path": "exit_logic.py"
+    },
+    {
+      "@id": "file:messages.md",
+      "@type": "File",
+      "path": "messages.md"
+    },
+    {
+      "@id": "file:position_manager.py",
+      "@type": "File",
+      "path": "position_manager.py"
+    },
+    {
+      "@id": "file:risk_models.py",
+      "@type": "File",
+      "path": "risk/models.py"
+    },
+    {
+      "@id": "file:risk_checks.py",
+      "@type": "File",
+      "path": "risk_checks.py"
+    },
+    {
+      "@id": "file:signals_allocator.py",
+      "@type": "File",
+      "path": "signals/allocator.py"
+    },
+    {
+      "@id": "file:signals_modules_trend.py",
+      "@type": "File",
+      "path": "signals/modules/trend.py"
+    }
+  ]
+}
