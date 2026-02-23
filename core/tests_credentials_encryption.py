@@ -16,6 +16,7 @@ class CredentialEncryptionTest(TestCase):
     def test_exchange_credentials_are_encrypted_at_rest(self):
         cred = ExchangeCredential.objects.create(
             service=ExchangeCredential.Service.BINGX,
+            name_alias="enc-test-bingx",
             api_key="k_plain",
             api_secret="s_plain",
             api_passphrase="p_plain",
@@ -43,6 +44,7 @@ class CredentialEncryptionTest(TestCase):
     def test_legacy_plaintext_row_is_readable_and_reencrypted_on_save(self):
         cred = ExchangeCredential.objects.create(
             service=ExchangeCredential.Service.KUCOIN,
+            name_alias="enc-test-kucoin",
             api_key="legacy_k",
             api_secret="legacy_s",
             api_passphrase="legacy_p",

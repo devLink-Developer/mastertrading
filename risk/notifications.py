@@ -35,10 +35,11 @@ _MODULE_TITLES: dict[str, tuple[str, str]] = {
 def _runtime_context() -> tuple[str, str]:
     try:
         ctx = get_runtime_exchange_context()
+        label = str(ctx.get("label") or "").strip()
         service = str(ctx.get("service") or "unknown").upper()
         env = "DEMO" if bool(ctx.get("sandbox")) else "LIVE"
         asset = str(ctx.get("primary_asset") or "USDT")
-        return f"{service} {env}", asset
+        return label or f"{service} {env}", asset
     except Exception:
         return "", "USDT"
 

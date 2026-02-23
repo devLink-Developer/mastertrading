@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 from core.fields import EncryptedCredentialField
@@ -42,7 +43,15 @@ class ExchangeCredential(TimeStampedModel):
         BINANCE = "binance", "Binance Futures"
         BINGX = "bingx", "BingX Perpetual"
 
-    service = models.CharField(max_length=16, choices=Service.choices, unique=True)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="exchange_credentials",
+    )
+    name_alias = models.CharField(max_length=64, unique=True)
+    service = models.CharField(max_length=16, choices=Service.choices)
     api_key = EncryptedCredentialField(blank=True, default="")
     api_secret = EncryptedCredentialField(blank=True, default="")
     api_passphrase = EncryptedCredentialField(blank=True, default="")
@@ -55,10 +64,12 @@ class ExchangeCredential(TimeStampedModel):
     class Meta:
         indexes = [
             models.Index(fields=["service", "active"], name="core_excred_service_active_idx"),
+            models.Index(fields=["owner", "active"], name="core_excred_owner_active_idx"),
         ]
 
     def __str__(self) -> str:  # pragma: no cover - trivial
-        return f"{self.service} ({'active' if self.active else 'inactive'})"
+        owner = getattr(self.owner, "username", "unowned")
+        return f"{self.name_alias} [{owner}] {self.service} ({'active' if self.active else 'inactive'})"
 
 
 class AuditLog(models.Model):

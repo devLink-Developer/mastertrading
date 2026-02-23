@@ -18,6 +18,8 @@ def get_runtime_exchange_context(default_env: str | None = None) -> dict[str, An
     service = get_active_service(default_env=default_env)
     cfg = get_exchange_credentials(service)
     sandbox = bool(cfg.get("sandbox"))
+    account_alias = str(cfg.get("name_alias", "") or "")
+    owner_username = str(cfg.get("owner_username", "") or "")
     mode = str(getattr(settings, "MODE", "live") or "live")
 
     if service == "bingx" and sandbox:
@@ -30,15 +32,24 @@ def get_runtime_exchange_context(default_env: str | None = None) -> dict[str, An
         assets = ["USDT", "USDC", "BUSD"]
 
     env = "demo" if sandbox else "live"
+    account_ns = account_alias or "default"
+    label_parts: list[str] = []
+    if account_alias:
+        label_parts.append(account_alias)
+    if owner_username:
+        label_parts.append(owner_username)
+    label_suffix = f" [{' / '.join(label_parts)}]" if label_parts else ""
     return {
         "service": service,
+        "account_alias": account_alias,
+        "owner_username": owner_username,
         "sandbox": sandbox,
         "env": env,
         "mode": mode,
         "balance_assets": assets,
         "primary_asset": assets[0],
-        "risk_namespace": f"{service}:{env}:{mode}",
-        "label": f"{service.upper()} {'DEMO' if sandbox else 'LIVE'}",
+        "risk_namespace": f"{service}:{env}:{mode}:{account_ns}",
+        "label": f"{service.upper()} {'DEMO' if sandbox else 'LIVE'}{label_suffix}",
     }
 
 

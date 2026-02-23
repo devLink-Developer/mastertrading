@@ -31,6 +31,8 @@ class ExchangeCredentialAdminForm(forms.ModelForm):
 class ExchangeCredentialAdmin(admin.ModelAdmin):
     form = ExchangeCredentialAdminForm
     list_display = (
+        "name_alias",
+        "owner",
         "service",
         "active",
         "sandbox",
@@ -40,10 +42,19 @@ class ExchangeCredentialAdmin(admin.ModelAdmin):
         "updated_at",
     )
     list_editable = ("active", "sandbox")
-    list_filter = ("service", "active", "sandbox", "margin_mode")
-    search_fields = ("service", "label")
+    list_filter = ("service", "owner", "active", "sandbox", "margin_mode")
+    search_fields = ("name_alias", "service", "label", "owner__username")
 
     def save_model(self, request, obj, form, change):
         super().save_model(request, obj, form, change)
         if obj.active:
-            ExchangeCredential.objects.exclude(pk=obj.pk).filter(active=True).update(active=False)
+            siblings = ExchangeCredential.objects.exclude(pk=obj.pk).filter(
+                service=obj.service,
+                sandbox=obj.sandbox,
+                active=True,
+            )
+            if obj.owner_id:
+                siblings = siblings.filter(owner_id=obj.owner_id)
+            else:
+                siblings = siblings.filter(owner__isnull=True)
+            siblings.update(active=False)
