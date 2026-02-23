@@ -172,6 +172,7 @@ def notify_trade_opened(
     score: float = 0,
     strategy_name: str = "",
     active_modules: list[str] | None = None,
+    entry_reason: str = "",
 ):
     """Alert: new trade opened."""
     env_label, asset = _runtime_context()
@@ -200,6 +201,9 @@ def notify_trade_opened(
     strategy_txt = _strategy_block(strategy_name, active_modules)
     if strategy_txt:
         msg += f"\n{strategy_txt}"
+    entry_reason_txt = str(entry_reason or "").strip()
+    if entry_reason_txt:
+        msg += f"\n<b>Razon de posicion:</b> {entry_reason_txt}"
     if env_label:
         msg += f"\n<b>Env:</b> {env_label}"
     send_telegram(msg)

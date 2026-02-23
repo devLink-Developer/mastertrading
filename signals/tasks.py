@@ -942,7 +942,12 @@ def _detect_signal(
 # Celery task
 # ---------------------------------------------------------------------------
 
-@shared_task
+@shared_task(
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=3,
+    acks_late=True,
+)
 def run_signal_engine():
     now = dj_tz.now()
     emitted = 0

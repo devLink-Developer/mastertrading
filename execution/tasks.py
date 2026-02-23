@@ -43,6 +43,10 @@ from risk.notifications import (
     notify_risk_event, notify_error,
 )
 from execution.ml_entry_filter import load_model, predict_entry_success_probability
+from execution.risk_policy import (
+    max_daily_trades_for_adx as _shared_max_daily_trades_for_adx,
+    volatility_adjusted_risk as _shared_volatility_adjusted_risk,
+)
 from .models import Order, OperationReport, BalanceSnapshot, Position
 
 logger = logging.getLogger(__name__)
@@ -147,7 +151,7 @@ def _is_insufficient_margin_error(exc: Exception) -> bool:
 
 def _norm_symbol(sym: str) -> str:
     """
-    Normaliza sÃ­mbolos provenientes de diferentes exchanges/ccxt
+    Normaliza sÃƒÂ­mbolos provenientes de diferentes exchanges/ccxt
     para que BTCUSDT, BTC/USDT, BTC/USDT:USDT o XBTUSDTM coincidan.
     """
     if not sym:
@@ -227,6 +231,63 @@ def _signal_active_modules(payload: dict[str, Any] | None, strategy_name: str = 
     return deduped
 
 
+def _signal_entry_reason(payload: dict[str, Any] | None, strategy_name: str = "") -> str:
+    """Build a concise human-readable reason for opening a position."""
+    strategy_txt = str(strategy_name or "").strip().lower()
+    sections: list[str] = []
+    module_fragments: list[str] = []
+
+    reasons = {}
+    if isinstance(payload, dict):
+        reasons = payload.get("reasons") or {}
+
+    if isinstance(reasons, dict):
+        module_rows = reasons.get("module_rows")
+        if isinstance(module_rows, list):
+            for row in module_rows[:4]:
+                if not isinstance(row, dict):
+                    continue
+                module_name = str(row.get("module") or "").strip().lower()
+                direction = str(row.get("direction") or "").strip().lower()
+                confidence_raw = row.get("confidence")
+                if confidence_raw is None:
+                    confidence_raw = row.get("raw_score")
+                confidence = _to_float(confidence_raw)
+
+                fragment = module_name
+                if direction in {"long", "short"}:
+                    fragment += f" {direction}"
+                if confidence > 0:
+                    fragment += f" ({confidence:.2f})"
+                if fragment:
+                    module_fragments.append(fragment)
+
+    if not module_fragments:
+        fallback_modules = _signal_active_modules(payload, strategy_name)
+        if fallback_modules:
+            module_fragments = fallback_modules
+
+    if module_fragments:
+        sections.append(f"confluencia: {', '.join(module_fragments)}")
+
+    risk_budget_pct = 0.0
+    if isinstance(payload, dict):
+        risk_budget_pct = _to_float(payload.get("risk_budget_pct", 0.0))
+    if risk_budget_pct > 0:
+        sections.append(f"risk_budget={risk_budget_pct:.3%}")
+
+    net_score = 0.0
+    if isinstance(reasons, dict):
+        net_score = _to_float(reasons.get("net_score", 0.0))
+    if net_score > 0:
+        sections.append(f"net_score={net_score:.3f}")
+
+    if strategy_txt:
+        sections.insert(0, f"signal={strategy_txt}")
+
+    return " | ".join(sections)
+
+
 def _position_root_correlation(inst: Instrument, side: str) -> str:
     """
     Best-effort root correlation id for an active position side.
@@ -285,11 +346,11 @@ def _last_pyramid_add_opened_at(inst: Instrument, side: str, root_correlation_id
 
 
 def _current_position(adapter, symbol: str, positions: list | None = None):
-    """Devuelve (qty, entry_price) de la posiciÃ³n abierta para el sÃ­mbolo normalizado."""
+    """Devuelve (qty, entry_price) de la posiciÃƒÂ³n abierta para el sÃƒÂ­mbolo normalizado."""
     target = _norm_symbol(symbol)
     if positions is None:
         try:
-            # KuCoin ignora a veces el filtro por sÃ­mbolo, preferimos traer todo y filtrar local.
+            # KuCoin ignora a veces el filtro por sÃƒÂ­mbolo, preferimos traer todo y filtrar local.
             positions = adapter.fetch_positions()
         except Exception:
             positions = []
@@ -679,7 +740,7 @@ def _create_risk_event(
             notify_risk_event(kind, severity, str(details) if details else "")
         elif client is None:
             notify_risk_event(kind, severity, str(details) if details else "")
-        # else: throttled â€“ skip Telegram
+        # else: throttled Ã¢â‚¬â€œ skip Telegram
     except Exception as exc:
         logger.warning("Failed to create risk event: %s", exc)
 
@@ -823,51 +884,8 @@ def _risk_based_qty(
 
 
 def _volatility_adjusted_risk(symbol: str, atr_pct: float | None, base_risk: float) -> float:
-    """
-    Scale risk per trade inversely proportional to volatility.
-    High-ATR assets (like BTC during volatile periods) get smaller positions.
-
-    Resolution order (first match wins):
-    1. PER_INSTRUMENT_RISK flat override (skips ATR scaling entirely)
-    2. INSTRUMENT_RISK_TIERS base_risk → then ATR scaling applied on top
-    3. Global RISK_PER_TRADE_PCT → then ATR scaling applied
-
-    ATR scaling:
-    - ATR <= 0.8% : full risk (1.0x)
-    - ATR 0.8%-1.5%: scaled down linearly (1.0x → 0.6x)
-    - ATR >= 1.5% : capped at 0.6x of base risk
-    """
-    # 1. Per-instrument flat override takes absolute priority (no ATR scaling)
-    per_inst = getattr(settings, "PER_INSTRUMENT_RISK", {})
-    if symbol in per_inst:
-        return float(per_inst[symbol])
-
-    # 2. Risk tiers: use tier-specific base_risk, then apply ATR scaling
-    effective_base = base_risk
-    if getattr(settings, "INSTRUMENT_RISK_TIERS_ENABLED", False):
-        tier_map = getattr(settings, "INSTRUMENT_TIER_MAP", {})
-        tiers = getattr(settings, "INSTRUMENT_RISK_TIERS", {})
-        tier_name = tier_map.get(symbol, "")
-        if tier_name and tier_name in tiers:
-            effective_base = float(tiers[tier_name])
-
-    if atr_pct is None or atr_pct <= 0:
-        return effective_base
-
-    # ATR thresholds for scaling
-    low_vol = 0.008   # 0.8% ATR = normal vol
-    high_vol = 0.015   # 1.5% ATR = high vol
-    min_scale = 0.6    # minimum 60% of base risk in high vol
-
-    if atr_pct <= low_vol:
-        return effective_base
-    if atr_pct >= high_vol:
-        return effective_base * min_scale
-
-    # Linear interpolation between low_vol and high_vol
-    ratio = (atr_pct - low_vol) / (high_vol - low_vol)
-    scale = 1.0 - ratio * (1.0 - min_scale)
-    return effective_base * scale
+    """Backward-compatible wrapper to shared risk sizing policy."""
+    return _shared_volatility_adjusted_risk(symbol, atr_pct, base_risk)
 
 
 # ---------------------------------------------------------------------------
@@ -899,32 +917,21 @@ def _increment_daily_trade_count() -> None:
         return
     try:
         key = _daily_trade_count_key()
+        ttl_seconds = max(
+            60,
+            int(getattr(settings, "DAILY_TRADE_COUNT_TTL_SECONDS", 86400 + 3600) or (86400 + 3600)),
+        )
         pipe = client.pipeline()
         pipe.incr(key)
-        pipe.expire(key, 86400 + 3600)  # TTL slightly over 24h
+        pipe.expire(key, ttl_seconds)
         pipe.execute()
     except Exception:
         pass
 
 
 def _max_daily_trades_for_adx(htf_adx: float | None) -> int:
-    """
-    Regime-adaptive trade throttling (risk skill: 92-95% success rate).
-    - ADX < 20 (choppy): MAX_DAILY_TRADES_LOW_ADX (default 3)
-    - ADX 20-25 (normal): MAX_DAILY_TRADES (default 6)
-    - ADX > 25 (strong trend): MAX_DAILY_TRADES_HIGH_ADX (default 10)
-    """
-    low_adx_limit = int(getattr(settings, "MAX_DAILY_TRADES_LOW_ADX", 3))
-    normal_limit = int(getattr(settings, "MAX_DAILY_TRADES", 6))
-    high_adx_limit = int(getattr(settings, "MAX_DAILY_TRADES_HIGH_ADX", 10))
-
-    if htf_adx is None:
-        return normal_limit
-    if htf_adx < 20:
-        return low_adx_limit
-    if htf_adx > 25:
-        return high_adx_limit
-    return normal_limit
+    """Backward-compatible wrapper to shared ADX trade throttle policy."""
+    return _shared_max_daily_trades_for_adx(htf_adx)
 
 
 # ---------------------------------------------------------------------------
@@ -952,7 +959,7 @@ def _should_close_stale_position(
     if age_hours < max_hours:
         return False
 
-    # Position is old — close if PnL is within the breakeven band
+    # Position is old â€” close if PnL is within the breakeven band
     return -pnl_band <= pnl_pct <= pnl_band
 
 
@@ -1078,8 +1085,8 @@ def _place_sl_order(adapter, symbol: str, side: str, qty: float, sl_price: float
     only accepts ``market``/``limit`` types with a trigger).
 
     For a SL:
-      - long  position â†’ close with sell when price drops  â†’ stop="down"
-      - short position â†’ close with buy  when price rises  â†’ stop="up"
+      - long  position Ã¢â€ â€™ close with sell when price drops  Ã¢â€ â€™ stop="down"
+      - short position Ã¢â€ â€™ close with buy  when price rises  Ã¢â€ â€™ stop="up"
     """
     close_side = "sell" if side == "buy" else "buy"
     # Determine trigger direction: price moving *against* the position
@@ -1128,7 +1135,7 @@ def _has_sl_stop_order(adapter, symbol: str, position_side: str) -> tuple[bool, 
         stop_orders = adapter.fetch_open_stop_orders(symbol)
     except Exception as exc:
         logger.debug("fetch_open_stop_orders failed for %s: %s", symbol, exc)
-        return True, None, []  # assume exists â†’ avoid placing duplicates on API error
+        return True, None, []  # assume exists Ã¢â€ â€™ avoid placing duplicates on API error
 
     if stop_orders:
         logger.debug("Found %d stop order(s) for %s", len(stop_orders), symbol)
@@ -1190,14 +1197,22 @@ def _reconcile_sl(
         expected_sl_distance = float(sl_pct or 0.0)
         has_duplicate_stops = len(stop_prices) > 1
         invalid_for_side = selected_stop <= 0
+        sl_too_tight_mult = max(
+            0.0,
+            float(getattr(settings, "SL_RECONCILE_TOO_TIGHT_MULT", 0.80) or 0.80),
+        )
+        sl_too_wide_mult = max(
+            1.0,
+            float(getattr(settings, "SL_RECONCILE_TOO_WIDE_MULT", 2.00) or 2.00),
+        )
         too_tight = (
             expected_sl_distance > 0
             and current_sl_distance > 0
-            and current_sl_distance < expected_sl_distance * 0.80
+            and current_sl_distance < expected_sl_distance * sl_too_tight_mult
         )
         too_wide = (
             expected_sl_distance > 0
-            and current_sl_distance > expected_sl_distance * 2.00
+            and current_sl_distance > expected_sl_distance * sl_too_wide_mult
         )
         if invalid_for_side or too_tight or too_wide or has_duplicate_stops:
             logger.warning(
@@ -1213,7 +1228,7 @@ def _reconcile_sl(
         return  # SL exists and is aligned enough or was replaced
 
     if exists:
-        return  # SL exists but couldn't read price â€” leave it alone
+        return  # SL exists but couldn't read price Ã¢â‚¬â€ leave it alone
 
     # SL missing entirely
     logger.warning(
@@ -1276,6 +1291,14 @@ def _check_trailing_stop(
     state_key = _position_state_key(symbol, opened_at, entry_price)
 
     client = _redis_client()
+    trail_state_ttl = max(
+        60,
+        int(getattr(settings, "TRAILING_STATE_TTL_SECONDS", 172800) or 172800),
+    )
+    sl_min_move_pct = max(
+        0.0,
+        float(getattr(settings, "TRAILING_SL_MIN_MOVE_PCT", 0.0002) or 0.0002),
+    )
 
     partial_r_trigger = float(getattr(settings, "PARTIAL_CLOSE_AT_R", 1.0) or 1.0)
     trail_activation_r = float(getattr(settings, "TRAILING_STOP_ACTIVATION_R", 2.5) or 2.5)
@@ -1289,22 +1312,54 @@ def _check_trailing_stop(
         partial_r_trigger *= max(0.1, min(partial_mult, 1.0))
         trail_activation_r *= max(0.1, min(trail_mult, 1.0))
 
-    # Partial close at PARTIAL_CLOSE_AT_R (only if we can keep at least 1 contract open)
+    # Partial close at PARTIAL_CLOSE_AT_R (supports fractional positions/contracts).
     if r_multiple >= partial_r_trigger:
-        total_abs = int(abs(current_qty))
-        if total_abs >= 2:
+        total_abs = abs(_to_float(current_qty))
+        if total_abs > 0:
             partial_key = f"trail:partial_done:{state_key}"
             already_done = client.get(partial_key) if client else None
             if not already_done:
-                close_qty = math.ceil(total_abs * settings.PARTIAL_CLOSE_PCT)
-                close_qty = min(close_qty, total_abs - 1)  # keep at least 1 contract running
-                if close_qty >= 1:
+                close_pct = max(
+                    0.0,
+                    min(float(getattr(settings, "PARTIAL_CLOSE_PCT", 0.5) or 0.5), 1.0),
+                )
+                min_remaining_qty = max(
+                    0.0,
+                    float(getattr(settings, "PARTIAL_CLOSE_MIN_REMAINING_QTY", 0.0) or 0.0),
+                )
+                min_qty = 0.0
+                try:
+                    market = adapter.client.market(adapter._map_symbol(symbol))
+                    min_qty = _market_min_qty(market, fallback=0.0)
+                except Exception:
+                    min_qty = 0.0
+                min_remaining = max(min_remaining_qty, min_qty)
+
+                close_qty = total_abs * close_pct
+                max_close_qty = total_abs - min_remaining
+                if max_close_qty > 0:
+                    close_qty = min(close_qty, max_close_qty)
+                else:
+                    close_qty = 0.0
+
+                close_qty = _normalize_order_qty(adapter, symbol, close_qty)
+                if min_qty > 0 and close_qty < min_qty:
+                    close_qty = 0.0
+                if close_qty >= total_abs:
+                    keep_qty = min_remaining if min_remaining > 0 else 0.0
+                    close_qty = _normalize_order_qty(
+                        adapter,
+                        symbol,
+                        max(total_abs - keep_qty, 0.0),
+                    )
+
+                if close_qty > 0 and close_qty < total_abs:
                     close_side = "sell" if is_long else "buy"
                     try:
                         adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
                         logger.info("Partial close %s qty=%s at R=%.2f", symbol, close_qty, r_multiple)
                         if client:
-                            client.set(partial_key, "1", ex=172800)  # 2 days
+                            client.set(partial_key, "1", ex=trail_state_ttl)
                     except Exception as exc:
                         logger.warning("Partial close failed %s: %s", symbol, exc)
 
@@ -1319,7 +1374,7 @@ def _check_trailing_stop(
                     max_fav = max(max_fav, float(prev))
                 except Exception:
                     pass
-            client.set(hwm_key, str(max_fav), ex=172800)  # 2 days
+            client.set(hwm_key, str(max_fav), ex=trail_state_ttl)
         except Exception:
             pass
 
@@ -1352,7 +1407,7 @@ def _check_trailing_stop(
                     try:
                         exists, current_stop_price, stop_orders = _has_sl_stop_order(adapter, symbol, side)
                         cur = float(current_stop_price or 0.0)
-                        min_move_pct = 0.0002  # 0.02%
+                        min_move_pct = sl_min_move_pct
 
                         if not exists:
                             _place_sl_order(adapter, symbol, side, abs(current_qty), be_price)
@@ -1427,7 +1482,7 @@ def _check_trailing_stop(
     try:
         exists, current_stop_price, stop_orders = _has_sl_stop_order(adapter, symbol, side)
         cur = float(current_stop_price or 0.0)
-        min_move_pct = 0.0002  # 0.02%
+        min_move_pct = sl_min_move_pct
 
         if not exists:
             _place_sl_order(adapter, symbol, side, abs(current_qty), trail_sl)
@@ -1552,6 +1607,8 @@ def _classify_exchange_close(
     entry_price: float,
     liq_price_est: float,
     exit_price: float = 0.0,
+    sl_pct_hint: float | None = None,
+    tp_pct_hint: float | None = None,
 ) -> str:
     """
     Best-effort classification of WHY a position disappeared from the exchange.
@@ -1563,11 +1620,15 @@ def _classify_exchange_close(
       2. Check exchange order history for stop/limit fills.
       3. PnL-based heuristic: match loss vs SL range, gain vs TP range, etc.
     """
+    recent_bot_close_minutes = max(
+        1,
+        int(getattr(settings, "EXCHANGE_CLOSE_RECENT_BOT_CLOSE_MINUTES", 5) or 5),
+    )
     try:
         # 1. Check if a recent OperationReport (non-exchange_close) already covers this
         recent_bot_close = OperationReport.objects.filter(
             instrument__symbol__iexact=symbol.replace("/USDT:USDT", "USDT"),
-            closed_at__gte=dj_tz.now() - timedelta(minutes=5),
+            closed_at__gte=dj_tz.now() - timedelta(minutes=recent_bot_close_minutes),
         ).exclude(reason="exchange_close").exists()
         if recent_bot_close:
             return "bot_close_missed"
@@ -1609,11 +1670,46 @@ def _classify_exchange_close(
     if entry_price > 0 and exit_price > 0:
         side_sign = 1 if pos_side == "buy" else -1
         pnl_pct = ((exit_price - entry_price) / entry_price) * side_sign
-        if pnl_pct < -0.0025:  # loss > 0.25% → likely SL triggered
+
+        sl_ref = max(
+            _to_float(sl_pct_hint),
+            _to_float(getattr(settings, "STOP_LOSS_PCT", 0.0)),
+            _to_float(getattr(settings, "MIN_SL_PCT", 0.0)),
+            1e-6,
+        )
+        tp_ref = max(
+            _to_float(tp_pct_hint),
+            _to_float(getattr(settings, "TAKE_PROFIT_PCT", sl_ref)),
+            sl_ref,
+        )
+        stop_scale = max(
+            0.05,
+            _to_float(getattr(settings, "EXCHANGE_CLOSE_CLASSIFY_STOP_SCALE", 0.35)),
+        )
+        tp_scale = max(
+            0.05,
+            _to_float(getattr(settings, "EXCHANGE_CLOSE_CLASSIFY_TP_SCALE", 0.35)),
+        )
+        min_band = max(
+            0.0,
+            _to_float(getattr(settings, "EXCHANGE_CLOSE_CLASSIFY_MIN_BAND_PCT", 0.0015)),
+        )
+        breakeven_scale = max(
+            0.0,
+            _to_float(getattr(settings, "EXCHANGE_CLOSE_CLASSIFY_BREAKEVEN_SCALE", 0.20)),
+        )
+
+        stop_trigger = -max(min_band, sl_ref * stop_scale)
+        tp_trigger = max(min_band, tp_ref * tp_scale)
+        breakeven_band = max(min_band, sl_ref * breakeven_scale)
+
+        if pnl_pct <= stop_trigger:
             return "exchange_stop"
-        if pnl_pct > 0.0025:  # gain > 0.25% → likely TP/limit filled
+        if pnl_pct >= tp_trigger:
             return "exchange_tp_limit"
-        return "near_breakeven"
+        if -breakeven_band <= pnl_pct <= breakeven_band:
+            return "near_breakeven"
+        return "unknown"
 
     return "unknown"
 
@@ -1713,7 +1809,7 @@ def _sync_positions(
         )
         touched.add(inst.id)
 
-    # Mark others as closed â€” detect transitions and notify
+    # Mark others as closed Ã¢â‚¬â€ detect transitions and notify
     newly_closed = Position.objects.filter(is_open=True).exclude(instrument_id__in=touched)
     for pos in newly_closed:
         try:
@@ -1787,10 +1883,14 @@ def _sync_positions(
 
             # Dedup: if we already logged a close for this instrument very recently,
             # don't emit a second "exchange_close" report.
+            recent_close_minutes = max(
+                1,
+                int(getattr(settings, "EXCHANGE_CLOSE_DEDUP_MINUTES", 3) or 3),
+            )
             recent_close = OperationReport.objects.filter(
                 instrument=pos.instrument,
                 side=trade_side,
-                closed_at__gte=dj_tz.now() - timedelta(minutes=3),
+                closed_at__gte=dj_tz.now() - timedelta(minutes=recent_close_minutes),
             ).exists()
             if recent_close:
                 logger.info("Skipping exchange_close log for %s: recent OperationReport exists", pos.instrument.symbol)
@@ -1798,7 +1898,22 @@ def _sync_positions(
 
             # Classify sub-reason for exchange_close
             liq_est = _to_float(pos.liq_price_est) if hasattr(pos, "liq_price_est") else 0.0
-            sub_reason = _classify_exchange_close(adapter, sym, trade_side, entry, liq_est, exit_price=last)
+            atr_for_close = _atr_pct(pos.instrument)
+            _, _, tp_pct_hint, sl_pct_hint = _compute_tp_sl_prices(
+                trade_side,
+                entry,
+                atr_pct=atr_for_close,
+            )
+            sub_reason = _classify_exchange_close(
+                adapter,
+                sym,
+                trade_side,
+                entry,
+                liq_est,
+                exit_price=last,
+                sl_pct_hint=sl_pct_hint,
+                tp_pct_hint=tp_pct_hint,
+            )
             logger.info(
                 "exchange_close sub-reason for %s: %s (entry=%.4f exit=%.4f liq_est=%.4f)",
                 sym, sub_reason, entry, last, liq_est,
@@ -2184,6 +2299,1367 @@ def retrain_entry_filter_model():
     )
 
 
+def _evaluate_balance_and_guardrails(
+    adapter,
+    runtime_ctx: dict[str, Any],
+    risk_ns: str,
+    positions_snapshot: list[dict[str, Any]] | list[Any] | None = None,
+) -> tuple[bool, float, float, float, float, float]:
+    """
+    Evaluate account-level guardrails and return cycle context:
+    (can_open, free_usdt, equity_usdt, eff_lev, total_notional, leverage)
+    """
+    can_open = True
+    free_usdt = 0.0
+    equity_usdt = 0.0
+    eff_lev = 0.0
+    total_notional = 0.0
+    leverage = float(getattr(adapter, "leverage", None) or settings.MAX_EFF_LEVERAGE)
+    env_label = str(runtime_ctx.get("label") or "EXCHANGE")
+    balance_assets = list(runtime_ctx.get("balance_assets") or ["USDT"])
+    balance_asset = str(runtime_ctx.get("primary_asset") or "USDT")
+
+    try:
+        bal = adapter.fetch_balance()
+        free_usdt, equity_usdt, balance_asset = extract_balance_values(
+            bal,
+            balance_assets,
+        )
+
+        if free_usdt < settings.MIN_EQUITY_USDT:
+            logger.warning(
+                "Insufficient balance (%s): free %s=%s < MIN=%s",
+                env_label,
+                balance_asset,
+                free_usdt,
+                settings.MIN_EQUITY_USDT,
+            )
+            can_open = False
+
+        allowed_dd, dd = _check_drawdown(equity_usdt, risk_ns=risk_ns)
+        if not allowed_dd:
+            logger.warning("Daily DD limit hit dd=%.4f; blocking new trades", dd)
+            _client = _redis_client()
+            _ks_key = f"risk:ks_notified:daily_dd:{risk_ns}:{dj_tz.now().date().isoformat()}"
+            if _client is None or _client.set(_ks_key, "1", nx=True, ex=86400):
+                _create_risk_event(
+                    "daily_dd_limit",
+                    "high",
+                    details={"dd": dd},
+                    risk_ns=risk_ns,
+                )
+                notify_kill_switch(f"Daily DD limit: {dd:.4f}")
+            can_open = False
+
+        allowed_wdd, wdd = _check_weekly_drawdown(equity_usdt, risk_ns=risk_ns)
+        if not allowed_wdd:
+            logger.warning("Weekly DD limit hit wdd=%.4f; blocking new trades", wdd)
+            _client = _redis_client()
+            _ks_key = f"risk:ks_notified:weekly_dd:{risk_ns}:{dj_tz.now().date().isoformat()}"
+            if _client is None or _client.set(_ks_key, "1", nx=True, ex=86400):
+                _create_risk_event(
+                    "weekly_dd_limit",
+                    "high",
+                    details={"wdd": wdd},
+                    risk_ns=risk_ns,
+                )
+                notify_kill_switch(f"Weekly DD limit: {wdd:.4f}")
+            can_open = False
+
+        eff_lev, total_notional = _effective_leverage(
+            adapter,
+            equity_usdt,
+            positions=positions_snapshot or [],
+        )
+        if eff_lev > settings.MAX_EFF_LEVERAGE:
+            logger.warning("Eff leverage %.2f > MAX %.2f; blocking new trades", eff_lev, settings.MAX_EFF_LEVERAGE)
+            can_open = False
+
+        _log_balance(
+            equity_usdt,
+            free_usdt,
+            eff_lev,
+            total_notional,
+            note=f"cycle:{runtime_ctx.get('service')}:{runtime_ctx.get('env')}:{balance_asset}",
+        )
+    except Exception as exc:
+        logger.warning("Balance check failed (manage-only): %s", exc)
+        notify_error(f"Balance check failed: {exc}")
+        can_open = False
+
+    return can_open, free_usdt, equity_usdt, eff_lev, total_notional, leverage
+
+
+def _apply_circuit_breaker_gate(
+    can_open: bool,
+    equity_usdt: float,
+    risk_ns: str,
+) -> bool:
+    from risk.models import CircuitBreakerConfig
+
+    try:
+        cb = CircuitBreakerConfig.get()
+        if cb.enabled and equity_usdt > 0:
+            if equity_usdt > cb.peak_equity:
+                cb.peak_equity = equity_usdt
+                cb.save(update_fields=["peak_equity"])
+
+            if cb.is_tripped:
+                if cb.tripped_at and cb.cooldown_minutes_after_trigger:
+                    elapsed = (dj_tz.now() - cb.tripped_at).total_seconds() / 60
+                    if elapsed < cb.cooldown_minutes_after_trigger:
+                        logger.warning(
+                            "Circuit breaker still tripped (%.0f min left): %s",
+                            cb.cooldown_minutes_after_trigger - elapsed,
+                            cb.trip_reason,
+                        )
+                        can_open = False
+                    else:
+                        logger.info("Circuit breaker cooldown expired, resetting")
+                        cb.reset()
+                else:
+                    can_open = False
+
+            if not cb.is_tripped and equity_usdt > 0:
+                day_key = dj_tz.now().date().isoformat()
+                client = _redis_client()
+                if client:
+                    start_raw = client.get(f"risk:equity_start:{risk_ns}:{day_key}")
+                    if start_raw:
+                        day_start = float(start_raw)
+                        daily_dd_pct = (day_start - equity_usdt) / day_start * 100 if day_start > 0 else 0
+                        if daily_dd_pct >= cb.max_daily_dd_pct:
+                            cb.is_tripped = True
+                            cb.tripped_at = dj_tz.now()
+                            cb.trip_reason = f"Daily DD {daily_dd_pct:.1f}% >= {cb.max_daily_dd_pct}%"
+                            cb.save(update_fields=["is_tripped", "tripped_at", "trip_reason"])
+                            _create_risk_event(
+                                "circuit_breaker_daily_dd",
+                                "critical",
+                                details={"dd_pct": daily_dd_pct},
+                                risk_ns=risk_ns,
+                            )
+                            notify_kill_switch(cb.trip_reason)
+                            can_open = False
+
+            if not cb.is_tripped and cb.peak_equity > 0:
+                total_dd_pct = (cb.peak_equity - equity_usdt) / cb.peak_equity * 100
+                if total_dd_pct >= cb.max_total_dd_pct:
+                    cb.is_tripped = True
+                    cb.tripped_at = dj_tz.now()
+                    cb.trip_reason = (
+                        f"Total DD {total_dd_pct:.1f}% >= {cb.max_total_dd_pct}% "
+                        f"(peak={cb.peak_equity:.2f})"
+                    )
+                    cb.save(update_fields=["is_tripped", "tripped_at", "trip_reason"])
+                    _create_risk_event(
+                        "circuit_breaker_total_dd",
+                        "critical",
+                        details={"dd_pct": total_dd_pct, "peak": cb.peak_equity},
+                        risk_ns=risk_ns,
+                    )
+                    notify_kill_switch(cb.trip_reason)
+                    can_open = False
+
+            if not cb.is_tripped and cb.max_consecutive_losses > 0:
+                recent_ops = list(
+                    OperationReport.objects.order_by("-closed_at")[:cb.max_consecutive_losses]
+                    .values_list("outcome", flat=True)
+                )
+                if len(recent_ops) >= cb.max_consecutive_losses and all(o == "loss" for o in recent_ops):
+                    cb.is_tripped = True
+                    cb.tripped_at = dj_tz.now()
+                    cb.trip_reason = f"{cb.max_consecutive_losses} consecutive losses"
+                    cb.save(update_fields=["is_tripped", "tripped_at", "trip_reason"])
+                    _create_risk_event(
+                        "circuit_breaker_consec_losses",
+                        "critical",
+                        details={"count": cb.max_consecutive_losses},
+                        risk_ns=risk_ns,
+                    )
+                    notify_kill_switch(cb.trip_reason)
+                    can_open = False
+    except Exception as exc:
+        logger.warning("Circuit breaker check failed: %s", exc)
+    return can_open
+
+
+def _load_enabled_instruments_and_latest_signals(
+    use_allocator_signals: bool,
+) -> tuple[list[Instrument], dict[int, Signal], datetime]:
+    latest_signal_qs = Signal.objects.filter(instrument_id=OuterRef("pk"))
+    if use_allocator_signals:
+        latest_signal_qs = latest_signal_qs.filter(strategy__startswith="alloc_")
+    enabled_instruments = list(
+        Instrument.objects.filter(enabled=True).annotate(
+            latest_1m_ts=Subquery(
+                Candle.objects.filter(
+                    instrument_id=OuterRef("pk"),
+                    timeframe="1m",
+                )
+                .order_by("-ts")
+                .values("ts")[:1]
+            ),
+            latest_signal_id=Subquery(
+                latest_signal_qs
+                .order_by("-ts", "-id")
+                .values("id")[:1]
+            ),
+        )
+    )
+    signal_ids = [
+        inst.latest_signal_id
+        for inst in enabled_instruments
+        if getattr(inst, "latest_signal_id", None)
+    ]
+    latest_signals = Signal.objects.in_bulk(signal_ids) if signal_ids else {}
+    return enabled_instruments, latest_signals, dj_tz.now()
+
+
+def _compute_regime_adx_gate(
+    enabled_instruments: list[Instrument],
+) -> tuple[dict[str, float], set[str], float, float | None]:
+    _regime_adx_by_symbol: dict[str, float] = {}
+    _regime_adx_min = float(getattr(settings, "MARKET_REGIME_ADX_MIN", 0))
+    try:
+        from signals.modules.common import compute_adx as _compute_adx
+        import pandas as _pd
+        for _ri in enabled_instruments:
+            try:
+                _htf_rows = list(
+                    Candle.objects.filter(instrument=_ri, timeframe="1h")
+                    .order_by("-ts")[:100]
+                    .values("ts", "open", "high", "low", "close", "volume")
+                )
+                if len(_htf_rows) >= 30:
+                    _htf_df = _pd.DataFrame(_htf_rows).sort_values("ts")
+                    for _col in ("open", "high", "low", "close", "volume"):
+                        _htf_df[_col] = _htf_df[_col].astype(float)
+                    _htf_df.set_index("ts", inplace=True)
+                    _regime_adx_by_symbol[_ri.symbol] = _compute_adx(_htf_df, period=14)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    _market_regime_adx = _regime_adx_by_symbol.get("BTCUSDT")
+    if _regime_adx_by_symbol:
+        _adx_summary = ", ".join(
+            f"{s}={v:.1f}" for s, v in sorted(_regime_adx_by_symbol.items())
+        )
+        logger.info("Market regime ADX (1h per-instrument): %s", _adx_summary)
+    _regime_blocked_symbols: set[str] = set()
+    if _regime_adx_min > 0:
+        for _sym, _adx_val in _regime_adx_by_symbol.items():
+            if _adx_val < _regime_adx_min:
+                _regime_blocked_symbols.add(_sym)
+        if _regime_blocked_symbols:
+            logger.warning(
+                "Market regime gate ACTIVE (per-instrument): ADX < %.1f â€” blocked: %s",
+                _regime_adx_min,
+                ", ".join(f"{s}({_regime_adx_by_symbol[s]:.1f})" for s in sorted(_regime_blocked_symbols)),
+            )
+    return _regime_adx_by_symbol, _regime_blocked_symbols, _regime_adx_min, _market_regime_adx
+
+
+def _resolve_signal_direction(strategy_name: str) -> tuple[str, str]:
+    strategy_name = str(strategy_name or "").strip().lower()
+    signal_direction = "flat"
+    side = ""
+    if strategy_name.startswith("alloc_"):
+        alloc_direction = strategy_name.replace("alloc_", "", 1)
+        if alloc_direction in {"long", "short"}:
+            signal_direction = alloc_direction
+            side = "buy" if alloc_direction == "long" else "sell"
+    else:
+        if "long" in strategy_name:
+            signal_direction = "long"
+            side = "buy"
+        elif "short" in strategy_name:
+            signal_direction = "short"
+            side = "sell"
+    return signal_direction, side
+
+
+def _resolve_market_snapshot(
+    adapter,
+    inst_symbol: str,
+    atr_pct: float | None,
+) -> tuple[str, float | None, dict[str, Any] | None, float | None, float, Any]:
+    symbol = inst_symbol
+    alt_symbol = None
+    if symbol.endswith("USDT"):
+        base = symbol[:-4]
+        alt_symbol = f"{base}/USDT:USDT"
+
+    max_spread_bps = _max_spread_bps(inst_symbol, atr_pct)
+    last_price = None
+    ticker_used = None
+    spread_bps_selected = None
+    contract_size = 1.0
+    market_info = None
+
+    for sym in (symbol, alt_symbol):
+        if not sym:
+            continue
+        try:
+            ticker = adapter.fetch_ticker(sym)
+            spread_bps = _spread_bps(ticker)
+            if spread_bps is not None and spread_bps > max_spread_bps:
+                logger.info(
+                    "Spread too wide on %s: %.1f bps > %.1f bps cap",
+                    sym,
+                    spread_bps,
+                    max_spread_bps,
+                )
+                continue
+            last_price = ticker.get("last")
+            try:
+                market = adapter.client.market(adapter._map_symbol(sym))  # type: ignore[attr-defined]
+                contract_size = float(market.get("contractSize") or 1.0)
+                market_info = market
+            except Exception:
+                contract_size = 1.0
+                market_info = None
+            if last_price:
+                last_price = float(last_price)
+                symbol = sym
+                ticker_used = ticker
+                spread_bps_selected = spread_bps
+                break
+        except Exception:
+            continue
+
+    return symbol, last_price, ticker_used, spread_bps_selected, contract_size, market_info
+
+
+def _attempt_entry_open(
+    *,
+    adapter,
+    inst: Instrument,
+    sig: Signal,
+    sig_payload: dict[str, Any],
+    strategy_name: str,
+    side: str,
+    signal_direction: str,
+    direction_allowed: bool,
+    signal_expired: bool,
+    can_open: bool,
+    macro_active: bool,
+    macro_context: dict[str, Any],
+    macro_block_entries: bool,
+    macro_risk_mult: float,
+    regime_blocked_symbols: set[str],
+    regime_adx_by_symbol: dict[str, float],
+    regime_adx_min: float,
+    market_regime_adx: float | None,
+    allow_scale_entry: bool,
+    scale_parent_correlation: str,
+    scale_add_index: int,
+    session_policy_enabled: bool,
+    session_dead_zone_block: bool,
+    current_session: str,
+    session_min_score: float,
+    session_risk_mult: float,
+    ml_entry_filter_enabled: bool,
+    ml_entry_filter_default_min_prob: float,
+    ml_entry_filter_fail_open: bool,
+    use_allocator_signals: bool,
+    symbol: str,
+    last_price: float,
+    contract_size: float,
+    market_info: Any,
+    atr: float | None,
+    sl_pct: float,
+    spread_bps_selected: float | None,
+    free_usdt: float,
+    equity_usdt: float,
+    leverage: float,
+    total_notional: float,
+    cycle_notional_added: float,
+) -> tuple[int, float]:
+    if not can_open:
+        return 0, 0.0
+
+    if signal_expired:
+        return 0, 0.0
+    if signal_direction not in {"long", "short"}:
+        return 0, 0.0
+    if not direction_allowed:
+        return 0, 0.0
+
+    entry_reason = _signal_entry_reason(sig_payload, strategy_name)
+    if macro_active and macro_block_entries:
+        logger.info(
+            "Macro high-impact window blocked entry on %s (session=%s hour=%s weekday=%s)",
+            inst.symbol,
+            macro_context.get("session"),
+            macro_context.get("hour_utc"),
+            macro_context.get("weekday"),
+        )
+        return 0, 0.0
+
+    if inst.symbol in regime_blocked_symbols and not allow_scale_entry:
+        logger.info(
+            "Market regime gate blocked entry on %s: 1h ADX=%.1f < %.1f",
+            inst.symbol,
+            regime_adx_by_symbol.get(inst.symbol, 0),
+            regime_adx_min,
+        )
+        return 0, 0.0
+
+    if not allow_scale_entry:
+        htf_adx_for_limit = regime_adx_by_symbol.get(inst.symbol, market_regime_adx)
+        daily_limit = _max_daily_trades_for_adx(htf_adx_for_limit)
+        daily_count = _get_daily_trade_count()
+        if daily_count >= daily_limit:
+            logger.info(
+                "Daily trade limit reached: %d/%d (adx=%.1f) â€” blocking entry on %s",
+                daily_count,
+                daily_limit,
+                htf_adx_for_limit or 0,
+                inst.symbol,
+            )
+            return 0, 0.0
+
+    if session_policy_enabled and session_dead_zone_block and is_dead_session(current_session):
+        logger.info(
+            "Session dead zone active, skipping new entry for %s (session=%s)",
+            inst.symbol,
+            current_session,
+        )
+        return 0, 0.0
+
+    exec_min_score = session_min_score if session_policy_enabled else settings.EXECUTION_MIN_SIGNAL_SCORE
+    sig_score = _to_float(getattr(sig, "score", 0.0))
+    if sig_score < exec_min_score:
+        logger.info(
+            "Signal score too low for execution on %s: %.3f < %.3f (session=%s)",
+            inst.symbol,
+            sig_score,
+            exec_min_score,
+            current_session if session_policy_enabled else "n/a",
+        )
+        return 0, 0.0
+
+    if ml_entry_filter_enabled:
+        ml_model_path = _ml_entry_filter_model_path(inst.symbol, strategy_name=strategy_name)
+        ml_entry_filter_min_prob = _ml_entry_filter_min_prob(
+            ml_entry_filter_default_min_prob,
+            symbol=inst.symbol,
+            strategy_name=strategy_name,
+        )
+        ml_prob = predict_entry_success_probability(
+            strategy_name=strategy_name,
+            symbol=inst.symbol,
+            sig_score=sig_score,
+            payload=sig_payload,
+            model_path=ml_model_path,
+            atr_pct=atr,
+            spread_bps=spread_bps_selected,
+        )
+        if ml_prob is None:
+            if not ml_entry_filter_fail_open:
+                logger.info(
+                    "ML entry filter blocked %s: model unavailable path=%s",
+                    inst.symbol,
+                    ml_model_path,
+                )
+                return 0, 0.0
+            logger.info(
+                "ML entry filter unavailable on %s (path=%s); fail-open",
+                inst.symbol,
+                ml_model_path,
+            )
+        elif ml_prob < ml_entry_filter_min_prob:
+            logger.info(
+                "ML entry filter blocked entry on %s: prob=%.3f < %.3f strategy=%s",
+                inst.symbol,
+                ml_prob,
+                ml_entry_filter_min_prob,
+                strategy_name,
+            )
+            return 0, 0.0
+
+    base_cooldown_min = settings.PER_INSTRUMENT_COOLDOWN.get(
+        inst.symbol,
+        settings.SIGNAL_COOLDOWN_MINUTES,
+    )
+    sl_cooldown_min = int(getattr(settings, "SIGNAL_COOLDOWN_AFTER_SL_MINUTES", base_cooldown_min))
+    if base_cooldown_min > 0 and not allow_scale_entry:
+        last_order = (
+            Order.objects.filter(
+                instrument=inst,
+                status=Order.OrderStatus.FILLED,
+                opened_at__isnull=False,
+            )
+            .order_by("-opened_at")
+            .values_list("opened_at", flat=True)
+            .first()
+        )
+        last_op = (
+            OperationReport.objects.filter(
+                instrument=inst,
+                closed_at__isnull=False,
+            )
+            .order_by("-closed_at")
+            .first()
+        )
+        last_close = last_op.closed_at if last_op else None
+        last_close_reason = getattr(last_op, "reason", "") if last_op else ""
+        anchor_dt = None
+        anchor_src = ""
+        if last_order and last_close:
+            if last_close >= last_order:
+                anchor_dt = last_close
+                anchor_src = "close"
+            else:
+                anchor_dt = last_order
+                anchor_src = "open"
+        elif last_close:
+            anchor_dt = last_close
+            anchor_src = "close"
+        elif last_order:
+            anchor_dt = last_order
+            anchor_src = "open"
+
+        if anchor_dt:
+            cooldown_min = base_cooldown_min
+            if anchor_src == "close" and last_close_reason in ("sl", "stale_cleanup", "uptrend_short_kill"):
+                cooldown_min = sl_cooldown_min
+            elapsed_min = (dj_tz.now() - anchor_dt).total_seconds() / 60
+            if elapsed_min < cooldown_min:
+                logger.info(
+                    "Cooldown active for %s: %.1f min elapsed < %d min required (anchor=%s reason=%s)",
+                    inst.symbol,
+                    elapsed_min,
+                    cooldown_min,
+                    anchor_src,
+                    last_close_reason or "n/a",
+                )
+                return 0, 0.0
+
+    volume_allowed, volume_ratio = _volume_gate_allowed(
+        inst,
+        session_name=current_session,
+    )
+    if not volume_allowed:
+        tf = str(getattr(settings, "ENTRY_VOLUME_FILTER_TIMEFRAME", "5m") or "5m").strip().lower()
+        lookback = max(10, int(getattr(settings, "ENTRY_VOLUME_FILTER_LOOKBACK", 48) or 48))
+        min_ratio = _volume_gate_min_ratio(current_session)
+        if volume_ratio is None:
+            logger.info(
+                "Volume gate blocked %s: insufficient %s data (session=%s need ~%d bars)",
+                inst.symbol,
+                tf,
+                current_session,
+                lookback + 1,
+            )
+        else:
+            logger.info(
+                "Volume gate blocked %s: ratio=%.2f < %.2f (session=%s tf=%s lookback=%d)",
+                inst.symbol,
+                volume_ratio,
+                min_ratio,
+                current_session,
+                tf,
+                lookback,
+            )
+        return 0, 0.0
+
+    inst_notional = 0.0
+    try:
+        pos_obj = Position.objects.filter(instrument=inst, is_open=True).first()
+        if pos_obj:
+            inst_notional = float(pos_obj.notional_usdt or 0)
+    except Exception:
+        pass
+    max_inst_notional = equity_usdt * settings.MAX_EXPOSURE_PER_INSTRUMENT_PCT * leverage
+    if inst_notional >= max_inst_notional and max_inst_notional > 0:
+        logger.info("Per-instrument exposure cap reached for %s (%.2f >= %.2f)", symbol, inst_notional, max_inst_notional)
+        return 0, 0.0
+
+    is_allocator_signal = use_allocator_signals and strategy_name.startswith("alloc_")
+    if is_allocator_signal:
+        inst_risk_pct = max(0.0, _to_float(sig_payload.get("risk_budget_pct", 0.0)))
+        effective_risk_mult = 1.0
+        if inst_risk_pct <= 0:
+            logger.info(
+                "Allocator blocked entry on %s: risk_budget_pct=%.5f strategy=%s",
+                inst.symbol,
+                inst_risk_pct,
+                strategy_name,
+            )
+            return 0, 0.0
+        if macro_active and not macro_block_entries:
+            inst_risk_pct *= macro_risk_mult
+    else:
+        effective_risk_mult = session_risk_mult if session_policy_enabled else 1.0
+        if macro_active and not macro_block_entries:
+            effective_risk_mult *= macro_risk_mult
+        if effective_risk_mult <= 0:
+            logger.info(
+                "Session policy blocked entry on %s: risk_mult=%.2f session=%s",
+                inst.symbol,
+                effective_risk_mult,
+                current_session,
+            )
+            return 0, 0.0
+        inst_risk_pct = settings.PER_INSTRUMENT_RISK.get(
+            inst.symbol,
+            settings.RISK_PER_TRADE_PCT,
+        )
+
+    inst_risk_pct = _volatility_adjusted_risk(inst.symbol, atr, inst_risk_pct)
+    effective_risk_pct = inst_risk_pct * effective_risk_mult
+    if allow_scale_entry:
+        pyramid_risk_scale = max(
+            0.0,
+            min(float(getattr(settings, "PYRAMID_RISK_SCALE", 0.6) or 0.6), 1.0),
+        )
+        effective_risk_pct *= pyramid_risk_scale
+    if effective_risk_pct <= 0:
+        return 0, 0.0
+
+    stop_dist = float(sl_pct or 0.0) if atr is not None else 0.0
+    min_atr_for_entry = float(getattr(settings, "MIN_ATR_FOR_ENTRY", 0.003) or 0.003)
+    if atr is not None and atr < min_atr_for_entry:
+        logger.info(
+            "ATR too low for %s (%.4f%% < %.4f%%), market compressed â€” skipping entry",
+            symbol,
+            atr * 100,
+            min_atr_for_entry * 100,
+        )
+        return 0, 0.0
+
+    if stop_dist and stop_dist > 0:
+        qty = _risk_based_qty(
+            equity_usdt,
+            last_price,
+            stop_dist,
+            contract_size,
+            leverage,
+            risk_pct=effective_risk_pct,
+        )
+    else:
+        qty = settings.ORDER_SIZE_USDT / (last_price * contract_size)
+        base_risk_pct = max(float(settings.RISK_PER_TRADE_PCT), 1e-9)
+        qty *= (effective_risk_pct / base_risk_pct)
+
+    min_qty = _market_min_qty(market_info, fallback=float(inst.lot_size or 0.0))
+    qty = _normalize_order_qty(adapter, symbol, qty)
+    if min_qty > 0 and qty < min_qty:
+        qty = _normalize_order_qty(adapter, symbol, min_qty)
+
+    if qty <= 0 or (min_qty > 0 and qty < min_qty):
+        logger.warning(
+            "Computed qty invalid for %s qty=%.10f min_qty=%.10f",
+            inst.symbol,
+            qty,
+            min_qty,
+        )
+        return 0, 0.0
+
+    notional_order = last_price * contract_size * qty
+    effective_total_notional = total_notional + cycle_notional_added
+    if equity_usdt > 0:
+        max_new_notional = max(0.0, settings.MAX_EFF_LEVERAGE * equity_usdt - effective_total_notional)
+        if notional_order > max_new_notional:
+            capped_qty = _normalize_order_qty(
+                adapter,
+                symbol,
+                max_new_notional / (last_price * contract_size),
+            )
+            if capped_qty < min_qty:
+                logger.info(
+                    "Pre-trade leverage cap: %s new_notional=%.2f would exceed MAX_EFF_LEVERAGE=%.1f "
+                    "(total_notional=%.2f+%.2f equity=%.2f max_new=%.2f min_qty=%s); skipping",
+                    symbol,
+                    notional_order,
+                    settings.MAX_EFF_LEVERAGE,
+                    total_notional,
+                    cycle_notional_added,
+                    equity_usdt,
+                    max_new_notional,
+                    min_qty,
+                )
+                return 0, 0.0
+            logger.info(
+                "Pre-trade leverage cap: %s qty %.10f -> %.10f (max_new_notional=%.2f)",
+                symbol,
+                qty,
+                capped_qty,
+                max_new_notional,
+            )
+            qty = capped_qty
+            notional_order = last_price * contract_size * qty
+
+    margin_buffer_pct = max(
+        0.0,
+        min(
+            float(getattr(settings, "ORDER_MARGIN_BUFFER_PCT", 0.03) or 0.03),
+            float(getattr(settings, "ORDER_MARGIN_BUFFER_MAX_PCT", 0.20) or 0.20),
+        ),
+    )
+    usable_margin = free_usdt * (1.0 - margin_buffer_pct)
+    if usable_margin <= 0:
+        logger.info(
+            "Margin unavailable %s: free=%.2f buffer=%.2f%%",
+            symbol,
+            free_usdt,
+            margin_buffer_pct * 100,
+        )
+        return 0, 0.0
+    max_qty_margin = _normalize_order_qty(
+        adapter,
+        symbol,
+        (usable_margin * leverage if leverage else usable_margin) / (last_price * contract_size),
+    )
+    if max_qty_margin < min_qty:
+        logger.info(
+            "Margin cap too low %s: max_qty=%s < min_qty=%s (free=%.2f buffer=%.2f%%)",
+            symbol,
+            max_qty_margin,
+            min_qty,
+            free_usdt,
+            margin_buffer_pct * 100,
+        )
+        return 0, 0.0
+    if qty > max_qty_margin:
+        logger.info(
+            "Margin fit %s qty %s -> %s (free=%.2f buffer=%.2f%%)",
+            symbol,
+            qty,
+            max_qty_margin,
+            free_usdt,
+            margin_buffer_pct * 100,
+        )
+        qty = max_qty_margin
+        notional_order = last_price * contract_size * qty
+
+    required_margin = notional_order / leverage if leverage else notional_order
+    if required_margin > usable_margin:
+        logger.info(
+            "Margin insufficient %s: need=%.2f usable=%.2f free=%.2f",
+            symbol,
+            required_margin,
+            usable_margin,
+            free_usdt,
+        )
+        return 0, 0.0
+
+    if use_allocator_signals and bool(getattr(settings, "SHADOW_TRADING_ENABLED", False)):
+        logger.info(
+            "Shadow trading ON; skipping live entry %s strategy=%s side=%s qty=%s",
+            inst.symbol,
+            strategy_name,
+            side,
+            qty,
+        )
+        return 0, 0.0
+
+    tp_price, sl_price, _, _ = _compute_tp_sl_prices(side, last_price, atr)
+    base_correlation_id = _safe_correlation_id(f"{sig.id}-{inst.symbol}")
+    correlation_id = base_correlation_id
+    parent_correlation_id = base_correlation_id
+    if allow_scale_entry:
+        parent_correlation_id = _safe_correlation_id(scale_parent_correlation or base_correlation_id)
+        correlation_id = _safe_correlation_id(f"{parent_correlation_id}:add{scale_add_index}")
+    if not correlation_id:
+        correlation_id = _safe_correlation_id(f"{inst.symbol}-{int(dj_tz.now().timestamp())}")
+    if not parent_correlation_id:
+        parent_correlation_id = correlation_id
+
+    with transaction.atomic():
+        order = Order.objects.create(
+            instrument=inst,
+            side=side,
+            type=Order.OrderType.MARKET,
+            qty=qty,
+            price=last_price,
+            status=Order.OrderStatus.NEW,
+            correlation_id=correlation_id,
+            leverage=leverage,
+            margin_mode=getattr(adapter, "margin_mode", ""),
+            notional_usdt=notional_order,
+            opened_at=dj_tz.now(),
+            parent_correlation_id=parent_correlation_id,
+        )
+
+    try:
+        resp = adapter.create_order(symbol, side, "market", float(order.qty))
+        order.status = Order.OrderStatus.FILLED
+        order.exchange_order_id = resp.get("id") or resp.get("orderId", "")
+        order.raw_response = resp
+        order.fee_usdt = _extract_fee_usdt(resp)
+        order.closed_at = dj_tz.now()
+        order.status_reason = ""
+        order.save(update_fields=[
+            "status", "exchange_order_id", "raw_response",
+            "fee_usdt", "closed_at", "status_reason",
+        ])
+        _track_consecutive_errors(symbol, success=True)
+
+        fill_price = _to_float(resp.get("average") or resp.get("price") or last_price)
+        if fill_price and fill_price > 0:
+            tp_price, sl_price, _, _ = _compute_tp_sl_prices(side, fill_price, atr)
+            logger.info(
+                "SL/TP recalculated with fill_price=%.4f (last=%.4f slippage=%.4f%%)",
+                fill_price,
+                last_price,
+                abs(fill_price - last_price) / last_price * 100 if last_price else 0,
+            )
+
+        _place_sl_order(adapter, symbol, side, float(qty), sl_price)
+        if not allow_scale_entry:
+            _increment_daily_trade_count()
+
+        notify_trade_opened(
+            inst.symbol, side, float(qty), last_price,
+            sl=sl_price, tp=tp_price, leverage=float(leverage or 0),
+            notional=notional_order, equity=equity_usdt,
+            risk_pct=effective_risk_pct,
+            score=float(sig.score) if sig else 0,
+            strategy_name=strategy_name,
+            active_modules=_signal_active_modules(sig_payload, strategy_name),
+            entry_reason=entry_reason,
+        )
+        logger.info(
+            "Opened %s %s qty=%s price=%.4f sl=%.4f tp=%.4f risk_sizing=%s risk_pct=%.5f session=%s mode=%s",
+            symbol,
+            side,
+            qty,
+            last_price,
+            sl_price,
+            tp_price,
+            "atr" if stop_dist else "fixed",
+            effective_risk_pct,
+            current_session if session_policy_enabled else "n/a",
+            "pyramid" if allow_scale_entry else ("allocator" if is_allocator_signal else "legacy"),
+        )
+        return 1, notional_order
+    except Exception as exc:
+        is_margin_error = _is_insufficient_margin_error(exc)
+        if is_margin_error:
+            logger.info("Order rejected by exchange (margin) %s: %s", inst.symbol, exc)
+        else:
+            logger.warning("Order send failed %s: %s", inst.symbol, exc)
+        order.status = Order.OrderStatus.REJECTED
+        order.status_reason = str(exc)
+        order.closed_at = dj_tz.now()
+        order.save(update_fields=["status", "status_reason", "closed_at"])
+        if is_margin_error:
+            _track_consecutive_errors(symbol, success=True)
+            return 0, 0.0
+        err_count = _track_consecutive_errors(symbol, success=False)
+        notify_error(f"Order failed {inst.symbol}: {exc}")
+        if err_count >= settings.MAX_CONSECUTIVE_ERRORS:
+            _create_risk_event(
+                "consecutive_errors",
+                "critical",
+                instrument=inst,
+                details={"count": err_count, "last_error": str(exc)},
+            )
+            notify_kill_switch(f"{symbol}: {err_count} consecutive errors - pausing")
+        return 0, 0.0
+
+
+def _manage_open_position(
+    *,
+    adapter,
+    inst: Instrument,
+    sig: Signal,
+    sig_payload: dict[str, Any],
+    strategy_name: str,
+    symbol: str,
+    ticker_used: dict[str, Any] | None,
+    last_price: float,
+    current_qty: float,
+    entry_price: float,
+    pos_opened_at: datetime | None,
+    signal_direction: str,
+    side: str,
+    direction_allowed: bool,
+    atr: float | None,
+    contract_size: float,
+    leverage: float,
+    equity_usdt: float,
+) -> tuple[bool, bool, str, int]:
+    """
+    Manage an already-open exchange position.
+
+    Returns:
+        skip_symbol: when True caller should continue to next instrument.
+        allow_scale_entry, scale_parent_correlation, scale_add_index:
+            pyramiding metadata when same-side add is allowed.
+    """
+    allow_scale_entry = False
+    scale_parent_correlation = ""
+    scale_add_index = 0
+
+    if current_qty == 0:
+        return False, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+    # Refresh live position for this symbol to avoid stale close attempts.
+    try:
+        live_positions = adapter.fetch_positions([symbol])
+        live_qty, live_entry, live_opened_at = _current_position(adapter, symbol, positions=live_positions)
+        if abs(live_qty) <= float(getattr(settings, "POSITION_QTY_EPSILON", 1e-12)):
+            logger.info("Position already closed on exchange for %s; syncing local state", symbol)
+            _mark_position_closed(inst)
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+        current_qty = live_qty
+        if live_entry > 0:
+            entry_price = live_entry
+        if live_opened_at:
+            pos_opened_at = live_opened_at
+    except Exception:
+        pass
+
+    last = float(ticker_used.get("last")) if ticker_used else last_price
+    pos_side = "buy" if current_qty > 0 else "sell"
+    pos_direction = "long" if current_qty > 0 else "short"
+
+    if not pos_opened_at:
+        try:
+            fallback_open = (
+                Order.objects.filter(
+                    instrument=inst,
+                    side=pos_side,
+                    status=Order.OrderStatus.FILLED,
+                    opened_at__isnull=False,
+                )
+                .order_by("-opened_at")
+                .values_list("opened_at", flat=True)
+                .first()
+            )
+            max_fallback_hours = max(
+                1,
+                int(getattr(settings, "POSITION_OPENED_FALLBACK_MAX_HOURS", 72) or 72),
+            )
+            if fallback_open and (dj_tz.now() - fallback_open) <= timedelta(hours=max_fallback_hours):
+                pos_opened_at = fallback_open
+        except Exception:
+            pass
+
+    # Use TP/SL thresholds for current position direction.
+    _, _, tp_pct_pos, sl_pct_pos = _compute_tp_sl_prices(
+        pos_side,
+        entry_price or last,
+        atr,
+    )
+
+    if entry_price and abs(current_qty) > 0:
+        _reconcile_sl(adapter, symbol, pos_side, current_qty, entry_price, atr)
+
+    # Trailing stop check (runs before regular TP/SL).
+    if last and entry_price:
+        was_trailed, trail_fee = _check_trailing_stop(
+            adapter,
+            symbol,
+            pos_side,
+            current_qty,
+            entry_price,
+            last,
+            sl_pct_pos,
+            pos_opened_at,
+            contract_size,
+            atr_pct=atr,
+        )
+        if was_trailed:
+            pnl_trail = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+            pnl_abs_trail = (last - entry_price) * abs(current_qty) * contract_size * (1 if current_qty > 0 else -1)
+            trade_side = "buy" if current_qty > 0 else "sell"
+            dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+            _log_operation(
+                inst,
+                trade_side,
+                abs(current_qty),
+                entry_price,
+                last,
+                reason="trailing_stop",
+                signal_id=str(sig.id) if sig else "",
+                correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                leverage=leverage,
+                equity_before=equity_usdt,
+                equity_after=None,
+                fee_usdt=trail_fee,
+                opened_at=pos_opened_at,
+                contract_size=contract_size,
+            )
+            notify_trade_closed(
+                inst.symbol,
+                "trailing_stop",
+                pnl_trail,
+                pnl_abs=pnl_abs_trail,
+                entry_price=entry_price,
+                exit_price=last,
+                qty=abs(current_qty),
+                equity_before=equity_usdt,
+                duration_min=dur_min,
+                side=trade_side,
+                leverage=leverage,
+                strategy_name=strategy_name,
+                active_modules=_signal_active_modules(sig_payload, strategy_name),
+            )
+            _mark_position_closed(inst)
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+    # Close old positions stuck near breakeven to free margin.
+    if last and entry_price:
+        pnl_pct_stale = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+        if _should_close_stale_position(pos_opened_at, pnl_pct_stale):
+            close_side = "sell" if current_qty > 0 else "buy"
+            close_qty = abs(current_qty)
+            age_h = (dj_tz.now() - pos_opened_at).total_seconds() / 3600 if pos_opened_at else 0
+            try:
+                close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
+                close_fee = _extract_fee_usdt(close_resp)
+                pnl_abs_stale = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+                trade_side = "buy" if current_qty > 0 else "sell"
+                dur_min = age_h * 60
+                logger.info(
+                    "Stale position cleanup %s: pnl=%.4f age=%.1fh — freeing margin",
+                    symbol,
+                    pnl_pct_stale,
+                    age_h,
+                )
+                _log_operation(
+                    inst,
+                    trade_side,
+                    close_qty,
+                    entry_price,
+                    last,
+                    reason="stale_cleanup",
+                    signal_id=str(sig.id) if sig else "",
+                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    leverage=leverage,
+                    equity_before=equity_usdt,
+                    equity_after=None,
+                    fee_usdt=close_fee,
+                    opened_at=pos_opened_at,
+                    contract_size=contract_size,
+                )
+                notify_trade_closed(
+                    inst.symbol,
+                    "stale_cleanup",
+                    pnl_pct_stale,
+                    pnl_abs=pnl_abs_stale,
+                    entry_price=entry_price,
+                    exit_price=last,
+                    qty=close_qty,
+                    equity_before=equity_usdt,
+                    duration_min=dur_min,
+                    side=trade_side,
+                    leverage=leverage,
+                    strategy_name=strategy_name,
+                    active_modules=_signal_active_modules(sig_payload, strategy_name),
+                )
+                _mark_position_closed(inst)
+            except Exception as exc:
+                if _is_no_position_error(exc):
+                    _mark_position_closed(inst)
+                else:
+                    logger.warning("Stale cleanup failed %s: %s", symbol, exc)
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+    # Close short positions immediately when HTF turns bullish.
+    if (
+        current_qty < 0
+        and getattr(settings, "UPTREND_SHORT_KILLER_ENABLED", False)
+        and last
+        and entry_price
+    ):
+        try:
+            from signals.tasks import _trend_from_swings
+            htf_candles = list(
+                Candle.objects.filter(
+                    instrument=inst,
+                    timeframe="4h",
+                ).order_by("-open_time")[:100]
+            )
+            if htf_candles:
+                import pandas as _pd
+                htf_df = _pd.DataFrame([
+                    {"high": float(c.high), "low": float(c.low), "close": float(c.close)}
+                    for c in reversed(htf_candles)
+                ])
+                htf_trend = _trend_from_swings(htf_df)
+                if htf_trend == "bull":
+                    close_side = "buy"
+                    close_qty = abs(current_qty)
+                    pnl_pct_kill = (last - entry_price) / entry_price * -1
+                    close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
+                    close_fee = _extract_fee_usdt(close_resp)
+                    pnl_abs_kill = (last - entry_price) * close_qty * contract_size * -1
+                    dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+                    logger.info(
+                        "Uptrend short killer closed %s: HTF=bull pnl=%.4f",
+                        symbol,
+                        pnl_pct_kill,
+                    )
+                    _log_operation(
+                        inst,
+                        "sell",
+                        close_qty,
+                        entry_price,
+                        last,
+                        reason="uptrend_short_kill",
+                        signal_id=str(sig.id) if sig else "",
+                        correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                        leverage=leverage,
+                        equity_before=equity_usdt,
+                        equity_after=None,
+                        fee_usdt=close_fee,
+                        opened_at=pos_opened_at,
+                        contract_size=contract_size,
+                    )
+                    notify_trade_closed(
+                        inst.symbol,
+                        "uptrend_short_kill",
+                        pnl_pct_kill,
+                        pnl_abs=pnl_abs_kill,
+                        entry_price=entry_price,
+                        exit_price=last,
+                        qty=close_qty,
+                        equity_before=equity_usdt,
+                        duration_min=dur_min,
+                        side="sell",
+                        leverage=leverage,
+                        strategy_name=strategy_name,
+                        active_modules=_signal_active_modules(sig_payload, strategy_name),
+                    )
+                    _mark_position_closed(inst)
+                    return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+        except Exception as exc:
+            logger.debug("Uptrend short killer check failed for %s: %s", symbol, exc)
+
+    # Regular TP/SL
+    if last and entry_price:
+        pnl_pct_live = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+        if pnl_pct_live >= tp_pct_pos or pnl_pct_live <= -sl_pct_pos:
+            close_side = "sell" if current_qty > 0 else "buy"
+            close_qty = abs(current_qty)
+            reason = "tp" if pnl_pct_live >= tp_pct_pos else "sl"
+            try:
+                close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
+                close_fee = _extract_fee_usdt(close_resp)
+                pnl_abs_tpsl = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+                trade_side = "buy" if current_qty > 0 else "sell"
+                dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+                logger.info(
+                    "Closed %s by %s pnl=%.4f tp=%.4f sl=%.4f pnl_usdt=%.4f",
+                    symbol,
+                    reason,
+                    pnl_pct_live,
+                    tp_pct_pos,
+                    sl_pct_pos,
+                    pnl_abs_tpsl,
+                )
+                _log_operation(
+                    inst,
+                    trade_side,
+                    close_qty,
+                    entry_price,
+                    last,
+                    reason=reason,
+                    signal_id=str(sig.id) if sig else "",
+                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    leverage=leverage,
+                    equity_before=equity_usdt,
+                    equity_after=None,
+                    fee_usdt=close_fee,
+                    opened_at=pos_opened_at,
+                    contract_size=contract_size,
+                )
+                notify_trade_closed(
+                    inst.symbol,
+                    reason,
+                    pnl_pct_live,
+                    pnl_abs=pnl_abs_tpsl,
+                    entry_price=entry_price,
+                    exit_price=last,
+                    qty=close_qty,
+                    equity_before=equity_usdt,
+                    duration_min=dur_min,
+                    side=trade_side,
+                    leverage=leverage,
+                    strategy_name=strategy_name,
+                    active_modules=_signal_active_modules(sig_payload, strategy_name),
+                )
+                _mark_position_closed(inst)
+                _track_consecutive_errors(symbol, success=True)
+            except Exception as exc:
+                if _is_no_position_error(exc):
+                    logger.info("Close TP/SL skipped %s: no open position (%s)", symbol, exc)
+                    _mark_position_closed(inst)
+                    _track_consecutive_errors(symbol, success=True)
+                    return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+                logger.warning("Failed close TP/SL %s: %s", symbol, exc)
+                err_count = _track_consecutive_errors(symbol, success=False)
+                if err_count >= settings.MAX_CONSECUTIVE_ERRORS:
+                    _create_risk_event("consecutive_errors", "critical", instrument=inst, details={"count": err_count})
+                    notify_kill_switch(f"{symbol}: {err_count} consecutive errors")
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+    # Signal flip: close opposite-side position (unless direction policy blocks this signal).
+    if (
+        signal_direction in {"long", "short"}
+        and direction_allowed
+        and ((current_qty > 0 and side == "sell") or (current_qty < 0 and side == "buy"))
+    ):
+        if settings.SIGNAL_FLIP_MIN_AGE_ENABLED and pos_opened_at:
+            flip_age_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60
+            if flip_age_min < settings.SIGNAL_FLIP_MIN_AGE_MINUTES:
+                logger.info(
+                    "Signal flip BLOCKED on %s: position age %.1f min < %.1f min threshold",
+                    symbol,
+                    flip_age_min,
+                    settings.SIGNAL_FLIP_MIN_AGE_MINUTES,
+                )
+                return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+        close_side = "sell" if current_qty > 0 else "buy"
+        close_qty = abs(current_qty)
+        try:
+            close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
+            close_fee = _extract_fee_usdt(close_resp)
+            logger.info("Signal flip close %s qty=%s", symbol, close_qty)
+            if last and entry_price:
+                pnl_flip = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+                pnl_abs_flip = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+                trade_side = "buy" if current_qty > 0 else "sell"
+                dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+                _log_operation(
+                    inst,
+                    trade_side,
+                    close_qty,
+                    entry_price,
+                    last,
+                    reason="signal_flip",
+                    signal_id=str(sig.id) if sig else "",
+                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    leverage=leverage,
+                    equity_before=equity_usdt,
+                    equity_after=None,
+                    fee_usdt=close_fee,
+                    opened_at=pos_opened_at,
+                    contract_size=contract_size,
+                )
+                notify_trade_closed(
+                    inst.symbol,
+                    "signal_flip",
+                    pnl_flip,
+                    pnl_abs=pnl_abs_flip,
+                    entry_price=entry_price,
+                    exit_price=last,
+                    qty=close_qty,
+                    equity_before=equity_usdt,
+                    duration_min=dur_min,
+                    side=trade_side,
+                    leverage=leverage,
+                    strategy_name=strategy_name,
+                    active_modules=_signal_active_modules(sig_payload, strategy_name),
+                )
+            _mark_position_closed(inst)
+            _track_consecutive_errors(symbol, success=True)
+            # Preserve existing behavior: after a successful flip close, caller may open new side.
+            return False, allow_scale_entry, scale_parent_correlation, scale_add_index
+        except Exception as exc:
+            if _is_no_position_error(exc):
+                logger.info("Flip close skipped %s: no open position (%s)", symbol, exc)
+                _mark_position_closed(inst)
+                _track_consecutive_errors(symbol, success=True)
+                return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+            logger.warning("Failed flip close %s: %s", symbol, exc)
+            _track_consecutive_errors(symbol, success=False)
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+    if signal_direction == "flat":
+        logger.info("Flat signal on %s with open qty=%s; manage-only", symbol, current_qty)
+        return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+    same_side_signal = (
+        signal_direction in {"long", "short"}
+        and direction_allowed
+        and signal_direction == pos_direction
+    )
+    if same_side_signal:
+        pyramiding_enabled = bool(getattr(settings, "PYRAMIDING_ENABLED", False))
+        if not pyramiding_enabled:
+            logger.info("Same-side position on %s qty=%s; skip", symbol, current_qty)
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+        if not (last and entry_price and sl_pct_pos > 0):
+            logger.info(
+                "Pyramiding skipped on %s: missing price/entry/sl context",
+                symbol,
+            )
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+        pnl_pct_now = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+        r_now = (pnl_pct_now / sl_pct_pos) if sl_pct_pos > 0 else 0.0
+        add_at_r = max(0.0, float(getattr(settings, "PYRAMID_ADD_AT_R", 0.8) or 0.8))
+        if pnl_pct_now <= 0 or r_now < add_at_r:
+            logger.info(
+                "Pyramiding gate on %s: r_now=%.3f < add_at_r=%.3f (pnl=%.3f%%)",
+                symbol,
+                r_now,
+                add_at_r,
+                pnl_pct_now * 100,
+            )
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+        root_corr = _position_root_correlation(inst, pos_side)
+        if not root_corr:
+            fallback_root = f"{sig.id}-{inst.symbol}" if sig else f"pos-{inst.symbol}"
+            root_corr = _safe_correlation_id(fallback_root)
+        add_count = _count_pyramid_adds(inst, pos_side, root_corr)
+        max_adds = max(0, int(getattr(settings, "PYRAMID_MAX_ADDS", 2)))
+        if add_count >= max_adds:
+            logger.info(
+                "Pyramiding max adds reached on %s: adds=%d max=%d",
+                symbol,
+                add_count,
+                max_adds,
+            )
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+        min_add_minutes = max(
+            0,
+            int(getattr(settings, "PYRAMID_MIN_MINUTES_BETWEEN_ADDS", 3)),
+        )
+        if min_add_minutes > 0:
+            last_add_at = _last_pyramid_add_opened_at(inst, pos_side, root_corr)
+            if last_add_at:
+                elapsed_add_min = (dj_tz.now() - last_add_at).total_seconds() / 60
+                if elapsed_add_min < min_add_minutes:
+                    logger.info(
+                        "Pyramiding cooldown on %s: %.1f < %d min",
+                        symbol,
+                        elapsed_add_min,
+                        min_add_minutes,
+                    )
+                    return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+        allow_scale_entry = True
+        scale_parent_correlation = root_corr
+        scale_add_index = add_count + 1
+        logger.info(
+            "Pyramiding enabled on %s: r_now=%.3f add=%d/%d parent=%s",
+            symbol,
+            r_now,
+            scale_add_index,
+            max_adds,
+            scale_parent_correlation,
+        )
+        return False, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+    if not direction_allowed:
+        logger.info("Direction policy keeps existing position on %s qty=%s; skip", symbol, current_qty)
+        return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+    logger.info("Same-side position on %s qty=%s; skip", symbol, current_qty)
+    return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+
 @shared_task
 def execute_orders():
     """
@@ -2225,174 +3701,19 @@ def execute_orders():
     except Exception:
         positions_snapshot = []
 
-    # â”€â”€ 1. Sync positions for admin visibility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Ã¢â€â‚¬Ã¢â€â‚¬ 1. Sync positions for admin visibility Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     _sync_positions(adapter, positions=positions_snapshot, balance_assets=balance_assets)
 
-    # â”€â”€ 2. Balance & global guardrails â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    can_open = True
-    free_usdt = 0.0
-    equity_usdt = 0.0
-    eff_lev = 0.0
-    total_notional = 0.0
-    leverage = getattr(adapter, "leverage", None) or settings.MAX_EFF_LEVERAGE
+    # 2. Balance & global guardrails
+    can_open, free_usdt, equity_usdt, eff_lev, total_notional, leverage = _evaluate_balance_and_guardrails(
+        adapter,
+        runtime_ctx,
+        risk_ns,
+        positions_snapshot=positions_snapshot,
+    )
 
-    try:
-        bal = adapter.fetch_balance()
-        free_usdt, equity_usdt, balance_asset = extract_balance_values(
-            bal,
-            balance_assets,
-        )
-
-        if free_usdt < settings.MIN_EQUITY_USDT:
-            logger.warning(
-                "Insufficient balance (%s): free %s=%s < MIN=%s",
-                env_label,
-                balance_asset,
-                free_usdt,
-                settings.MIN_EQUITY_USDT,
-            )
-            can_open = False
-
-        # Daily drawdown
-        allowed_dd, dd = _check_drawdown(equity_usdt, risk_ns=risk_ns)
-        if not allowed_dd:
-            logger.warning("Daily DD limit hit dd=%.4f; blocking new trades", dd)
-            # Throttle ALL notifications: once per day max
-            _client = _redis_client()
-            _ks_key = f"risk:ks_notified:daily_dd:{risk_ns}:{dj_tz.now().date().isoformat()}"
-            if _client is None or _client.set(_ks_key, "1", nx=True, ex=86400):
-                _create_risk_event(
-                    "daily_dd_limit",
-                    "high",
-                    details={"dd": dd},
-                    risk_ns=risk_ns,
-                )
-                notify_kill_switch(f"Daily DD limit: {dd:.4f}")
-            can_open = False
-
-        # Weekly drawdown
-        allowed_wdd, wdd = _check_weekly_drawdown(equity_usdt, risk_ns=risk_ns)
-        if not allowed_wdd:
-            logger.warning("Weekly DD limit hit wdd=%.4f; blocking new trades", wdd)
-            _client = _redis_client()
-            _ks_key = f"risk:ks_notified:weekly_dd:{risk_ns}:{dj_tz.now().date().isoformat()}"
-            if _client is None or _client.set(_ks_key, "1", nx=True, ex=86400):
-                _create_risk_event(
-                    "weekly_dd_limit",
-                    "high",
-                    details={"wdd": wdd},
-                    risk_ns=risk_ns,
-                )
-                notify_kill_switch(f"Weekly DD limit: {wdd:.4f}")
-            can_open = False
-
-        # Effective leverage
-        eff_lev, total_notional = _effective_leverage(
-            adapter,
-            equity_usdt,
-            positions=positions_snapshot,
-        )
-        if eff_lev > settings.MAX_EFF_LEVERAGE:
-            logger.warning("Eff leverage %.2f > MAX %.2f; blocking new trades", eff_lev, settings.MAX_EFF_LEVERAGE)
-            can_open = False
-
-        _log_balance(
-            equity_usdt,
-            free_usdt,
-            eff_lev,
-            total_notional,
-            note=f"cycle:{runtime_ctx.get('service')}:{runtime_ctx.get('env')}:{balance_asset}",
-        )
-    except Exception as exc:
-        logger.warning("Balance check failed (manage-only): %s", exc)
-        notify_error(f"Balance check failed: {exc}")
-        can_open = False
-
-    # â”€â”€ 2b. Circuit Breaker check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    from risk.models import CircuitBreakerConfig
-    try:
-        cb = CircuitBreakerConfig.get()
-        if cb.enabled and equity_usdt > 0:
-            # Update peak equity
-            if equity_usdt > cb.peak_equity:
-                cb.peak_equity = equity_usdt
-                cb.save(update_fields=["peak_equity"])
-
-            # Check if already tripped (with cooldown)
-            if cb.is_tripped:
-                if cb.tripped_at and cb.cooldown_minutes_after_trigger:
-                    elapsed = (dj_tz.now() - cb.tripped_at).total_seconds() / 60
-                    if elapsed < cb.cooldown_minutes_after_trigger:
-                        logger.warning("Circuit breaker still tripped (%.0f min left): %s",
-                                       cb.cooldown_minutes_after_trigger - elapsed, cb.trip_reason)
-                        can_open = False
-                    else:
-                        logger.info("Circuit breaker cooldown expired, resetting")
-                        cb.reset()
-                else:
-                    can_open = False
-
-            # Check daily DD against CB threshold
-            if not cb.is_tripped and equity_usdt > 0:
-                day_key = dj_tz.now().date().isoformat()
-                client = _redis_client()
-                if client:
-                    start_raw = client.get(f"risk:equity_start:{risk_ns}:{day_key}")
-                    if start_raw:
-                        day_start = float(start_raw)
-                        daily_dd_pct = (day_start - equity_usdt) / day_start * 100 if day_start > 0 else 0
-                        if daily_dd_pct >= cb.max_daily_dd_pct:
-                            cb.is_tripped = True
-                            cb.tripped_at = dj_tz.now()
-                            cb.trip_reason = f"Daily DD {daily_dd_pct:.1f}% >= {cb.max_daily_dd_pct}%"
-                            cb.save(update_fields=["is_tripped", "tripped_at", "trip_reason"])
-                            _create_risk_event(
-                                "circuit_breaker_daily_dd",
-                                "critical",
-                                details={"dd_pct": daily_dd_pct},
-                                risk_ns=risk_ns,
-                            )
-                            notify_kill_switch(cb.trip_reason)
-                            can_open = False
-
-            # Check total DD from peak
-            if not cb.is_tripped and cb.peak_equity > 0:
-                total_dd_pct = (cb.peak_equity - equity_usdt) / cb.peak_equity * 100
-                if total_dd_pct >= cb.max_total_dd_pct:
-                    cb.is_tripped = True
-                    cb.tripped_at = dj_tz.now()
-                    cb.trip_reason = f"Total DD {total_dd_pct:.1f}% >= {cb.max_total_dd_pct}% (peak={cb.peak_equity:.2f})"
-                    cb.save(update_fields=["is_tripped", "tripped_at", "trip_reason"])
-                    _create_risk_event(
-                        "circuit_breaker_total_dd",
-                        "critical",
-                        details={"dd_pct": total_dd_pct, "peak": cb.peak_equity},
-                        risk_ns=risk_ns,
-                    )
-                    notify_kill_switch(cb.trip_reason)
-                    can_open = False
-
-            # Check consecutive losses
-            if not cb.is_tripped and cb.max_consecutive_losses > 0:
-                recent_ops = list(
-                    OperationReport.objects.order_by("-closed_at")[:cb.max_consecutive_losses]
-                    .values_list("outcome", flat=True)
-                )
-                if len(recent_ops) >= cb.max_consecutive_losses and all(o == "loss" for o in recent_ops):
-                    cb.is_tripped = True
-                    cb.tripped_at = dj_tz.now()
-                    cb.trip_reason = f"{cb.max_consecutive_losses} consecutive losses"
-                    cb.save(update_fields=["is_tripped", "tripped_at", "trip_reason"])
-                    _create_risk_event(
-                        "circuit_breaker_consec_losses",
-                        "critical",
-                        details={"count": cb.max_consecutive_losses},
-                        risk_ns=risk_ns,
-                    )
-                    notify_kill_switch(cb.trip_reason)
-                    can_open = False
-    except Exception as exc:
-        logger.warning("Circuit breaker check failed: %s", exc)
+    # 2b. Circuit breaker check
+    can_open = _apply_circuit_breaker_gate(can_open, equity_usdt, risk_ns)
 
     signal_ttl = timedelta(seconds=settings.SIGNAL_TTL_SECONDS)
     session_policy_enabled = bool(getattr(settings, "SESSION_POLICY_ENABLED", False))
@@ -2430,85 +3751,18 @@ def execute_orders():
     macro_risk_mult = float(getattr(settings, "MACRO_HIGH_IMPACT_RISK_MULTIPLIER", 1.0) or 1.0)
     macro_risk_mult = max(0.0, min(macro_risk_mult, 1.0))
 
-    # Running notional accumulator â€” tracks new positions opened THIS cycle
+    # Running notional accumulator Ã¢â‚¬â€ tracks new positions opened THIS cycle
     # so we don't exceed leverage by opening multiple trades before the
     # balance refresh catches up.
     cycle_notional_added = 0.0
 
-    # Preload enabled instruments and latest signal ids to avoid N+1 queries.
-    latest_signal_qs = Signal.objects.filter(instrument_id=OuterRef("pk"))
-    if use_allocator_signals:
-        latest_signal_qs = latest_signal_qs.filter(strategy__startswith="alloc_")
-    enabled_instruments = list(
-        Instrument.objects.filter(enabled=True).annotate(
-            latest_1m_ts=Subquery(
-                Candle.objects.filter(
-                    instrument_id=OuterRef("pk"),
-                    timeframe="1m",
-                )
-                .order_by("-ts")
-                .values("ts")[:1]
-            ),
-            latest_signal_id=Subquery(
-                latest_signal_qs
-                .order_by("-ts", "-id")
-                .values("id")[:1]
-            ),
-        )
+    enabled_instruments, latest_signals, now_cycle = _load_enabled_instruments_and_latest_signals(
+        use_allocator_signals,
     )
-    signal_ids = [
-        inst.latest_signal_id
-        for inst in enabled_instruments
-        if getattr(inst, "latest_signal_id", None)
-    ]
-    latest_signals = Signal.objects.in_bulk(signal_ids) if signal_ids else {}
-    now_cycle = dj_tz.now()
+    _regime_adx_by_symbol, _regime_blocked_symbols, _regime_adx_min, _market_regime_adx = (
+        _compute_regime_adx_gate(enabled_instruments)
+    )
 
-    # -- Compute market-regime ADX per instrument (1h) for regime gate + daily limit --
-    _regime_adx_by_symbol: dict[str, float] = {}
-    _regime_adx_min = float(getattr(settings, "MARKET_REGIME_ADX_MIN", 0))
-    try:
-        from signals.modules.common import compute_adx as _compute_adx
-        import pandas as _pd
-        for _ri in enabled_instruments:
-            try:
-                _htf_rows = list(
-                    Candle.objects.filter(instrument=_ri, timeframe="1h")
-                    .order_by("-ts")[:100]
-                    .values("ts", "open", "high", "low", "close", "volume")
-                )
-                if len(_htf_rows) >= 30:
-                    _htf_df = _pd.DataFrame(_htf_rows).sort_values("ts")
-                    for _col in ("open", "high", "low", "close", "volume"):
-                        _htf_df[_col] = _htf_df[_col].astype(float)
-                    _htf_df.set_index("ts", inplace=True)
-                    _regime_adx_by_symbol[_ri.symbol] = _compute_adx(_htf_df, period=14)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # Backward-compat: expose BTC ADX for logging
-    _market_regime_adx = _regime_adx_by_symbol.get("BTCUSDT")
-    if _regime_adx_by_symbol:
-        _adx_summary = ", ".join(
-            f"{s}={v:.1f}" for s, v in sorted(_regime_adx_by_symbol.items())
-        )
-        logger.info("Market regime ADX (1h per-instrument): %s", _adx_summary)
-    # Pre-compute blocked set for the per-instrument gate
-    _regime_blocked_symbols: set[str] = set()
-    if _regime_adx_min > 0:
-        for _sym, _adx_val in _regime_adx_by_symbol.items():
-            if _adx_val < _regime_adx_min:
-                _regime_blocked_symbols.add(_sym)
-        if _regime_blocked_symbols:
-            logger.warning(
-                "Market regime gate ACTIVE (per-instrument): ADX < %.1f — blocked: %s",
-                _regime_adx_min,
-                ", ".join(f"{s}({_regime_adx_by_symbol[s]:.1f})" for s in sorted(_regime_blocked_symbols)),
-            )
-
-
-    # â”€â”€ 3. Per-instrument loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for inst in enabled_instruments:
 
         # 3a. Data staleness check
@@ -2531,20 +3785,7 @@ def execute_orders():
 
         strategy_name = str(getattr(sig, "strategy", "") or "").strip().lower()
         sig_payload = sig.payload_json or {}
-        side = ""
-        signal_direction = "flat"
-        if strategy_name.startswith("alloc_"):
-            alloc_direction = strategy_name.replace("alloc_", "", 1)
-            if alloc_direction in {"long", "short"}:
-                signal_direction = alloc_direction
-                side = "buy" if alloc_direction == "long" else "sell"
-        else:
-            if "long" in strategy_name:
-                signal_direction = "long"
-                side = "buy"
-            elif "short" in strategy_name:
-                signal_direction = "short"
-                side = "sell"
+        signal_direction, side = _resolve_signal_direction(strategy_name)
 
         direction_mode = get_direction_mode(inst.symbol)
         direction_allowed = True
@@ -2563,17 +3804,6 @@ def execute_orders():
             )
 
         # 3d. Resolve symbol + get ticker + contract size / market limits
-        symbol = inst.symbol
-        alt_symbol = None
-        if symbol.endswith("USDT"):
-            base = symbol[:-4]
-            alt_symbol = f"{base}/USDT:USDT"
-
-        last_price = None
-        ticker_used = None
-        spread_bps_selected = None
-        contract_size = 1.0
-        market_info = None
         atr = _atr_pct(inst)
         # Blend ATR with GARCH forecast when enabled
         if getattr(settings, "GARCH_ENABLED", False):
@@ -2581,45 +3811,20 @@ def execute_orders():
             blended = blended_vol(inst.symbol, atr)
             if blended is not None:
                 atr = blended
-        max_spread_bps = _max_spread_bps(inst.symbol, atr)
-
-        for sym in (symbol, alt_symbol):
-            if not sym:
-                continue
-            try:
-                ticker = adapter.fetch_ticker(sym)
-                spread_bps = _spread_bps(ticker)
-                if spread_bps is not None and spread_bps > max_spread_bps:
-                    logger.info(
-                        "Spread too wide on %s: %.1f bps > %.1f bps cap",
-                        sym,
-                        spread_bps,
-                        max_spread_bps,
-                    )
-                    continue
-                last_price = ticker.get("last")
-                try:
-                    market = adapter.client.market(adapter._map_symbol(sym))  # type: ignore[attr-defined]
-                    contract_size = float(market.get("contractSize") or 1.0)
-                    market_info = market
-                except Exception:
-                    contract_size = 1.0
-                    market_info = None
-                if last_price:
-                    last_price = float(last_price)
-                    symbol = sym
-                    ticker_used = ticker
-                    spread_bps_selected = spread_bps
-                    break
-            except Exception:
-                continue
+        symbol, last_price, ticker_used, spread_bps_selected, contract_size, market_info = (
+            _resolve_market_snapshot(
+                adapter=adapter,
+                inst_symbol=inst.symbol,
+                atr_pct=atr,
+            )
+        )
 
         if last_price is None:
             logger.warning("No price for %s, skipping", inst.symbol)
             continue
 
         # 3e. ATR-based TP/SL
-        tp_price, sl_price, tp_pct, sl_pct = _compute_tp_sl_prices(side, last_price, atr)
+        _, _, _, sl_pct = _compute_tp_sl_prices(side, last_price, atr)
 
         # 3f. Current position from exchange
         current_qty, entry_price, pos_opened_at = _current_position(
@@ -2627,885 +3832,75 @@ def execute_orders():
             symbol,
             positions=positions_snapshot,
         )
-        allow_scale_entry = False
-        scale_parent_correlation = ""
-        scale_add_index = 0
-
-        # â”€â”€ 3g. Manage existing position â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if current_qty != 0:
-            # Refresh live position for this symbol to avoid stale close attempts
-            # ("no position to close" races when exchange SL/TP already executed).
-            try:
-                live_positions = adapter.fetch_positions([symbol])
-                live_qty, live_entry, live_opened_at = _current_position(adapter, symbol, positions=live_positions)
-                if abs(live_qty) <= 1e-12:
-                    logger.info("Position already closed on exchange for %s; syncing local state", symbol)
-                    _mark_position_closed(inst)
-                    continue
-                current_qty = live_qty
-                if live_entry > 0:
-                    entry_price = live_entry
-                if live_opened_at:
-                    pos_opened_at = live_opened_at
-            except Exception:
-                pass
-
-            last = float(ticker_used.get("last")) if ticker_used else last_price
-            pos_side = "buy" if current_qty > 0 else "sell"
-            pos_direction = "long" if current_qty > 0 else "short"
-            if not pos_opened_at:
-                try:
-                    fallback_open = (
-                        Order.objects.filter(
-                            instrument=inst,
-                            side=pos_side,
-                            status=Order.OrderStatus.FILLED,
-                            opened_at__isnull=False,
-                        )
-                        .order_by("-opened_at")
-                        .values_list("opened_at", flat=True)
-                        .first()
-                    )
-                    if fallback_open and (dj_tz.now() - fallback_open) <= timedelta(hours=72):
-                        pos_opened_at = fallback_open
-                except Exception:
-                    pass
-            # Use TP/SL thresholds for the *current position* direction (not the latest signal direction).
-            _, _, tp_pct_pos, sl_pct_pos = _compute_tp_sl_prices(
-                pos_side,
-                entry_price or last,
-                atr,
-            )
-
-            # SL reconciliation: ensure exchange-side SL stop-order exists
-            if entry_price and abs(current_qty) > 0:
-                _reconcile_sl(adapter, symbol, pos_side, current_qty, entry_price, atr)
-
-            # Trailing stop check (runs BEFORE regular TP/SL)
-            if last and entry_price:
-                was_trailed, trail_fee = _check_trailing_stop(
-                    adapter, symbol, pos_side, current_qty,
-                    entry_price, last, sl_pct_pos, pos_opened_at, contract_size,
-                    atr_pct=atr,
-                )
-                if was_trailed:
-                    pnl_trail = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
-                    pnl_abs_trail = (last - entry_price) * abs(current_qty) * contract_size * (1 if current_qty > 0 else -1)
-                    trade_side = "buy" if current_qty > 0 else "sell"
-                    dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
-                    _log_operation(
-                        inst,
-                        trade_side,
-                        abs(current_qty), entry_price, last,
-                        reason="trailing_stop",
-                        signal_id=str(sig.id) if sig else "",
-                        correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
-                        leverage=leverage,
-                        equity_before=equity_usdt, equity_after=None,
-                        fee_usdt=trail_fee, opened_at=pos_opened_at,
-                        contract_size=contract_size,
-                    )
-                    notify_trade_closed(
-                        inst.symbol, "trailing_stop", pnl_trail,
-                        pnl_abs=pnl_abs_trail, entry_price=entry_price,
-                        exit_price=last, qty=abs(current_qty),
-                        equity_before=equity_usdt, duration_min=dur_min,
-                        side=trade_side, leverage=leverage,
-                        strategy_name=strategy_name,
-                        active_modules=_signal_active_modules(sig_payload, strategy_name),
-                    )
-                    _mark_position_closed(inst)
-                    continue
-
-            # -- Stale position cleanup (risk skill: 82-88% success) --
-            # Close old positions stuck near breakeven to free margin for
-            # higher-conviction trades.
-            if last and entry_price:
-                pnl_pct_stale = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
-                if _should_close_stale_position(pos_opened_at, pnl_pct_stale):
-                    close_side = "sell" if current_qty > 0 else "buy"
-                    close_qty = abs(current_qty)
-                    age_h = (dj_tz.now() - pos_opened_at).total_seconds() / 3600 if pos_opened_at else 0
-                    try:
-                        close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                        close_fee = _extract_fee_usdt(close_resp)
-                        pnl_abs_stale = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
-                        trade_side = "buy" if current_qty > 0 else "sell"
-                        dur_min = age_h * 60
-                        logger.info(
-                            "Stale position cleanup %s: pnl=%.4f age=%.1fh — freeing margin",
-                            symbol, pnl_pct_stale, age_h,
-                        )
-                        _log_operation(
-                            inst, trade_side, close_qty, entry_price, last,
-                            reason="stale_cleanup",
-                            signal_id=str(sig.id) if sig else "",
-                            correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
-                            leverage=leverage,
-                            equity_before=equity_usdt, equity_after=None,
-                            fee_usdt=close_fee, opened_at=pos_opened_at,
-                            contract_size=contract_size,
-                        )
-                        notify_trade_closed(
-                            inst.symbol, "stale_cleanup", pnl_pct_stale,
-                            pnl_abs=pnl_abs_stale, entry_price=entry_price,
-                            exit_price=last, qty=close_qty,
-                            equity_before=equity_usdt, duration_min=dur_min,
-                            side=trade_side, leverage=leverage,
-                            strategy_name=strategy_name,
-                            active_modules=_signal_active_modules(sig_payload, strategy_name),
-                        )
-                        _mark_position_closed(inst)
-                    except Exception as exc:
-                        if _is_no_position_error(exc):
-                            _mark_position_closed(inst)
-                        else:
-                            logger.warning("Stale cleanup failed %s: %s", symbol, exc)
-                    continue
-
-            # -- Uptrend short killer (risk skill: 88% success, 675 samples) --
-            # Close short positions immediately when HTF turns bullish.
-            if (
-                current_qty < 0
-                and getattr(settings, "UPTREND_SHORT_KILLER_ENABLED", False)
-                and last
-                and entry_price
-            ):
-                try:
-                    from signals.tasks import _trend_from_swings
-                    htf_candles = list(
-                        Candle.objects.filter(
-                            instrument=inst, timeframe="4h",
-                        ).order_by("-open_time")[:100]
-                    )
-                    if htf_candles:
-                        import pandas as _pd
-                        htf_df = _pd.DataFrame([
-                            {"high": float(c.high), "low": float(c.low), "close": float(c.close)}
-                            for c in reversed(htf_candles)
-                        ])
-                        htf_trend = _trend_from_swings(htf_df)
-                        if htf_trend == "bull":
-                            close_side = "buy"
-                            close_qty = abs(current_qty)
-                            pnl_pct_kill = (last - entry_price) / entry_price * -1
-                            close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                            close_fee = _extract_fee_usdt(close_resp)
-                            pnl_abs_kill = (last - entry_price) * close_qty * contract_size * -1
-                            dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
-                            logger.info(
-                                "Uptrend short killer closed %s: HTF=bull pnl=%.4f",
-                                symbol, pnl_pct_kill,
-                            )
-                            _log_operation(
-                                inst, "sell", close_qty, entry_price, last,
-                                reason="uptrend_short_kill",
-                                signal_id=str(sig.id) if sig else "",
-                                correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
-                                leverage=leverage,
-                                equity_before=equity_usdt, equity_after=None,
-                                fee_usdt=close_fee, opened_at=pos_opened_at,
-                                contract_size=contract_size,
-                            )
-                            notify_trade_closed(
-                                inst.symbol, "uptrend_short_kill", pnl_pct_kill,
-                                pnl_abs=pnl_abs_kill, entry_price=entry_price,
-                                exit_price=last, qty=close_qty,
-                                equity_before=equity_usdt, duration_min=dur_min,
-                                side="sell", leverage=leverage,
-                                strategy_name=strategy_name,
-                                active_modules=_signal_active_modules(sig_payload, strategy_name),
-                            )
-                            _mark_position_closed(inst)
-                            continue
-                except Exception as exc:
-                    logger.debug("Uptrend short killer check failed for %s: %s", symbol, exc)
-
-            # Regular TP/SL
-            if last and entry_price:
-                pnl_pct_live = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
-                if pnl_pct_live >= tp_pct_pos or pnl_pct_live <= -sl_pct_pos:
-                    close_side = "sell" if current_qty > 0 else "buy"
-                    close_qty = abs(current_qty)
-                    reason = "tp" if pnl_pct_live >= tp_pct_pos else "sl"
-                    try:
-                        close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                        close_fee = _extract_fee_usdt(close_resp)
-                        pnl_abs_tpsl = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
-                        trade_side = "buy" if current_qty > 0 else "sell"
-                        dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
-                        logger.info("Closed %s by %s pnl=%.4f tp=%.4f sl=%.4f pnl_usdt=%.4f", symbol, reason, pnl_pct_live, tp_pct_pos, sl_pct_pos, pnl_abs_tpsl)
-                        _log_operation(
-                            inst,
-                            trade_side,
-                            close_qty, entry_price, last,
-                            reason=reason,
-                            signal_id=str(sig.id) if sig else "",
-                            correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
-                            leverage=leverage,
-                            equity_before=equity_usdt, equity_after=None,
-                            fee_usdt=close_fee, opened_at=pos_opened_at,
-                            contract_size=contract_size,
-                        )
-                        notify_trade_closed(
-                            inst.symbol, reason, pnl_pct_live,
-                            pnl_abs=pnl_abs_tpsl, entry_price=entry_price,
-                            exit_price=last, qty=close_qty,
-                            equity_before=equity_usdt, duration_min=dur_min,
-                            side=trade_side, leverage=leverage,
-                            strategy_name=strategy_name,
-                            active_modules=_signal_active_modules(sig_payload, strategy_name),
-                        )
-                        _mark_position_closed(inst)
-                        _track_consecutive_errors(symbol, success=True)
-                    except Exception as exc:
-                        if _is_no_position_error(exc):
-                            logger.info("Close TP/SL skipped %s: no open position (%s)", symbol, exc)
-                            _mark_position_closed(inst)
-                            _track_consecutive_errors(symbol, success=True)
-                            continue
-                        logger.warning("Failed close TP/SL %s: %s", symbol, exc)
-                        err_count = _track_consecutive_errors(symbol, success=False)
-                        if err_count >= settings.MAX_CONSECUTIVE_ERRORS:
-                            _create_risk_event("consecutive_errors", "critical", instrument=inst, details={"count": err_count})
-                            notify_kill_switch(f"{symbol}: {err_count} consecutive errors")
-                    continue
-
-            # Signal flip: close opposite-side position (unless direction policy blocks this signal).
-            if (
-                signal_direction in {"long", "short"}
-                and direction_allowed
-                and ((current_qty > 0 and side == "sell") or (current_qty < 0 and side == "buy"))
-            ):
-                # -- Signal flip min age gate --
-                # If the position is younger than SIGNAL_FLIP_MIN_AGE_MINUTES, skip the flip.
-                # SL/TP/trailing still protect the position; we just avoid premature flips.
-                if settings.SIGNAL_FLIP_MIN_AGE_ENABLED and pos_opened_at:
-                    flip_age_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60
-                    if flip_age_min < settings.SIGNAL_FLIP_MIN_AGE_MINUTES:
-                        logger.info(
-                            "Signal flip BLOCKED on %s: position age %.1f min < %.1f min threshold",
-                            symbol, flip_age_min, settings.SIGNAL_FLIP_MIN_AGE_MINUTES,
-                        )
-                        continue
-
-                close_side = "sell" if current_qty > 0 else "buy"
-                close_qty = abs(current_qty)
-                try:
-                    close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                    close_fee = _extract_fee_usdt(close_resp)
-                    logger.info("Signal flip close %s qty=%s", symbol, close_qty)
-                    if last and entry_price:
-                        pnl_flip = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
-                        pnl_abs_flip = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
-                        trade_side = "buy" if current_qty > 0 else "sell"
-                        dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
-                        _log_operation(
-                            inst,
-                            trade_side,
-                            close_qty, entry_price, last,
-                            reason="signal_flip",
-                            signal_id=str(sig.id) if sig else "",
-                            correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
-                            leverage=leverage,
-                            equity_before=equity_usdt, equity_after=None,
-                            fee_usdt=close_fee, opened_at=pos_opened_at,
-                            contract_size=contract_size,
-                        )
-                        notify_trade_closed(
-                            inst.symbol, "signal_flip", pnl_flip,
-                            pnl_abs=pnl_abs_flip, entry_price=entry_price,
-                            exit_price=last, qty=close_qty,
-                            equity_before=equity_usdt, duration_min=dur_min,
-                            side=trade_side, leverage=leverage,
-                            strategy_name=strategy_name,
-                            active_modules=_signal_active_modules(sig_payload, strategy_name),
-                        )
-                    _mark_position_closed(inst)
-                    _track_consecutive_errors(symbol, success=True)
-                except Exception as exc:
-                    if _is_no_position_error(exc):
-                        logger.info("Flip close skipped %s: no open position (%s)", symbol, exc)
-                        _mark_position_closed(inst)
-                        _track_consecutive_errors(symbol, success=True)
-                        continue
-                    logger.warning("Failed flip close %s: %s", symbol, exc)
-                    _track_consecutive_errors(symbol, success=False)
-                    continue
-            else:
-                if signal_direction == "flat":
-                    logger.info("Flat signal on %s with open qty=%s; manage-only", symbol, current_qty)
-                    continue
-                same_side_signal = (
-                    signal_direction in {"long", "short"}
-                    and direction_allowed
-                    and signal_direction == pos_direction
-                )
-                if same_side_signal:
-                    pyramiding_enabled = bool(getattr(settings, "PYRAMIDING_ENABLED", False))
-                    if not pyramiding_enabled:
-                        logger.info("Same-side position on %s qty=%s; skip", symbol, current_qty)
-                        continue
-                    if not (last and entry_price and sl_pct_pos > 0):
-                        logger.info(
-                            "Pyramiding skipped on %s: missing price/entry/sl context",
-                            symbol,
-                        )
-                        continue
-                    pnl_pct_now = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
-                    r_now = (pnl_pct_now / sl_pct_pos) if sl_pct_pos > 0 else 0.0
-                    add_at_r = max(0.0, float(getattr(settings, "PYRAMID_ADD_AT_R", 0.8) or 0.8))
-                    if pnl_pct_now <= 0 or r_now < add_at_r:
-                        logger.info(
-                            "Pyramiding gate on %s: r_now=%.3f < add_at_r=%.3f (pnl=%.3f%%)",
-                            symbol,
-                            r_now,
-                            add_at_r,
-                            pnl_pct_now * 100,
-                        )
-                        continue
-
-                    root_corr = _position_root_correlation(inst, pos_side)
-                    if not root_corr:
-                        fallback_root = f"{sig.id}-{inst.symbol}" if sig else f"pos-{inst.symbol}"
-                        root_corr = _safe_correlation_id(fallback_root)
-                    add_count = _count_pyramid_adds(inst, pos_side, root_corr)
-                    max_adds = max(0, int(getattr(settings, "PYRAMID_MAX_ADDS", 2)))
-                    if add_count >= max_adds:
-                        logger.info(
-                            "Pyramiding max adds reached on %s: adds=%d max=%d",
-                            symbol,
-                            add_count,
-                            max_adds,
-                        )
-                        continue
-
-                    min_add_minutes = max(
-                        0,
-                        int(getattr(settings, "PYRAMID_MIN_MINUTES_BETWEEN_ADDS", 3)),
-                    )
-                    if min_add_minutes > 0:
-                        last_add_at = _last_pyramid_add_opened_at(inst, pos_side, root_corr)
-                        if last_add_at:
-                            elapsed_add_min = (dj_tz.now() - last_add_at).total_seconds() / 60
-                            if elapsed_add_min < min_add_minutes:
-                                logger.info(
-                                    "Pyramiding cooldown on %s: %.1f < %d min",
-                                    symbol,
-                                    elapsed_add_min,
-                                    min_add_minutes,
-                                )
-                                continue
-
-                    allow_scale_entry = True
-                    scale_parent_correlation = root_corr
-                    scale_add_index = add_count + 1
-                    logger.info(
-                        "Pyramiding enabled on %s: r_now=%.3f add=%d/%d parent=%s",
-                        symbol,
-                        r_now,
-                        scale_add_index,
-                        max_adds,
-                        scale_parent_correlation,
-                    )
-                elif not direction_allowed:
-                    logger.info("Direction policy keeps existing position on %s qty=%s; skip", symbol, current_qty)
-                    continue
-                else:
-                    logger.info("Same-side position on %s qty=%s; skip", symbol, current_qty)
-                    continue
-
-        # â”€â”€ 3h. Open new position â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if not can_open:
-            continue
-
-        # Don't open on expired signals
-        if signal_expired:
-            continue
-        if signal_direction not in {"long", "short"}:
-            continue
-        if not direction_allowed:
-            continue
-        if macro_active and macro_block_entries:
-            logger.info(
-                "Macro high-impact window blocked entry on %s (session=%s hour=%s weekday=%s)",
-                inst.symbol,
-                macro_context.get("session"),
-                macro_context.get("hour_utc"),
-                macro_context.get("weekday"),
-            )
-            continue
-
-        # -- Per-instrument ADX regime gate (blocks new entries in choppy regime) --
-        if inst.symbol in _regime_blocked_symbols and not allow_scale_entry:
-            logger.info(
-                "Market regime gate blocked entry on %s: 1h ADX=%.1f < %.1f",
-                inst.symbol, _regime_adx_by_symbol.get(inst.symbol, 0), _regime_adx_min,
-            )
-            continue
-
-        # -- Daily trade count limit (risk skill: 95% success) --
-        # Regime-adaptive: fewer trades when ADX is low (choppy market).
-        if not allow_scale_entry:
-            htf_adx_for_limit = _regime_adx_by_symbol.get(inst.symbol, _market_regime_adx)
-            daily_limit = _max_daily_trades_for_adx(htf_adx_for_limit)
-            daily_count = _get_daily_trade_count()
-            if daily_count >= daily_limit:
-                logger.info(
-                    "Daily trade limit reached: %d/%d (adx=%.1f) — blocking entry on %s",
-                    daily_count, daily_limit,
-                    htf_adx_for_limit or 0,
-                    inst.symbol,
-                )
-                continue
-
-        if session_policy_enabled and session_dead_zone_block and is_dead_session(current_session):
-            logger.info(
-                "Session dead zone active, skipping new entry for %s (session=%s)",
-                inst.symbol,
-                current_session,
-            )
-            continue
-
-        exec_min_score = (
-            session_min_score
-            if session_policy_enabled
-            else settings.EXECUTION_MIN_SIGNAL_SCORE
+        skip_symbol, allow_scale_entry, scale_parent_correlation, scale_add_index = _manage_open_position(
+            adapter=adapter,
+            inst=inst,
+            sig=sig,
+            sig_payload=sig_payload,
+            strategy_name=strategy_name,
+            symbol=symbol,
+            ticker_used=ticker_used,
+            last_price=last_price,
+            current_qty=current_qty,
+            entry_price=entry_price,
+            pos_opened_at=pos_opened_at,
+            signal_direction=signal_direction,
+            side=side,
+            direction_allowed=direction_allowed,
+            atr=atr,
+            contract_size=contract_size,
+            leverage=leverage,
+            equity_usdt=equity_usdt,
         )
-        sig_score = _to_float(getattr(sig, "score", 0.0))
-        if sig_score < exec_min_score:
-            logger.info(
-                "Signal score too low for execution on %s: %.3f < %.3f (session=%s)",
-                inst.symbol,
-                sig_score,
-                exec_min_score,
-                current_session if session_policy_enabled else "n/a",
-            )
+        if skip_symbol:
             continue
-
-        if ml_entry_filter_enabled:
-            ml_model_path = _ml_entry_filter_model_path(inst.symbol, strategy_name=strategy_name)
-            ml_entry_filter_min_prob = _ml_entry_filter_min_prob(
-                ml_entry_filter_default_min_prob,
-                symbol=inst.symbol,
-                strategy_name=strategy_name,
-            )
-            ml_prob = predict_entry_success_probability(
-                strategy_name=strategy_name,
-                symbol=inst.symbol,
-                sig_score=sig_score,
-                payload=sig_payload,
-                model_path=ml_model_path,
-                atr_pct=atr,
-                spread_bps=spread_bps_selected,
-            )
-            if ml_prob is None:
-                if not ml_entry_filter_fail_open:
-                    logger.info(
-                        "ML entry filter blocked %s: model unavailable path=%s",
-                        inst.symbol,
-                        ml_model_path,
-                    )
-                    continue
-                logger.info(
-                    "ML entry filter unavailable on %s (path=%s); fail-open",
-                    inst.symbol,
-                    ml_model_path,
-                )
-            elif ml_prob < ml_entry_filter_min_prob:
-                logger.info(
-                    "ML entry filter blocked entry on %s: prob=%.3f < %.3f strategy=%s",
-                    inst.symbol,
-                    ml_prob,
-                    ml_entry_filter_min_prob,
-                    strategy_name,
-                )
-                continue
-
-        # Per-instrument cooldown: prevent re-entry too soon after last trade.
-        # Uses LONGER cooldown after SL hits (avoid revenge trading) vs shorter
-        # base cooldown after TP/trailing exits (risk skill: diversification).
-        base_cooldown_min = settings.PER_INSTRUMENT_COOLDOWN.get(
-            inst.symbol, settings.SIGNAL_COOLDOWN_MINUTES
+        # 3h. Open new position (extracted helper to keep loop orchestration-focused).
+        placed_delta, cycle_notional_delta = _attempt_entry_open(
+            adapter=adapter,
+            inst=inst,
+            sig=sig,
+            sig_payload=sig_payload,
+            strategy_name=strategy_name,
+            side=side,
+            signal_direction=signal_direction,
+            direction_allowed=direction_allowed,
+            signal_expired=signal_expired,
+            can_open=can_open,
+            macro_active=macro_active,
+            macro_context=macro_context,
+            macro_block_entries=macro_block_entries,
+            macro_risk_mult=macro_risk_mult,
+            regime_blocked_symbols=_regime_blocked_symbols,
+            regime_adx_by_symbol=_regime_adx_by_symbol,
+            regime_adx_min=_regime_adx_min,
+            market_regime_adx=_market_regime_adx,
+            allow_scale_entry=allow_scale_entry,
+            scale_parent_correlation=scale_parent_correlation,
+            scale_add_index=scale_add_index,
+            session_policy_enabled=session_policy_enabled,
+            session_dead_zone_block=session_dead_zone_block,
+            current_session=current_session,
+            session_min_score=session_min_score,
+            session_risk_mult=session_risk_mult,
+            ml_entry_filter_enabled=ml_entry_filter_enabled,
+            ml_entry_filter_default_min_prob=ml_entry_filter_default_min_prob,
+            ml_entry_filter_fail_open=ml_entry_filter_fail_open,
+            use_allocator_signals=use_allocator_signals,
+            symbol=symbol,
+            last_price=last_price,
+            contract_size=contract_size,
+            market_info=market_info,
+            atr=atr,
+            sl_pct=sl_pct,
+            spread_bps_selected=spread_bps_selected,
+            free_usdt=free_usdt,
+            equity_usdt=equity_usdt,
+            leverage=leverage,
+            total_notional=total_notional,
+            cycle_notional_added=cycle_notional_added,
         )
-        sl_cooldown_min = int(getattr(settings, "SIGNAL_COOLDOWN_AFTER_SL_MINUTES", base_cooldown_min))
-        if base_cooldown_min > 0 and not allow_scale_entry:
-            last_order = (
-                Order.objects.filter(
-                    instrument=inst,
-                    status=Order.OrderStatus.FILLED,
-                    opened_at__isnull=False,
-                )
-                .order_by("-opened_at")
-                .values_list("opened_at", flat=True)
-                .first()
-            )
-            last_op = (
-                OperationReport.objects.filter(
-                    instrument=inst,
-                    closed_at__isnull=False,
-                )
-                .order_by("-closed_at")
-                .first()
-            )
-            last_close = last_op.closed_at if last_op else None
-            last_close_reason = getattr(last_op, "reason", "") if last_op else ""
-            anchor_dt = None
-            anchor_src = ""
-            if last_order and last_close:
-                if last_close >= last_order:
-                    anchor_dt = last_close
-                    anchor_src = "close"
-                else:
-                    anchor_dt = last_order
-                    anchor_src = "open"
-            elif last_close:
-                anchor_dt = last_close
-                anchor_src = "close"
-            elif last_order:
-                anchor_dt = last_order
-                anchor_src = "open"
-
-            if anchor_dt:
-                # Use longer cooldown after SL/stale exits; shorter base after TP/trailing
-                cooldown_min = base_cooldown_min
-                if anchor_src == "close" and last_close_reason in ("sl", "stale_cleanup", "uptrend_short_kill"):
-                    cooldown_min = sl_cooldown_min
-                elapsed_min = (dj_tz.now() - anchor_dt).total_seconds() / 60
-                if elapsed_min < cooldown_min:
-                    logger.info(
-                        "Cooldown active for %s: %.1f min elapsed < %d min required (anchor=%s reason=%s)",
-                        inst.symbol, elapsed_min, cooldown_min, anchor_src, last_close_reason or "n/a",
-                    )
-                    continue
-
-        # Volume quality gate: avoid entries when participation is too thin.
-        volume_allowed, volume_ratio = _volume_gate_allowed(
-            inst,
-            session_name=current_session,
-        )
-        if not volume_allowed:
-            tf = str(getattr(settings, "ENTRY_VOLUME_FILTER_TIMEFRAME", "5m") or "5m").strip().lower()
-            lookback = max(10, int(getattr(settings, "ENTRY_VOLUME_FILTER_LOOKBACK", 48) or 48))
-            min_ratio = _volume_gate_min_ratio(current_session)
-            if volume_ratio is None:
-                logger.info(
-                    "Volume gate blocked %s: insufficient %s data (session=%s need ~%d bars)",
-                    inst.symbol,
-                    tf,
-                    current_session,
-                    lookback + 1,
-                )
-            else:
-                logger.info(
-                    "Volume gate blocked %s: ratio=%.2f < %.2f (session=%s tf=%s lookback=%d)",
-                    inst.symbol,
-                    volume_ratio,
-                    min_ratio,
-                    current_session,
-                    tf,
-                    lookback,
-                )
-            continue
-
-        # Per-instrument exposure cap
-        inst_notional = 0.0
-        try:
-            pos_obj = Position.objects.filter(instrument=inst, is_open=True).first()
-            if pos_obj:
-                inst_notional = float(pos_obj.notional_usdt or 0)
-        except Exception:
-            pass
-        max_inst_notional = equity_usdt * settings.MAX_EXPOSURE_PER_INSTRUMENT_PCT * leverage
-        if inst_notional >= max_inst_notional and max_inst_notional > 0:
-            logger.info("Per-instrument exposure cap reached for %s (%.2f >= %.2f)", symbol, inst_notional, max_inst_notional)
-            continue
-
-        # Risk-based position sizing
-        is_allocator_signal = use_allocator_signals and strategy_name.startswith("alloc_")
-        if is_allocator_signal:
-            inst_risk_pct = max(0.0, _to_float(sig_payload.get("risk_budget_pct", 0.0)))
-            effective_risk_mult = 1.0
-            if inst_risk_pct <= 0:
-                logger.info(
-                    "Allocator blocked entry on %s: risk_budget_pct=%.5f strategy=%s",
-                    inst.symbol,
-                    inst_risk_pct,
-                    strategy_name,
-                )
-                continue
-            if macro_active and not macro_block_entries:
-                inst_risk_pct *= macro_risk_mult
-        else:
-            effective_risk_mult = session_risk_mult if session_policy_enabled else 1.0
-            if macro_active and not macro_block_entries:
-                effective_risk_mult *= macro_risk_mult
-            if effective_risk_mult <= 0:
-                logger.info(
-                    "Session policy blocked entry on %s: risk_mult=%.2f session=%s",
-                    inst.symbol,
-                    effective_risk_mult,
-                    current_session,
-                )
-                continue
-            inst_risk_pct = settings.PER_INSTRUMENT_RISK.get(
-                inst.symbol, settings.RISK_PER_TRADE_PCT
-            )
-        # Apply volatility-adjusted risk scaling: reduce position size in high-vol environments
-        inst_risk_pct = _volatility_adjusted_risk(inst.symbol, atr, inst_risk_pct)
-        effective_risk_pct = inst_risk_pct * effective_risk_mult
-        if allow_scale_entry:
-            pyramid_risk_scale = max(
-                0.0,
-                min(float(getattr(settings, "PYRAMID_RISK_SCALE", 0.6) or 0.6), 1.0),
-            )
-            effective_risk_pct *= pyramid_risk_scale
-        if effective_risk_pct <= 0:
-            continue
-
-        # Use the SAME SL distance (sl_pct) we will actually place on the exchange.
-        # This keeps risk sizing consistent when MIN_SL_PCT overrides ATR-based SL.
-        stop_dist = float(sl_pct or 0.0) if atr is not None else 0.0
-
-        # Guard: if ATR is absurdly small (< 0.3%), the market is in extreme
-        # compression / low vol â€” SL would be too tight and likely noise-stopped.
-        min_atr_for_entry = float(getattr(settings, "MIN_ATR_FOR_ENTRY", 0.003) or 0.003)
-        if atr is not None and atr < min_atr_for_entry:
-            logger.info(
-                "ATR too low for %s (%.4f%% < %.4f%%), market compressed â€” skipping entry",
-                symbol, atr * 100, min_atr_for_entry * 100,
-            )
-            continue
-
-        if stop_dist and stop_dist > 0:
-            qty = _risk_based_qty(
-                equity_usdt,
-                last_price,
-                stop_dist,
-                contract_size,
-                leverage,
-                risk_pct=effective_risk_pct,
-            )
-        else:
-            # Fallback to fixed size if ATR unavailable
-            qty = settings.ORDER_SIZE_USDT / (last_price * contract_size)
-            base_risk_pct = max(float(getattr(settings, "RISK_PER_TRADE_PCT", 0.01)), 1e-9)
-            qty *= (effective_risk_pct / base_risk_pct)
-
-        # Exchange minimums / precision
-        min_qty = _market_min_qty(market_info, fallback=float(inst.lot_size or 0.0))
-        qty = _normalize_order_qty(adapter, symbol, qty)
-        if min_qty > 0 and qty < min_qty:
-            qty = _normalize_order_qty(adapter, symbol, min_qty)
-
-        if qty <= 0 or (min_qty > 0 and qty < min_qty):
-            logger.warning(
-                "Computed qty invalid for %s qty=%.10f min_qty=%.10f",
-                inst.symbol,
-                qty,
-                min_qty,
-            )
-            continue
-
-        # â”€â”€ Pre-trade leverage cap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        # Ensure (existing_notional + new_notional) / equity <= MAX_EFF_LEVERAGE
-        # Uses cycle_notional_added to account for trades opened earlier in this cycle
-        notional_order = last_price * contract_size * qty
-        effective_total_notional = total_notional + cycle_notional_added
-        if equity_usdt > 0:
-            max_new_notional = max(0.0, settings.MAX_EFF_LEVERAGE * equity_usdt - effective_total_notional)
-            if notional_order > max_new_notional:
-                # Reduce qty to fit within leverage cap
-                capped_qty = _normalize_order_qty(
-                    adapter,
-                    symbol,
-                    max_new_notional / (last_price * contract_size),
-                )
-                if capped_qty < min_qty:
-                    logger.info(
-                        "Pre-trade leverage cap: %s new_notional=%.2f would exceed MAX_EFF_LEVERAGE=%.1f "
-                        "(total_notional=%.2f+%.2f equity=%.2f max_new=%.2f min_qty=%s); skipping",
-                        symbol, notional_order, settings.MAX_EFF_LEVERAGE,
-                        total_notional, cycle_notional_added, equity_usdt, max_new_notional, min_qty,
-                    )
-                    continue
-                logger.info(
-                    "Pre-trade leverage cap: %s qty %.10f -> %.10f (max_new_notional=%.2f)",
-                    symbol, qty, capped_qty, max_new_notional,
-                )
-                qty = capped_qty
-                notional_order = last_price * contract_size * qty
-
-        margin_buffer_pct = max(
-            0.0,
-            min(float(getattr(settings, "ORDER_MARGIN_BUFFER_PCT", 0.03) or 0.03), 0.20),
-        )
-        usable_margin = free_usdt * (1.0 - margin_buffer_pct)
-        if usable_margin <= 0:
-            logger.info(
-                "Margin unavailable %s: free=%.2f buffer=%.2f%%",
-                symbol,
-                free_usdt,
-                margin_buffer_pct * 100,
-            )
-            continue
-        max_qty_margin = _normalize_order_qty(
-            adapter,
-            symbol,
-            (usable_margin * leverage if leverage else usable_margin) / (last_price * contract_size),
-        )
-        if max_qty_margin < min_qty:
-            logger.info(
-                "Margin cap too low %s: max_qty=%s < min_qty=%s (free=%.2f buffer=%.2f%%)",
-                symbol,
-                max_qty_margin,
-                min_qty,
-                free_usdt,
-                margin_buffer_pct * 100,
-            )
-            continue
-        if qty > max_qty_margin:
-            logger.info(
-                "Margin fit %s qty %s -> %s (free=%.2f buffer=%.2f%%)",
-                symbol,
-                qty,
-                max_qty_margin,
-                free_usdt,
-                margin_buffer_pct * 100,
-            )
-            qty = max_qty_margin
-            notional_order = last_price * contract_size * qty
-
-        # Margin check
-        required_margin = notional_order / leverage if leverage else notional_order
-        if required_margin > usable_margin:
-            logger.info(
-                "Margin insufficient %s: need=%.2f usable=%.2f free=%.2f",
-                symbol, required_margin, usable_margin, free_usdt,
-            )
-            continue
-
-        if use_allocator_signals and bool(getattr(settings, "SHADOW_TRADING_ENABLED", False)):
-            logger.info(
-                "Shadow trading ON; skipping live entry %s strategy=%s side=%s qty=%s",
-                inst.symbol,
-                strategy_name,
-                side,
-                qty,
-            )
-            continue
-
-        # Recompute TP/SL with actual entry (use last_price as expected entry)
-        tp_price, sl_price, tp_pct, sl_pct = _compute_tp_sl_prices(side, last_price, atr)
-        base_correlation_id = _safe_correlation_id(f"{sig.id}-{inst.symbol}")
-        correlation_id = base_correlation_id
-        parent_correlation_id = base_correlation_id
-        if allow_scale_entry:
-            parent_correlation_id = _safe_correlation_id(scale_parent_correlation or base_correlation_id)
-            correlation_id = _safe_correlation_id(f"{parent_correlation_id}:add{scale_add_index}")
-        if not correlation_id:
-            correlation_id = _safe_correlation_id(f"{inst.symbol}-{int(dj_tz.now().timestamp())}")
-        if not parent_correlation_id:
-            parent_correlation_id = correlation_id
-
-        # Place order
-        with transaction.atomic():
-            order = Order.objects.create(
-                instrument=inst,
-                side=side,
-                type=Order.OrderType.MARKET,
-                qty=qty,
-                price=last_price,
-                status=Order.OrderStatus.NEW,
-                correlation_id=correlation_id,
-                leverage=leverage,
-                margin_mode=getattr(adapter, "margin_mode", ""),
-                notional_usdt=notional_order,
-                opened_at=dj_tz.now(),
-                parent_correlation_id=parent_correlation_id,
-            )
-
-        try:
-            resp = adapter.create_order(symbol, side, "market", float(order.qty))
-            order.status = Order.OrderStatus.FILLED
-            order.exchange_order_id = resp.get("id") or resp.get("orderId", "")
-            order.raw_response = resp
-            order.fee_usdt = _extract_fee_usdt(resp)
-            order.closed_at = dj_tz.now()
-            order.status_reason = ""
-            order.save(update_fields=[
-                "status", "exchange_order_id", "raw_response",
-                "fee_usdt", "closed_at", "status_reason",
-            ])
-            placed += 1
-            _track_consecutive_errors(symbol, success=True)
-
-            # Recalculate SL/TP based on ACTUAL fill price (not last_price)
-            # to account for slippage on market orders
-            fill_price = _to_float(resp.get("average") or resp.get("price") or last_price)
-            if fill_price and fill_price > 0:
-                tp_price, sl_price, tp_pct, sl_pct = _compute_tp_sl_prices(side, fill_price, atr)
-                logger.info(
-                    "SL/TP recalculated with fill_price=%.4f (last=%.4f slippage=%.4f%%)",
-                    fill_price, last_price,
-                    abs(fill_price - last_price) / last_price * 100 if last_price else 0,
-                )
-
-            # Place protective SL stop-order on exchange
-            _place_sl_order(adapter, symbol, side, float(qty), sl_price)
-
-            # Track notional added this cycle for leverage projection
-            cycle_notional_added += notional_order
-
-            # Increment daily trade counter (for regime-adaptive throttling)
-            if not allow_scale_entry:
-                _increment_daily_trade_count()
-
-            # Telegram notification
-            notify_trade_opened(
-                inst.symbol, side, float(qty), last_price,
-                sl=sl_price, tp=tp_price, leverage=float(leverage or 0),
-                notional=notional_order, equity=equity_usdt,
-                risk_pct=effective_risk_pct,
-                score=float(sig.score) if sig else 0,
-                strategy_name=strategy_name,
-                active_modules=_signal_active_modules(sig_payload, strategy_name),
-            )
-            logger.info(
-                "Opened %s %s qty=%s price=%.4f sl=%.4f tp=%.4f risk_sizing=%s risk_pct=%.5f session=%s mode=%s",
-                symbol,
-                side,
-                qty,
-                last_price,
-                sl_price,
-                tp_price,
-                "atr" if stop_dist else "fixed",
-                effective_risk_pct,
-                current_session if session_policy_enabled else "n/a",
-                "pyramid" if allow_scale_entry else ("allocator" if is_allocator_signal else "legacy"),
-            )
-
-        except Exception as exc:
-            is_margin_error = _is_insufficient_margin_error(exc)
-            if is_margin_error:
-                logger.info("Order rejected by exchange (margin) %s: %s", inst.symbol, exc)
-            else:
-                logger.warning("Order send failed %s: %s", inst.symbol, exc)
-            order.status = Order.OrderStatus.REJECTED
-            order.status_reason = str(exc)
-            order.closed_at = dj_tz.now()
-            order.save(update_fields=["status", "status_reason", "closed_at"])
-            if is_margin_error:
-                _track_consecutive_errors(symbol, success=True)
-                continue
-            err_count = _track_consecutive_errors(symbol, success=False)
-            notify_error(f"Order failed {inst.symbol}: {exc}")
-            if err_count >= settings.MAX_CONSECUTIVE_ERRORS:
-                _create_risk_event(
-                    "consecutive_errors", "critical",
-                    instrument=inst, details={"count": err_count, "last_error": str(exc)},
-                )
-                notify_kill_switch(f"{symbol}: {err_count} consecutive errors - pausing")
+        placed += placed_delta
+        cycle_notional_added += cycle_notional_delta
 
     _release_task_lock(lock_client, lock_key, lock_token)
     return f"orders_placed={placed}"

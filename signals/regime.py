@@ -138,7 +138,11 @@ def _fit_hmm(features: np.ndarray, n_states: int = 2,
     return model, states
 
 
-def _label_states(model, n_states: int = 2) -> dict[int, dict]:
+def _label_memory_key(symbol: str) -> str:
+    return f"regime:label-memory:{symbol}"
+
+
+def _label_states(model, n_states: int = 2, symbol: str | None = None) -> dict[int, dict]:
     """Assign semantic labels based on emission means.
 
     The state with **higher mean realised-vol** (feature index 1)
@@ -147,6 +151,51 @@ def _label_states(model, n_states: int = 2) -> dict[int, dict]:
     means = model.means_  # shape (n_states, n_features)
     vol_means = means[:, 1]  # feature 1 = realised vol
     choppy_idx = int(np.argmax(vol_means))
+    mapped_from_memory = False
+
+    # Prefer persistent label memory when available (state-index agnostic).
+    if symbol and n_states == 2:
+        try:
+            prev_memory = get_cached_label_memory(symbol)
+            if (
+                isinstance(prev_memory, dict)
+                and float(prev_memory.get("choppy_mean_vol", 0) or 0) > 0
+                and float(prev_memory.get("trending_mean_vol", 0) or 0) > 0
+            ):
+                prev_choppy_vol = float(prev_memory.get("choppy_mean_vol", 0) or 0)
+                prev_trending_vol = float(prev_memory.get("trending_mean_vol", 0) or 0)
+                # Two possible assignments for 2 states.
+                cost_state0_choppy = abs(float(vol_means[0]) - prev_choppy_vol) + abs(float(vol_means[1]) - prev_trending_vol)
+                cost_state1_choppy = abs(float(vol_means[1]) - prev_choppy_vol) + abs(float(vol_means[0]) - prev_trending_vol)
+                choppy_idx = 0 if cost_state0_choppy <= cost_state1_choppy else 1
+                mapped_from_memory = True
+        except Exception:
+            pass
+
+    # Fallback hysteresis against noisy relabeling when label-memory is unavailable.
+    if symbol and n_states == 2 and not mapped_from_memory:
+        try:
+            vol_gap = float(abs(np.max(vol_means) - np.min(vol_means)))
+            hysteresis = max(
+                0.0,
+                float(getattr(settings, "HMM_REGIME_LABEL_HYSTERESIS_VOL", 0.0005) or 0.0005),
+            )
+            prev = get_cached_regime(symbol)
+            if (
+                isinstance(prev, dict)
+                and vol_gap <= hysteresis
+                and str(prev.get("name", "")).strip().lower() in {"choppy", "trending"}
+            ):
+                prev_name = str(prev.get("name", "")).strip().lower()
+                prev_mean_vol = float(prev.get("mean_vol", 0) or 0)
+                if prev_mean_vol > 0:
+                    closest_idx = int(np.argmin(np.abs(vol_means - prev_mean_vol)))
+                    if prev_name == "choppy":
+                        choppy_idx = closest_idx
+                    else:
+                        choppy_idx = 1 - closest_idx
+        except Exception:
+            pass
 
     labels: dict[int, dict] = {}
     for s in range(n_states):
@@ -215,7 +264,7 @@ def fit_and_predict(symbol: str = "BTCUSDT") -> Optional[dict]:
         logger.error("regime: HMM fit failed for %s: %s", symbol, exc)
         return None
 
-    labels = _label_states(model, n_states)
+    labels = _label_states(model, n_states, symbol=symbol)
     current_state = int(states[-1])
     label = labels[current_state]
 
@@ -237,6 +286,25 @@ def fit_and_predict(symbol: str = "BTCUSDT") -> Optional[dict]:
         "n_bars": len(features),
         "ts": dj_tz.now().isoformat(),
     }
+
+    try:
+        if n_states == 2:
+            choppy_state = next((idx for idx, meta in labels.items() if meta.get("name") == "choppy"), None)
+            trending_state = next((idx for idx, meta in labels.items() if meta.get("name") == "trending"), None)
+            if choppy_state is not None and trending_state is not None:
+                _cache_label_memory(
+                    symbol,
+                    {
+                        "choppy_mean_vol": float(model.means_[choppy_state, 1]),
+                        "trending_mean_vol": float(model.means_[trending_state, 1]),
+                        "choppy_mean_adx": float(model.means_[choppy_state, 2] * 100.0),
+                        "trending_mean_adx": float(model.means_[trending_state, 2] * 100.0),
+                        "n_states": n_states,
+                        "ts": dj_tz.now().isoformat(),
+                    },
+                )
+    except Exception as exc:
+        logger.debug("regime: label-memory update failed for %s: %s", symbol, exc)
 
     # Cache in Redis
     _cache_regime(symbol, result)
@@ -291,6 +359,22 @@ def get_cached_regime(symbol: str) -> Optional[dict]:
     return None
 
 
+def get_cached_label_memory(symbol: str) -> Optional[dict]:
+    """Read persistent label memory from Redis."""
+    import redis as _redis
+
+    try:
+        r = _redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
+        raw = r.get(_label_memory_key(symbol))
+        if raw:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+    except Exception as exc:
+        logger.debug("regime: label-memory Redis read failed for %s: %s", symbol, exc)
+    return None
+
+
 def regime_risk_mult(symbol: str) -> float:
     """Return the regime-based risk multiplier (default 1.0 if unavailable)."""
     if not getattr(settings, "HMM_REGIME_ENABLED", False):
@@ -321,6 +405,28 @@ def _cache_regime(symbol: str, data: dict, ttl_hours: int | None = None) -> None
 # ---------------------------------------------------------------------------
 # Backtest helper (no Redis, no DB — works with DataFrames)
 # ---------------------------------------------------------------------------
+
+def _cache_label_memory(symbol: str, data: dict, ttl_hours: int | None = None) -> None:
+    """Write persistent label memory to Redis with TTL."""
+    import redis as _redis
+
+    if ttl_hours is None:
+        ttl_hours = int(getattr(settings, "HMM_REGIME_LABEL_MEMORY_TTL_HOURS", 168))
+    ttl_hours = max(1, int(ttl_hours))
+    payload = {
+        "choppy_mean_vol": float(data.get("choppy_mean_vol", 0) or 0),
+        "trending_mean_vol": float(data.get("trending_mean_vol", 0) or 0),
+        "choppy_mean_adx": float(data.get("choppy_mean_adx", 0) or 0),
+        "trending_mean_adx": float(data.get("trending_mean_adx", 0) or 0),
+        "n_states": int(data.get("n_states", 2) or 2),
+        "ts": str(data.get("ts") or dj_tz.now().isoformat()),
+    }
+    try:
+        r = _redis.from_url(settings.CELERY_BROKER_URL, decode_responses=True)
+        r.setex(_label_memory_key(symbol), ttl_hours * 3600, json.dumps(payload))
+    except Exception as exc:
+        logger.warning("regime: label-memory Redis write failed for %s: %s", symbol, exc)
+
 
 def predict_regime_from_df(df_1h: pd.DataFrame, n_states: int = 2) -> Optional[dict]:
     """Predict regime from a 1 h candle DataFrame (for backtest use).

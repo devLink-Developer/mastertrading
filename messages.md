@@ -1185,3 +1185,496 @@ El bot está **funcionando correctamente** — todos los módulos emiten señale
 - Si aparece `database "test_mastertrading" already exists`, ejecutar tests con `--noinput` para evitar prompt interactivo en modo no-TTY.
 
 - docker compose exec -T web python manage.py test --verbosity 1 --noinput -> **OK (120/120)**
+
+## 18. Ejecución de cambios de auditoría (Fase inmediata 1-5) — 2026-02-22
+
+### 18.1 Estado
+Se implementaron los 5 cambios inmediatos propuestos en `docs/auditoria-codigo-2026-02-21.md`.
+
+### 18.2 Cambios aplicados
+
+1. Retry + idempotencia en `create_order` (KuCoin)
+- Archivo: `adapters/kucoin.py`
+- Se agregó retry en el path de creación de órdenes (`_create_order_with_retry`) con la misma política transient-network del adapter.
+- Se agregó `clientOid` automático cuando no viene en params.
+- Se agregó recuperación post-error buscando por `clientOid` en open/closed orders para evitar duplicados/ghost-position ante timeout ambiguo.
+
+2. Fix en `_volatility_adjusted_risk` para allocator budgets
+- Archivo: `execution/tasks.py`
+- Antes: `PER_INSTRUMENT_RISK` podía sobreescribir y aumentar `base_risk`.
+- Ahora: aplica cap `min(per_symbol_risk, base_risk)` (nunca incrementa riesgo por encima del budget calculado por allocator).
+
+3. Redis con autenticación
+- Archivos: `docker-compose.yml`, `.env.example`, `config/settings.py`
+- Redis ahora inicia con `--requirepass`.
+- Healthcheck usa auth.
+- Se agregó `REDIS_PASSWORD` en `.env.example` y `REDIS_URL` con credenciales.
+- `settings.py` ahora construye default de Redis autenticado cuando hay `REDIS_PASSWORD`.
+
+4. Harden de Celery (resiliencia worker)
+- Archivo: `config/celery.py`
+- Se configuró:
+  - `task_acks_late=True`
+  - `task_reject_on_worker_lost=True`
+  - `task_time_limit=300`
+  - `task_soft_time_limit=240`
+
+5. Retry explícito en signal engine
+- Archivo: `signals/tasks.py`
+- `run_signal_engine` ahora tiene:
+  - `autoretry_for=(Exception,)`
+  - `retry_backoff=True`
+  - `max_retries=3`
+  - `acks_late=True`
+
+### 18.3 Tests agregados/actualizados
+
+- Nuevo: `adapters/tests_kucoin.py`
+  - retry de `create_order` con `clientOid` estable
+  - recuperación por `clientOid` tras timeout
+  - raise correcto cuando retry+recovery fallan
+
+- Actualizado: `execution/tests_tasks.py`
+  - cobertura de cap `min(per_symbol, base_risk)` en `_volatility_adjusted_risk`
+
+- Actualizado: `signals/tests.py`
+  - verificación de política de retry/acks del task `run_signal_engine`
+
+### 18.4 Validación ejecutada
+
+- `docker compose exec -T web python manage.py test adapters.tests_kucoin execution.tests_tasks signals.tests --verbosity 1 --noinput` -> **OK (60/60)**
+- `docker compose exec -T web python manage.py test --verbosity 1 --noinput` -> **OK (126/126)**
+
+## 19. Continuación de auditoría (Fase corto plazo 6-9) — 2026-02-22
+
+### 19.1 Ítem 6 — `_classify_exchange_close` proporcional al SL/TP
+
+- Archivo: `execution/tasks.py`
+- Cambio: se eliminó el threshold fijo de ±0.25% y ahora la clasificación usa umbrales escalados por `sl_pct_hint`/`tp_pct_hint` (con fallback a settings), más banda de breakeven configurable.
+- Nuevos settings:
+  - `EXCHANGE_CLOSE_CLASSIFY_STOP_SCALE`
+  - `EXCHANGE_CLOSE_CLASSIFY_TP_SCALE`
+  - `EXCHANGE_CLOSE_CLASSIFY_MIN_BAND_PCT`
+  - `EXCHANGE_CLOSE_CLASSIFY_BREAKEVEN_SCALE`
+- En `_sync_positions`, antes de clasificar se estiman `tp_pct_hint` y `sl_pct_hint` usando `_compute_tp_sl_prices(...)`.
+
+### 19.2 Ítem 7 — Partial close para posiciones fraccionarias
+
+- Archivo: `execution/tasks.py`
+- Cambio: se reemplazó la lógica basada en `int(abs(current_qty))` por cálculo en float.
+- Ahora:
+  - soporta qty fraccional,
+  - respeta `amount_to_precision`,
+  - intenta respetar mínimo de mercado y remanente mínimo,
+  - evita cerrar 100% por redondeo.
+- Nuevo setting: `PARTIAL_CLOSE_MIN_REMAINING_QTY`.
+
+### 19.3 Ítem 8 — GARCH: validación de persistence + floor en blend
+
+- Archivo: `signals/garch.py`
+- Cambios:
+  - `_fit_garch` ahora valida `alpha + beta <= GARCH_MAX_PERSISTENCE`; si excede, descarta el fit.
+  - `blended_vol` ahora aplica floor:
+    - absoluto: `GARCH_BLEND_VOL_FLOOR_PCT`
+    - relativo a ATR: `GARCH_BLEND_FLOOR_ATR_RATIO`.
+- Nuevos settings:
+  - `GARCH_MAX_PERSISTENCE`
+  - `GARCH_BLEND_VOL_FLOOR_PCT`
+  - `GARCH_BLEND_FLOOR_ATR_RATIO`
+
+### 19.4 Ítem 9 — HMM: estabilidad de labels entre refits
+
+- Archivo: `signals/regime.py`
+- Cambio: `_label_states(...)` ahora soporta `symbol` y aplica histéresis de labels cuando el gap de volatilidad entre estados es pequeño, usando el régimen previo en cache para evitar flip-flop por ruido.
+- Nuevo setting: `HMM_REGIME_LABEL_HYSTERESIS_VOL`.
+
+### 19.5 Tests agregados/actualizados
+
+- `execution/tests_tasks.py`
+  - clasificación exchange_close con umbrales escalados
+  - partial close fraccional
+- `signals/tests_garch.py`
+  - rechazo cuando persistence > límite
+  - floor de blended vol (absoluto y por ratio ATR)
+- `signals/tests_regime.py`
+  - histéresis de labels con régimen previo
+
+### 19.6 Validación
+
+- `docker compose exec -T web python manage.py test execution.tests_tasks signals.tests_garch signals.tests_regime --verbosity 1 --noinput` -> **OK (73/73)**
+- `docker compose exec -T web python manage.py test --verbosity 1 --noinput` -> **OK (134/134)**
+
+## 20. Continuación de auditoría (ítem 10 + paridad live/backtest) — 2026-02-22
+
+### 20.1 Ítem 10 — hardcoded de `execution/tasks.py` movidos a settings
+
+- Archivo: `execution/tasks.py`
+- Se reemplazaron constantes hardcoded por settings:
+  - ATR ramp de riesgo: `VOL_RISK_LOW_ATR_PCT`, `VOL_RISK_HIGH_ATR_PCT`, `VOL_RISK_MIN_SCALE`
+  - TTL daily trades: `DAILY_TRADE_COUNT_TTL_SECONDS`
+  - Umbrales ADX throttle: `MAX_DAILY_TRADES_LOW_ADX_THRESHOLD`, `MAX_DAILY_TRADES_HIGH_ADX_THRESHOLD`
+  - Tolerancia reconcile SL: `SL_RECONCILE_TOO_TIGHT_MULT`, `SL_RECONCILE_TOO_WIDE_MULT`
+  - Trailing state/SL move: `TRAILING_STATE_TTL_SECONDS`, `TRAILING_SL_MIN_MOVE_PCT`
+  - Ventanas de clasificación/dedup en sync:
+    - `EXCHANGE_CLOSE_RECENT_BOT_CLOSE_MINUTES`
+    - `EXCHANGE_CLOSE_DEDUP_MINUTES`
+- Archivos de configuración actualizados:
+  - `config/settings.py`
+  - `.env.example`
+
+### 20.2 Paridad live/backtest — extracción de política de riesgo compartida
+
+- Hallazgo auditado: `backtest/engine.py` mantenía lógica duplicada y desactualizada vs live.
+- Nuevo módulo compartido: `execution/risk_policy.py`
+  - `max_daily_trades_for_adx(...)`
+  - `volatility_adjusted_risk(...)`
+- Integración:
+  - `execution/tasks.py` ahora usa wrappers hacia el módulo compartido.
+  - `backtest/engine.py` ahora delega en el mismo módulo (sin thresholds fijos 20/25 ni comportamiento antiguo de `PER_INSTRUMENT_RISK`).
+- Resultado: misma política de sizing/throttle en live y backtest.
+
+### 20.3 Tests agregados/actualizados
+
+- Nuevo: `execution/tests_risk_policy.py`
+  - thresholds ADX configurables
+  - cap de riesgo por símbolo sin incrementar `base_risk`
+  - rampa ATR configurable
+- Nuevo: `backtest/tests_engine_risk_parity.py`
+  - confirma que backtest respeta thresholds ADX configurables
+  - confirma cap de riesgo por símbolo alineado a live
+
+### 20.4 Validación
+
+- `docker compose exec -T web python manage.py test execution.tests_risk_policy backtest.tests_engine_risk_parity execution.tests_tasks --verbosity 1 --noinput` -> **OK (46/46)**
+- `docker compose exec -T web python manage.py test --verbosity 1 --noinput` -> **OK (143/143)**
+
+## 21. Continuación de auditoría (ítems 11, 13, 14 y 15) — 2026-02-22
+
+### 21.1 Ítem 11 — descomposición inicial de `execute_orders`
+
+- Archivo: `execution/tasks.py`
+- Se extrajeron bloques de alto acoplamiento a helpers dedicados:
+  - `_evaluate_balance_and_guardrails(...)`
+  - `_apply_circuit_breaker_gate(...)`
+  - `_load_enabled_instruments_and_latest_signals(...)`
+  - `_compute_regime_adx_gate(...)`
+- Resultado: `execute_orders` mantiene el mismo flujo funcional, pero con responsabilidades separadas para guardrails globales, circuito de breaker y preparación de contexto de señales.
+
+### 21.2 Ítem 13 — credenciales de exchange cifradas en DB (at-rest)
+
+- Archivos:
+  - `core/crypto.py`
+  - `core/fields.py`
+  - `core/models.py`
+  - `core/migrations/0004_alter_exchangecredential_api_key_and_more.py`
+- Implementación:
+  - Nuevo campo `EncryptedCredentialField` para cifrado/des-cifrado transparente.
+  - `ExchangeCredential.api_key/api_secret/api_passphrase` ahora usan campo cifrado.
+  - Compatibilidad retroactiva:
+    - Si la fila antigua está en texto plano, se puede leer.
+    - Se re-cifra en el próximo `save`.
+  - Nuevo env opcional: `CREDENTIALS_ENCRYPTION_KEY` (si falta, usa `SECRET_KEY` como fallback de key material).
+
+### 21.3 Ítem 14 — hardening de hosts y permisos API por defecto
+
+- Archivo: `config/settings.py`
+- Cambios:
+  - `ALLOWED_HOSTS` default seguro: `127.0.0.1,localhost`.
+  - Si `DEBUG=false` y `ALLOWED_HOSTS` contiene `*`, se aplica fallback a localhost-only con warning runtime (no rompe boot).
+  - DRF default ahora es `IsAuthenticated` (cerrado por defecto).
+  - Se habilita modo previo solo con `API_PUBLIC_READ_ENABLED=true`.
+- Archivo: `.env.example`
+  - Nuevas/ajustadas vars:
+    - `ALLOWED_HOSTS=127.0.0.1,localhost`
+    - `API_PUBLIC_READ_ENABLED=false`
+
+### 21.4 Ítem 15 — DLQ y alerting para fallos Celery
+
+- Archivos:
+  - `config/celery.py`
+  - `config/settings.py`
+  - `.env.example`
+- Implementación:
+  - Hook `task_failure` global.
+  - Cada fallo de tarea se persiste en DLQ (Redis list) con payload estructurado:
+    - `task_name`, `task_id`, `error`, `args`, `kwargs`, `traceback`.
+  - Notificación de error vía `notify_error(...)` con throttling Redis para evitar spam.
+  - Configuración nueva:
+    - `CELERY_TASK_DEFAULT_QUEUE`
+    - `CELERY_DLQ_REDIS_KEY`
+    - `CELERY_DLQ_MAXLEN`
+    - `CELERY_NOTIFY_ON_FAILURE`
+    - `CELERY_FAILURE_NOTIFY_THROTTLE_SECONDS` (leído en runtime; opcional)
+
+### 21.5 Tests agregados/actualizados
+
+- Nuevo: `core/tests_credentials_encryption.py`
+  - roundtrip de cifrado
+  - storage cifrado at-rest
+  - compatibilidad con filas legacy en texto plano + re-cifrado al guardar
+- Nuevo: `config/tests_celery.py`
+  - push a DLQ
+  - enrute desde signal `task_failure`
+  - throttling de notificaciones
+- Validación adicional:
+  - `execution/tests_tasks` pasa con refactor de helpers.
+
+### 21.6 Validación
+
+- `docker compose exec -T web python manage.py test execution.tests_tasks core.tests_credentials_encryption config.tests_celery --verbosity 1 --noinput` -> **OK (48/48)**
+- `docker compose exec -T web python manage.py test core.tests_credentials_encryption config.tests_celery adapters.tests_kucoin execution.tests_risk_policy backtest.tests_engine_risk_parity --verbosity 1 --noinput` -> **OK (15/15)**
+- `docker compose exec -T web python manage.py test --verbosity 1 --noinput` -> **OK (150/150)**
+
+### 21.7 Aplicación operativa (migración + env + restart)
+
+- `docker compose exec -T web python manage.py migrate --noinput`:
+  - `core.0004_alter_exchangecredential_api_key_and_more` aplicado **OK**.
+- `.env` ajustado para hardening/runtime consistency:
+  - `ALLOWED_HOSTS=127.0.0.1,localhost`
+  - `API_PUBLIC_READ_ENABLED=false`
+  - `REDIS_PASSWORD=mastertrading_redis`
+  - `REDIS_URL=redis://:mastertrading_redis@redis:6379/0`
+- Servicios reiniciados para tomar cambios:
+  - `docker compose up -d web worker worker-data beat`
+  - `docker compose ps` confirma servicios arriba y `redis` saludable.
+
+### 21.8 Incidente Telegram: `redis:6379 connection refused` (resuelto)
+
+- Síntoma recibido:
+  - `Balance check failed: Error 111 connecting to redis:6379. Connection refused.`
+- Causa observada:
+  - Ocurrió durante ventana de recreación/restart de Redis.
+  - Además, `.env` tenía BOM UTF-8 + indentaciones al inicio, generando warning de parseo (`python-dotenv could not parse statement starting at line 1`).
+- Acciones:
+  - Se saneó `.env` (sin BOM, sin espacios iniciales).
+  - Se recrearon servicios para tomar config limpia:
+    - `docker compose up -d --force-recreate web worker worker-data beat`
+  - Verificación:
+    - worker conectado a Redis (`transport/results redis://:**@redis:6379/0`).
+    - `redis_ping=True` desde contenedor worker.
+    - `execute_orders` volvió a correr sin error (`orders_placed=0` en ciclo normal).
+### 21.9 Ajuste ALLOWED_HOSTS (devlink)
+
+- `.env` actualizado:
+  - `ALLOWED_HOSTS=127.0.0.1,localhost,devlink.com.ar,www.devlink.com.ar`
+- Nota: Django usa hosts (sin `https://` ni `/`).
+- `web` recreado para aplicar cambio: `docker compose up -d --force-recreate web`.
+
+## 22. Continuación de auditoría (ítems 8/11/13/14 en curso) — 2026-02-22
+
+### 22.1 Allocator: gate interno de módulos mínimos
+
+- Archivo: `signals/allocator.py`
+- Cambio:
+  - `resolve_symbol_allocation(...)` ahora aplica internamente `ALLOCATOR_MIN_MODULES_ACTIVE` (defensa en profundidad), además del gate externo del ciclo allocator.
+  - Si no cumple mínimo:
+    - `direction=flat`
+    - `symbol_state=blocked`
+    - `risk_budget_pct=0`
+    - razón incluye `required_modules`.
+
+### 22.2 Live gradual: selección de módulos por prioridad real
+
+- Archivo: `signals/multi_strategy.py`
+- Cambio:
+  - `_active_modules(...)` ya no recorta por orden de declaración (`modules[:cap]`).
+  - Ahora ordena por prioridad y luego aplica cap:
+    - prioridad explícita vía `LIVE_GRADUAL_MODULE_PRIORITY` (dict)
+    - fallback: pesos del allocator (`default_weight_map()`).
+  - Se evita excluir SMC por orden fijo cuando su prioridad/peso es superior.
+- Config:
+  - `config/settings.py`: parsea `LIVE_GRADUAL_MODULE_PRIORITY` desde env (JSON).
+  - `.env.example`: agregado `LIVE_GRADUAL_MODULE_PRIORITY={}`.
+
+### 22.3 Credenciales: backfill automático de filas legacy en plaintext
+
+- Archivo nuevo: `core/migrations/0005_encrypt_existing_exchange_credentials.py`
+- Cambio:
+  - Data migration idempotente que cifra `api_key/api_secret/api_passphrase` existentes en `core_exchangecredential`.
+  - No revierte a plaintext (reverse noop por diseño).
+- Aplicación:
+  - `docker compose exec -T web python manage.py migrate --noinput`
+  - `core.0005_encrypt_existing_exchange_credentials` aplicado **OK**.
+
+### 22.4 Tests agregados/actualizados
+
+- `signals/tests.py`
+  - gate interno de min módulos en allocator
+  - priorización de módulos en live gradual (por pesos y por prioridad explícita)
+- Suite dirigida:
+  - `docker compose exec -T web python manage.py test signals.tests core.tests_credentials_encryption --verbosity 1 --noinput` -> **OK (29/29)**
+
+### 22.5 Incidente de entorno durante validación y resolución
+
+- Al correr suite completa aparecieron `ModuleNotFoundError` para `arch`/`hmmlearn` en imágenes activas (drift de containers).
+- Acción:
+  - rebuild completo de imágenes app/worker:
+    - `docker compose build web worker worker-data beat market-data telegram-bot`
+    - `docker compose up -d`
+- Validación final:
+  - `docker compose exec -T web python manage.py test --verbosity 1 --noinput` -> **OK (153/153)**.
+
+## 23. Auditoria closure matrix (update 2026-02-22)
+
+### 23.1 Estado operativo verificado (runtime)
+
+- `docker compose config --services` -> 8 servicios esperados (`postgres`, `redis`, `market-data`, `telegram-bot`, `web`, `worker`, `worker-data`, `beat`)
+- `docker compose ps` -> 8/8 `mastertrading` en `running` (DB y Redis `healthy`)
+- `docker compose exec -T web python manage.py check` -> sin issues
+- `docker compose exec -T web python manage.py makemigrations --check --dry-run` -> `No changes detected`
+- `docker compose exec -T web python manage.py test --verbosity 1 --noinput` -> **OK (157/157)**
+
+### 23.2 Matriz de cierre de auditoria (15 acciones)
+
+| # | Accion auditoria (2026-02-21) | Estado 2026-02-22 | Evidencia |
+|---|---|---|---|
+| 1 | Retry + idempotency en `create_order` | **CERRADO** | `adapters/kucoin.py` agrega `_create_order_with_retry`, recovery por `clientOid` y retry decorator |
+| 2 | `min(per_inst, base_risk)` en sizing | **CERRADO** | `execution/risk_policy.py` aplica `min(per_symbol_risk, base_risk)`; usado por live y backtest |
+| 3 | Redis auth (`--requirepass`) + `REDIS_URL` | **CERRADO** | `docker-compose.yml`, `.env`, `.env.example`, `config/settings.py` |
+| 4 | Celery hardening (`acks_late`, time limits) | **CERRADO** | `config/celery.py` configura `task_acks_late`, `task_reject_on_worker_lost`, `task_time_limit`, `task_soft_time_limit` |
+| 5 | Retry en `run_signal_engine` | **CERRADO** | `signals/tasks.py` (`autoretry_for`, `retry_backoff`, `max_retries`, `acks_late`) |
+| 6 | Partial close fraccional | **CERRADO** | `execution/tasks.py` usa `abs(_to_float(current_qty))` (no truncado por `int`) |
+| 7 | `exchange_close` proporcional al SL real | **CERRADO** | `execution/tasks.py` usa `sl_pct_hint`, `sl_ref`, `tp_ref`, bandas dinamicas |
+| 8 | Floor en blended vol + cap persistence GARCH | **CERRADO** | `signals/garch.py` (`GARCH_MAX_PERSISTENCE`, `GARCH_BLEND_VOL_FLOOR_PCT`, `GARCH_BLEND_FLOOR_ATR_RATIO`) |
+| 9 | Estabilizar labels HMM entre refits | **CERRADO** | `signals/regime.py` ahora persiste memoria de labels en Redis (`get_cached_label_memory`, `_cache_label_memory`) y `fit_and_predict` guarda medias semanticas (choppy/trending) para mapear estados entre refits |
+| 10 | Mover hardcoded a settings | **CERRADO** | `config/settings.py` + `.env.example` agregan `ORDER_MARGIN_BUFFER_MAX_PCT`, `POSITION_QTY_EPSILON`, `POSITION_OPENED_FALLBACK_MAX_HOURS`, `HMM_REGIME_LABEL_MEMORY_TTL_HOURS`; `execution/tasks.py` consume esos settings |
+| 11 | Descomponer `execute_orders` | **CERRADO** | bloque de manejo de posicion abierta extraido a `_manage_open_position`; `execute_orders` queda como orquestador con helpers por etapa |
+| 12 | Extraer risk policy compartida live/backtest | **CERRADO** | modulo compartido `execution/risk_policy.py`; usado desde `execution/tasks.py` y `backtest/engine.py` |
+| 13 | Encriptar credenciales API en DB | **CERRADO** | `EncryptedCredentialField` + migraciones `0004` y `0005` + `core/crypto.py` |
+| 14 | Hardening API (`ALLOWED_HOSTS`, DRF auth) | **CERRADO** | `ALLOWED_HOSTS` restringido y DRF default a `IsAuthenticated` (`API_PUBLIC_READ_ENABLED=false`) |
+| 15 | DLQ + alerting de fallos Celery | **CERRADO** | `config/celery.py` hook `task_failure` + push a DLQ Redis + notificacion con throttle |
+
+### 23.3 Comentarios/pendientes en este documento (messages.md)
+
+- `messages.md` tenia observaciones del supervisor para dejar la seccion 15 "audit-proof" (comando exacto + timestamp UTC de snapshots).
+- Estado al 2026-02-22:
+  - Se mantiene como **pendiente documental** (no bloquea runtime).
+  - Recomendacion: cerrar con sub-seccion nueva de reproducibilidad (comandos exactos y fecha/hora UTC por tabla/snapshot).
+- Tambien figuraba `Pendiente: datos suficientes para analisis de sub-razones` (item historico en seccion 14.2); tratar como pendiente de analitica, no de estabilidad operativa.
+
+### 23.4 Conclusión ejecutiva (2026-02-22)
+
+- Sistema **operativo** y estable en runtime.
+- Auditoria: **15 cerrados / 0 parciales / 0 pendientes**.
+- Sin pendientes abiertos en la closure matrix de auditoria.
+## 24. AUDITORÍA INTEGRAL #2 (2026-02-22)
+
+**Alcance:** Revisión completa del código fuente actual vs documentación en `messages.md` y auditoría previa (`docs/auditoria-codigo-2026-02-21.md`).
+**Tests:** 157/157 pasan (OK).
+
+### 24.1 Cierre de auditoría anterior (15 ítems)
+
+| # | Ítem original | Estado | Notas |
+|---|---|---|---|
+| 1 | Retry + idempotencia `create_order` | **CERRADO** | `_create_order_with_retry` + recovery por clientOid |
+| 2 | `min(per_inst, base_risk)` en sizing | **CERRADO** | Cap correcto en `execution/risk_policy.py` |
+| 3 | Redis auth | **CERRADO** | `--requirepass` en compose |
+| 4 | Celery hardening | **CERRADO** | `acks_late`, time limits, `reject_on_worker_lost` |
+| 5 | Signal engine retry | **CERRADO** | `autoretry_for`, `retry_backoff`, `max_retries=3` |
+| 6 | Partial close fraccional | **CERRADO** | Float, sin truncado `int()` |
+| 7 | `_classify_exchange_close` proporcional | **CERRADO** | Thresholds escalados por SL/TP real |
+| 8 | GARCH persistence + floor | **CERRADO** | Validación `alpha+beta`, floor doble |
+| 9 | HMM label stability | **CERRADO** | Histéresis + label memory 2 capas |
+| 10 | Hardcoded → settings | **CERRADO** | 3 constantes operacionales menores quedan (LOW) |
+| 11 | Descomponer `execute_orders` | **CERRADO** | 8 helpers, orquestador ~200 líneas |
+| 12 | Risk policy compartida | **CERRADO** | Módulo único usado por live y backtest |
+| 13 | Credenciales cifradas | **CERRADO** | Fernet + migraciones 0004/0005 |
+| 14 | `ALLOWED_HOSTS` + DRF auth | **CERRADO** | Restringido, `IsAuthenticated` default |
+| 15 | DLQ + alerting Celery | **CERRADO** | Redis list + Telegram con throttle |
+
+**Resultado: 15/15 cerrados.**
+
+### 24.2 Hallazgos nuevos — HIGH / MEDIUM-HIGH
+
+| # | Severidad | Hallazgo | Ubicación | Impacto |
+|---|---|---|---|---|
+| N1 | **HIGH** | `MODULE_LOOKBACK_BARS=240` < `MODULE_SYMBOL_WARMUP_BARS=300` — defaults inconsistentes; sin override en env, ningún módulo emite señales | `config/settings.py` L507-L513 | Deployment fresco → bot silencioso sin error visible |
+| N2 | **MEDIUM-HIGH** | `execute_orders` sin retry a nivel de task (solo tiene `acks_late` global). Error de DB mid-cycle pierde el ciclo completo sin reintento | `execution/tasks.py` L3603 | Ciclo perdido → SL no movido, trailing no activado |
+| N3 | **MEDIUM** | Trailing stop cancela SL existente; si luego falla el market close → posición queda **sin SL** hasta próximo ciclo (30-60s) | `execution/tasks.py` L1381-L1405 | Ventana sin protección ante flash crash |
+
+### 24.3 Hallazgos nuevos — MEDIUM
+
+| # | Severidad | Hallazgo | Ubicación | Impacto |
+|---|---|---|---|---|
+| N4 | MEDIUM | `compute_atr_pct` duplicado: `signals/tasks.py` retorna ×100 (porcentaje), `signals/modules/common.py` retorna fracción. Mismo nombre, output 100× diferente | `tasks.py` L79 vs `common.py` L179 | Mantenimiento peligroso |
+| N5 | MEDIUM | `current_qty` stale tras partial close: trailing SL se coloca con qty pre-parcial → OperationReport/PnL inexacto | `execution/tasks.py` L1233-L1440 | Registros de performance incorrectos |
+| N6 | MEDIUM | `free_usdt` computado una vez por ciclo. Si 7 instrumentos señalan entry simultáneamente, el 7° cree tener margen completo | `execution/tasks.py` L3690 | Exchange rechaza; leverage cap mitiga |
+| N7 | MEDIUM | Puertos Docker (Postgres 5434, Redis 6381, Web 8008) bound a `0.0.0.0` — accesibles desde la red | `docker-compose.yml` L13-L123 | En servidor con IP pública: DB y Redis expuestos |
+| N8 | MEDIUM | Tasks de módulos individuales (`run_trend_engine`, `run_meanrev_engine`, etc.) no tienen retry — solo `run_signal_engine` está hardened | `signals/tasks.py` L1085-L1126 | Ciclo de módulo perdido silenciosamente |
+| N9 | MEDIUM | Dynamic weights: atribución completa del trade a TODOS los módulos activos, no proporcional al peso de contribución | `signals/allocator.py` L107-L113 | WR converge al promedio del sistema en vez de por módulo |
+
+### 24.4 Hallazgos nuevos — LOW / INFO
+
+| # | Severidad | Hallazgo | Ubicación | Impacto |
+|---|---|---|---|---|
+| N10 | LOW | `hmm_refit_interval=360` fijo en backtest — correcto en 1m (6h) pero 30h en 5m | `backtest/engine.py` L530 | Backtest 5m con régimen stale |
+| N11 | LOW | Signal flip no cancela stop orders huérfanas del trade cerrado | `execution/tasks.py` L3446-L3498 | Consume slots de órdenes en exchange |
+| N12 | LOW | Lock release no atómica (GET + DELETE). Debería ser Lua script | `execution/tasks.py` L354-L362 | Race condition teórica |
+| N13 | LOW | `_log_operation` tiene decorador `@shared_task` pero siempre se llama síncronamente | `execution/tasks.py` L1409 | Overhead innecesario |
+| N14 | LOW | Drawdown checker resetea equity de referencia silenciosamente ante corrupción Redis | `execution/tasks.py` L605-L615 | DD en progreso se "olvida" |
+| N15 | INFO | SMC score weights suman 1.05 (capped a 1.0) | `signals/tasks.py` L514-L525 | By design |
+| N16 | INFO | `RegimeFilterConfig` model no se usa en código operativo | `risk/models.py` L104-L161 | Dead code |
+| N17 | INFO | Volume mount `.:/app` incluye `.env` + source en todos los containers | `docker-compose.yml` L7 | Superficie de ataque ampliada |
+
+### 24.5 Validación matemática
+
+| Componente | Estado | Nota |
+|---|---|---|
+| Position sizing (fixed fractional) | **Correcto** | Delegado a `risk_policy.py` compartido |
+| ADX Wilder 14p | **Correcto** | Implementación fiel |
+| Z-score meanrev | **Correcto** | ddof=0 apropiado |
+| Trend score [0.50, 1.00] | **Correcto** | Saturación correcta |
+| Carry score con floor 0.05 | **Correcto** | |
+| Allocator net_score | **Correcto** | Bayesian dynamic weights correctos (Beta conjugate) |
+| GARCH blend (60/40) con floor | **Correcto** | Floor doble: absoluto + ATR ratio |
+| HMM labeling con histéresis | **Correcto** | 2 capas: label memory + vol gap check |
+
+### 24.6 Plan de acción recomendado
+
+**Inmediato (esta semana):**
+
+| # | Acción | Esfuerzo |
+|---|---|---|
+| N1 | Alinear `MODULE_LOOKBACK_BARS` default a ≥300 (o bajar warmup a ≤240) | 5 min |
+| N3 | Re-colocar SL si trailing close falla (catch → place SL original) | 30 min |
+| N7 | Bind puertos Docker a `127.0.0.1` | 5 min |
+
+**Corto plazo (1-2 semanas):**
+
+| # | Acción | Esfuerzo |
+|---|---|---|
+| N2 | Agregar `autoretry_for` + `retry_backoff` a `execute_orders` | 15 min |
+| N4 | Eliminar `compute_atr_pct` duplicado en `signals/tasks.py`, usar `signals/modules/common.py` | 30 min |
+| N5 | Actualizar `current_qty` tras partial close success | 30 min |
+| N8 | Agregar retry a tasks de módulos individuales | 15 min |
+| N10 | Adaptar `hmm_refit_interval` al timeframe del backtest | 15 min |
+
+**Medio plazo:**
+
+| # | Acción | Esfuerzo |
+|---|---|---|
+| N9 | Atribución proporcional al peso del módulo en dynamic weights | 2h |
+| N11 | Cancelar stop orders huérfanas en signal flip | 30 min |
+| N12 | Usar Lua script para lock release atómica | 30 min |
+
+### 24.7 Calificación actualizada por área
+
+| Área | Pre-auditoría #1 | Post-auditoría #1 | Auditoría #2 |
+|---|---|---|---|
+| Modelo de señales | B+ | B+ | **B+** |
+| Allocator | B | B+ | **A-** |
+| Ejecución | C | B- | **B** |
+| Gestión de riesgo | C+ | B- | **B** |
+| Backtest | B- | B | **B+** |
+| Infraestructura | D+ | B- | **B-** |
+| Seguridad | D | B- | **B-** |
+| Mantenibilidad | C- | B- | **B** |
+
+### 24.8 Conclusión ejecutiva
+
+- **15/15 ítems de auditoría #1 cerrados** y verificados en código.
+- **17 hallazgos nuevos**: 0 críticos, 1 HIGH (N1 — defaults inconsistentes, fix trivial), 2 MEDIUM-HIGH, 6 MEDIUM, 8 LOW/INFO.
+- Los más urgentes son N1 (5 min), N3 (30 min) y N7 (5 min) — total ~40 min de trabajo.
+- El sistema está operativo, estable y significativamente más robusto que en la auditoría #1.
+- La base cuantitativa (señales, allocator, sizing, GARCH, HMM) es **sólida** y matemáticamente correcta.
+- El riesgo residual principal está en infraestructura Docker (puertos expuestos) y resiliencia de ejecución (retry en execute_orders).

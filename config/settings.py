@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -9,8 +10,14 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv("SECRET_KEY", "changeme-in-prod")
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+SECRET_KEY = os.getenv("SECRET_KEY", "changeme-in-prod")
+if not DEBUG and SECRET_KEY.strip() in {"", "changeme-in-prod", "change-me"}:
+    warnings.warn(
+        "Insecure SECRET_KEY detected with DEBUG=false. Set a strong SECRET_KEY in environment.",
+        RuntimeWarning,
+    )
+
 USE_SQLITE = os.getenv("USE_SQLITE", "false").lower() == "true"
 MODE = os.getenv("MODE", "paper").lower()
 TRADING_ENABLED = os.getenv("TRADING_ENABLED", "true").lower() == "true"
@@ -47,16 +54,32 @@ _ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION_RAW = os.getenv(
 )
 ENTRY_VOLUME_FILTER_FAIL_OPEN = os.getenv("ENTRY_VOLUME_FILTER_FAIL_OPEN", "true").lower() == "true"
 DAILY_DD_LIMIT = float(os.getenv("DAILY_DD_LIMIT", "0.05"))     # 5% daily max drawdown (was 100% disabled — now active)
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
+_allowed_hosts_raw = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost")
+ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_raw.split(",") if h.strip()]
+if not ALLOWED_HOSTS:
+    ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+if not DEBUG and "*" in ALLOWED_HOSTS:
+    warnings.warn(
+        "ALLOWED_HOSTS contained '*' with DEBUG=false; falling back to localhost-only hosts.",
+        RuntimeWarning,
+    )
+    ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 
 # -- New: Risk-based position sizing --
 RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.0075"))  # 0.75% of equity risked per trade (was 1% — tighter risk per trade)
 ORDER_MARGIN_BUFFER_PCT = float(os.getenv("ORDER_MARGIN_BUFFER_PCT", "0.03"))  # reserve margin for fees/slippage
+ORDER_MARGIN_BUFFER_MAX_PCT = max(
+    0.0,
+    min(1.0, float(os.getenv("ORDER_MARGIN_BUFFER_MAX_PCT", "0.20"))),
+)
 MIN_SIGNAL_SCORE = float(os.getenv("MIN_SIGNAL_SCORE", "0.85"))  # Minimum signal score to open (was 0.80 — only take high-confidence signals)
 EXECUTION_MIN_SIGNAL_SCORE = float(
     os.getenv("EXECUTION_MIN_SIGNAL_SCORE", str(MIN_SIGNAL_SCORE))
 )  # extra safety gate at execution time
 MAX_EXPOSURE_PER_INSTRUMENT_PCT = float(os.getenv("MAX_EXPOSURE_PER_INSTRUMENT_PCT", "0.25"))  # max 25% equity per instrument (was 33% — reduce concentration risk)
+VOL_RISK_LOW_ATR_PCT = max(0.0, float(os.getenv("VOL_RISK_LOW_ATR_PCT", "0.008")))
+VOL_RISK_HIGH_ATR_PCT = max(VOL_RISK_LOW_ATR_PCT + 1e-9, float(os.getenv("VOL_RISK_HIGH_ATR_PCT", "0.015")))
+VOL_RISK_MIN_SCALE = max(0.0, min(1.0, float(os.getenv("VOL_RISK_MIN_SCALE", "0.6"))))
 
 # -- New: Signal TTL --
 SIGNAL_TTL_SECONDS = int(os.getenv("SIGNAL_TTL_SECONDS", "300"))  # 5 min, stale signals are ignored
@@ -72,6 +95,8 @@ BREAKEVEN_STOP_ENABLED = os.getenv("BREAKEVEN_STOP_ENABLED", "true").lower() == 
 BREAKEVEN_STOP_AT_R = float(os.getenv("BREAKEVEN_STOP_AT_R", "0.75"))  # move SL to entry after 0.75R in profit (was 1.0 — protect capital earlier)
 BREAKEVEN_STOP_OFFSET_PCT = float(os.getenv("BREAKEVEN_STOP_OFFSET_PCT", "0.001"))  # 0.1% buffer above entry to cover fees/slippage (was 0 — losing on BE)
 BREAKEVEN_WINDOW_MINUTES = int(os.getenv("BREAKEVEN_WINDOW_MINUTES", "0"))  # 0 = disabled (no time filter)
+TRAILING_STATE_TTL_SECONDS = max(60, int(os.getenv("TRAILING_STATE_TTL_SECONDS", "172800")))
+TRAILING_SL_MIN_MOVE_PCT = max(0.0, float(os.getenv("TRAILING_SL_MIN_MOVE_PCT", "0.0002")))
 VOL_FAST_EXIT_ENABLED = os.getenv("VOL_FAST_EXIT_ENABLED", "false").lower() == "true"
 VOL_FAST_EXIT_ATR_PCT = max(0.0, float(os.getenv("VOL_FAST_EXIT_ATR_PCT", "0.012")))
 VOL_FAST_EXIT_TP_MULT = max(0.1, min(1.0, float(os.getenv("VOL_FAST_EXIT_TP_MULT", "0.75"))))
@@ -82,6 +107,41 @@ SIGNAL_COOLDOWN_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "1440"))  # 2
 SIGNAL_COOLDOWN_AFTER_SL_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_AFTER_SL_MINUTES", "360"))  # 6h cooldown after SL — NOTE: faster than 24h default, but SLOWER if .env sets SIGNAL_COOLDOWN_MINUTES < 360
 PARTIAL_CLOSE_AT_R = float(os.getenv("PARTIAL_CLOSE_AT_R", "0.8"))  # close 50% at 0.8R (was 1.0 — secure partial profits earlier)
 PARTIAL_CLOSE_PCT = float(os.getenv("PARTIAL_CLOSE_PCT", "0.5"))  # close 50% of position
+PARTIAL_CLOSE_MIN_REMAINING_QTY = max(
+    0.0,
+    float(os.getenv("PARTIAL_CLOSE_MIN_REMAINING_QTY", "0.0")),
+)
+POSITION_QTY_EPSILON = max(0.0, float(os.getenv("POSITION_QTY_EPSILON", "1e-12")))
+POSITION_OPENED_FALLBACK_MAX_HOURS = max(
+    1,
+    int(os.getenv("POSITION_OPENED_FALLBACK_MAX_HOURS", "72")),
+)
+EXCHANGE_CLOSE_CLASSIFY_STOP_SCALE = max(
+    0.05,
+    float(os.getenv("EXCHANGE_CLOSE_CLASSIFY_STOP_SCALE", "0.35")),
+)
+EXCHANGE_CLOSE_CLASSIFY_TP_SCALE = max(
+    0.05,
+    float(os.getenv("EXCHANGE_CLOSE_CLASSIFY_TP_SCALE", "0.35")),
+)
+EXCHANGE_CLOSE_CLASSIFY_MIN_BAND_PCT = max(
+    0.0,
+    float(os.getenv("EXCHANGE_CLOSE_CLASSIFY_MIN_BAND_PCT", "0.0015")),
+)
+EXCHANGE_CLOSE_CLASSIFY_BREAKEVEN_SCALE = max(
+    0.0,
+    float(os.getenv("EXCHANGE_CLOSE_CLASSIFY_BREAKEVEN_SCALE", "0.20")),
+)
+EXCHANGE_CLOSE_RECENT_BOT_CLOSE_MINUTES = max(
+    1,
+    int(os.getenv("EXCHANGE_CLOSE_RECENT_BOT_CLOSE_MINUTES", "5")),
+)
+EXCHANGE_CLOSE_DEDUP_MINUTES = max(
+    1,
+    int(os.getenv("EXCHANGE_CLOSE_DEDUP_MINUTES", "3")),
+)
+SL_RECONCILE_TOO_TIGHT_MULT = max(0.0, float(os.getenv("SL_RECONCILE_TOO_TIGHT_MULT", "0.80")))
+SL_RECONCILE_TOO_WIDE_MULT = max(1.0, float(os.getenv("SL_RECONCILE_TOO_WIDE_MULT", "2.00")))
 PYRAMIDING_ENABLED = os.getenv("PYRAMIDING_ENABLED", "true").lower() == "true"  # ENABLED: scale into winners (78-80% success rate per entry-signals skill)
 PYRAMID_MAX_ADDS = int(os.getenv("PYRAMID_MAX_ADDS", "2"))
 PYRAMID_ADD_AT_R = float(os.getenv("PYRAMID_ADD_AT_R", "0.8"))
@@ -155,6 +215,9 @@ WEEKLY_DD_LIMIT = float(os.getenv("WEEKLY_DD_LIMIT", "0.10"))  # 10%
 MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "6"))  # max new entries per day across all instruments
 MAX_DAILY_TRADES_LOW_ADX = int(os.getenv("MAX_DAILY_TRADES_LOW_ADX", "3"))  # max trades when ADX < 20 (choppy market)
 MAX_DAILY_TRADES_HIGH_ADX = int(os.getenv("MAX_DAILY_TRADES_HIGH_ADX", "10"))  # max trades when ADX > 25 (strong trend)
+MAX_DAILY_TRADES_LOW_ADX_THRESHOLD = float(os.getenv("MAX_DAILY_TRADES_LOW_ADX_THRESHOLD", "20"))
+MAX_DAILY_TRADES_HIGH_ADX_THRESHOLD = float(os.getenv("MAX_DAILY_TRADES_HIGH_ADX_THRESHOLD", "25"))
+DAILY_TRADE_COUNT_TTL_SECONDS = max(60, int(os.getenv("DAILY_TRADE_COUNT_TTL_SECONDS", "90000")))
 
 # -- Global market regime gate (BTC 1h ADX) --
 # Block ALL new entries when BTC 1h ADX is below this threshold (choppy macro).
@@ -524,6 +587,14 @@ HMM_REGIME_CACHE_TTL_HOURS = int(os.getenv("HMM_REGIME_CACHE_TTL_HOURS", "12"))
 HMM_REGIME_PER_SYMBOL = os.getenv("HMM_REGIME_PER_SYMBOL", "false").lower() == "true"
 HMM_REGIME_TRENDING_RISK_MULT = float(os.getenv("HMM_REGIME_TRENDING_RISK_MULT", "1.0"))
 HMM_REGIME_CHOPPY_RISK_MULT = float(os.getenv("HMM_REGIME_CHOPPY_RISK_MULT", "0.7"))
+HMM_REGIME_LABEL_HYSTERESIS_VOL = max(
+    0.0,
+    float(os.getenv("HMM_REGIME_LABEL_HYSTERESIS_VOL", "0.0005")),
+)
+HMM_REGIME_LABEL_MEMORY_TTL_HOURS = max(
+    1,
+    int(os.getenv("HMM_REGIME_LABEL_MEMORY_TTL_HOURS", "168")),
+)
 
 # --- GARCH Volatility Forecasting ---
 GARCH_ENABLED = os.getenv("GARCH_ENABLED", "false").lower() == "true"
@@ -532,6 +603,9 @@ GARCH_TIMEFRAME = os.getenv("GARCH_TIMEFRAME", "1h").strip()
 GARCH_REFIT_HOURS = int(os.getenv("GARCH_REFIT_HOURS", "6"))
 GARCH_CACHE_TTL_HOURS = int(os.getenv("GARCH_CACHE_TTL_HOURS", "12"))
 GARCH_BLEND_WEIGHT = float(os.getenv("GARCH_BLEND_WEIGHT", "0.6"))
+GARCH_MAX_PERSISTENCE = max(0.0, float(os.getenv("GARCH_MAX_PERSISTENCE", "1.0")))
+GARCH_BLEND_VOL_FLOOR_PCT = max(0.0, float(os.getenv("GARCH_BLEND_VOL_FLOOR_PCT", "0.003")))
+GARCH_BLEND_FLOOR_ATR_RATIO = max(0.0, float(os.getenv("GARCH_BLEND_FLOOR_ATR_RATIO", "0.5")))
 
 try:
     ALLOCATOR_MODULE_WEIGHTS = {
@@ -557,6 +631,14 @@ LIVE_GRADUAL_MAX_MODULES = int(os.getenv("LIVE_GRADUAL_MAX_MODULES", "3"))
 LIVE_GRADUAL_MAX_SYMBOLS_PER_MODULE = int(
     os.getenv("LIVE_GRADUAL_MAX_SYMBOLS_PER_MODULE", "7")
 )
+_LIVE_GRADUAL_MODULE_PRIORITY_RAW = os.getenv("LIVE_GRADUAL_MODULE_PRIORITY", "{}")
+try:
+    LIVE_GRADUAL_MODULE_PRIORITY = {
+        str(k).strip().lower(): float(v)
+        for k, v in _json.loads(_LIVE_GRADUAL_MODULE_PRIORITY_RAW).items()
+    }
+except Exception:
+    LIVE_GRADUAL_MODULE_PRIORITY = {}
 MACRO_HIGH_IMPACT_UTC_HOURS = _parse_int_set(
     _MACRO_HIGH_IMPACT_UTC_HOURS_RAW,
     min_val=0,
@@ -678,16 +760,29 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticatedOrReadOnly",
+        (
+            "rest_framework.permissions.IsAuthenticatedOrReadOnly"
+            if os.getenv("API_PUBLIC_READ_ENABLED", "false").lower() == "true"
+            else "rest_framework.permissions.IsAuthenticated"
+        ),
     ],
 }
 
-CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "").strip()
+_default_redis_url = "redis://localhost:6379/0"
+if REDIS_PASSWORD:
+    _default_redis_url = f"redis://:{REDIS_PASSWORD}@localhost:6379/0"
+
+CELERY_BROKER_URL = os.getenv("REDIS_URL", _default_redis_url)
+CELERY_RESULT_BACKEND = os.getenv("REDIS_URL", _default_redis_url)
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_DEFAULT_QUEUE = os.getenv("CELERY_TASK_DEFAULT_QUEUE", "celery")
+CELERY_DLQ_REDIS_KEY = os.getenv("CELERY_DLQ_REDIS_KEY", "celery:dlq")
+CELERY_DLQ_MAXLEN = max(100, int(os.getenv("CELERY_DLQ_MAXLEN", "2000")))
+CELERY_NOTIFY_ON_FAILURE = os.getenv("CELERY_NOTIFY_ON_FAILURE", "true").lower() == "true"
 
 # Queue routing: trading tasks get priority over market data
 CELERY_TASK_ROUTES = {

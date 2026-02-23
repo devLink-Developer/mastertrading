@@ -100,3 +100,23 @@ class BingXAdapterCreateOrderTests(SimpleTestCase):
             )
 
         self.assertEqual(client.create_order.call_count, 3)
+
+    def test_create_order_retries_network_errors(self):
+        client = mock.Mock()
+        client.create_order.side_effect = [
+            ccxt.RequestTimeout("timeout-1"),
+            ccxt.RequestTimeout("timeout-2"),
+            {"id": "ok-net"},
+        ]
+        adapter = self._build_adapter(client)
+
+        resp = adapter.create_order(
+            symbol="BTCUSDT",
+            side="buy",
+            type_="market",
+            amount=0.1,
+            params={},
+        )
+
+        self.assertEqual(resp["id"], "ok-net")
+        self.assertEqual(client.create_order.call_count, 3)

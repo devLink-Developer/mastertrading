@@ -3,7 +3,8 @@ Tests for signals.garch — GARCH(1,1) volatility forecasting.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -77,6 +78,27 @@ class TestFitGarch(TestCase):
         # High vol series should produce higher conditional vol forecast
         self.assertGreater(high_vol["cond_vol"], low_vol["cond_vol"])
 
+    @override_settings(GARCH_MAX_PERSISTENCE=1.0)
+    def test_returns_none_when_persistence_above_limit(self):
+        from signals.garch import _fit_garch
+
+        mock_result = MagicMock()
+        mock_result.forecast.return_value = SimpleNamespace(
+            variance=pd.DataFrame([[1.0]]),
+        )
+        mock_result.params = {"omega": 0.1, "alpha[1]": 0.7, "beta[1]": 0.5}
+        mock_result.loglikelihood = -100.0
+        mock_result.aic = 250.0
+        mock_result.bic = 260.0
+        mock_result.nobs = 300
+
+        mock_model = MagicMock()
+        mock_model.fit.return_value = mock_result
+
+        with patch("arch.arch_model", return_value=mock_model):
+            result = _fit_garch(_make_returns(300, vol=0.01))
+        self.assertIsNone(result)
+
 
 class TestForecastVolFromDf(TestCase):
     """Tests for forecast_vol_from_df() (backtest helper)."""
@@ -137,6 +159,34 @@ class TestBlendedVol(TestCase):
         mock_garch.return_value = None
         result = blended_vol("BTCUSDT", None)
         self.assertIsNone(result)
+
+    @override_settings(
+        GARCH_ENABLED=True,
+        GARCH_BLEND_WEIGHT=0.6,
+        GARCH_BLEND_VOL_FLOOR_PCT=0.003,
+        GARCH_BLEND_FLOOR_ATR_RATIO=0.5,
+    )
+    @patch("signals.garch.garch_vol_pct")
+    def test_blended_vol_applies_atr_ratio_floor(self, mock_garch):
+        from signals.garch import blended_vol
+
+        mock_garch.return_value = 0.0001
+        result = blended_vol("BTCUSDT", 0.008)
+        # Raw blend ~= 0.00326; floor=max(0.003, 0.008*0.5=0.004) => 0.004
+        self.assertAlmostEqual(result, 0.004, places=6)
+
+    @override_settings(
+        GARCH_ENABLED=True,
+        GARCH_BLEND_WEIGHT=0.6,
+        GARCH_BLEND_VOL_FLOOR_PCT=0.003,
+    )
+    @patch("signals.garch.garch_vol_pct")
+    def test_blended_vol_applies_absolute_floor_when_only_garch(self, mock_garch):
+        from signals.garch import blended_vol
+
+        mock_garch.return_value = 0.0002
+        result = blended_vol("BTCUSDT", None)
+        self.assertAlmostEqual(result, 0.003, places=6)
 
 
 class TestGarchVolPct(TestCase):

@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from core.models import Instrument
 from signals.allocator import resolve_symbol_allocation
-from signals.multi_strategy import run_allocator_cycle
+from signals.multi_strategy import run_allocator_cycle, _active_modules
 from .feature_flags import FEATURE_FLAGS_VERSION, FEATURE_KEYS, resolve_runtime_flags
 from .models import Signal, StrategyConfig
 from .modules.common import strategy_module
@@ -16,7 +16,7 @@ from .sessions import (
     is_dead_session,
 )
 from .tasks import _ema_confluence_state
-from .tasks import _detect_signal, _smc_impulse_bar_state, _smc_is_impulse_bar
+from .tasks import _detect_signal, _smc_impulse_bar_state, _smc_is_impulse_bar, run_signal_engine
 from .direction_policy import (
     get_direction_mode,
     is_direction_allowed,
@@ -39,6 +39,14 @@ class SignalModelTest(TestCase):
             score=1.0,
         )
         self.assertIn("test", str(sig))
+
+
+class SignalEngineTaskConfigTest(SimpleTestCase):
+    def test_run_signal_engine_retry_policy(self):
+        self.assertEqual(run_signal_engine.max_retries, 3)
+        self.assertTrue(run_signal_engine.retry_backoff)
+        self.assertTrue(run_signal_engine.acks_late)
+        self.assertEqual(run_signal_engine.autoretry_for, (Exception,))
 
 
 class SessionHelpersTest(TestCase):
@@ -266,6 +274,21 @@ class AllocatorWeightingTest(TestCase):
         reduced_row = _smc_row(reduced)
         self.assertGreater(float(boosted_row.get("weight", 0.0)), float(reduced_row.get("weight", 0.0)))
 
+    @override_settings(ALLOCATOR_MIN_MODULES_ACTIVE=2)
+    def test_allocator_enforces_internal_min_modules_gate(self):
+        out = resolve_symbol_allocation(
+            [{"module": "trend", "direction": "long", "confidence": 0.95}],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+        )
+        self.assertEqual(out["direction"], "flat")
+        self.assertEqual(out["symbol_state"], "blocked")
+        self.assertEqual(out["reasons"]["active_module_count"], 1)
+        self.assertEqual(out["reasons"]["required_modules"], 2)
+
 
 class DirectionPolicyHelpersTest(TestCase):
     def test_normalize_helpers(self):
@@ -301,6 +324,44 @@ class StrategyModuleParsingTest(TestCase):
     def test_strategy_module_supports_smc(self):
         self.assertEqual(strategy_module("smc_long"), ("smc", "long"))
         self.assertEqual(strategy_module("smc_short"), ("smc", "short"))
+
+
+class LiveGradualModuleSelectionTest(SimpleTestCase):
+    @override_settings(
+        ALLOCATOR_INCLUDE_SMC=True,
+        LIVE_GRADUAL_ENABLED=True,
+        LIVE_GRADUAL_MAX_MODULES=2,
+        LIVE_GRADUAL_MODULE_PRIORITY={},
+        ALLOCATOR_MODULE_WEIGHTS={"trend": 0.10, "meanrev": 0.25, "carry": 0.15, "smc": 0.50},
+    )
+    def test_active_modules_prioritize_highest_weight_modules(self):
+        flags = {
+            FEATURE_KEYS["trend"]: True,
+            FEATURE_KEYS["meanrev"]: True,
+            FEATURE_KEYS["carry"]: True,
+            FEATURE_KEYS["allocator"]: True,
+            FEATURE_KEYS["multi"]: True,
+        }
+        selected = _active_modules(flags)
+        self.assertEqual(selected, ["smc", "meanrev"])
+
+    @override_settings(
+        ALLOCATOR_INCLUDE_SMC=True,
+        LIVE_GRADUAL_ENABLED=True,
+        LIVE_GRADUAL_MAX_MODULES=2,
+        LIVE_GRADUAL_MODULE_PRIORITY={"trend": 100, "smc": 10, "meanrev": 1, "carry": 0},
+        ALLOCATOR_MODULE_WEIGHTS={"trend": 0.10, "meanrev": 0.25, "carry": 0.15, "smc": 0.50},
+    )
+    def test_active_modules_honor_explicit_priority_override(self):
+        flags = {
+            FEATURE_KEYS["trend"]: True,
+            FEATURE_KEYS["meanrev"]: True,
+            FEATURE_KEYS["carry"]: True,
+            FEATURE_KEYS["allocator"]: True,
+            FEATURE_KEYS["multi"]: True,
+        }
+        selected = _active_modules(flags)
+        self.assertEqual(selected, ["trend", "smc"])
 
 
 @override_settings(

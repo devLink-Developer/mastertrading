@@ -11,6 +11,8 @@ from execution.models import OperationReport, Order
 from marketdata.models import Candle
 from execution.tasks import (
     _acquire_task_lock,
+    _check_trailing_stop,
+    _classify_exchange_close,
     _count_pyramid_adds,
     _check_drawdown,
     _compute_tp_sl_prices,
@@ -26,18 +28,22 @@ from execution.tasks import (
     _position_root_correlation,
     _release_task_lock,
     _reconcile_sl,
+    _resolve_signal_direction,
     _safe_correlation_id,
     _signal_active_modules,
+    _signal_entry_reason,
     _is_macro_high_impact_window,
     _volume_activity_ratio,
     _volume_gate_allowed,
     _volume_gate_min_ratio,
+    _volatility_adjusted_risk,
 )
 
 
 class _DummyRedis:
     def __init__(self):
         self.store: dict[str, str] = {}
+        self.expiry: dict[str, int] = {}
 
     def ping(self):
         return True
@@ -49,6 +55,8 @@ class _DummyRedis:
         if nx and key in self.store:
             return False
         self.store[key] = str(value)
+        if ex is not None:
+            self.expiry[key] = int(ex)
         return True
 
     def delete(self, key: str):
@@ -68,6 +76,25 @@ class _DummyAdapter:
     @staticmethod
     def _map_symbol(symbol: str) -> str:
         return symbol
+
+    def create_order(self, symbol: str, side: str, type_: str, amount: float, price=None, params=None):
+        return {
+            "id": "dummy-order",
+            "symbol": symbol,
+            "side": side,
+            "type": type_,
+            "amount": amount,
+            "price": price,
+            "params": params or {},
+        }
+
+    @staticmethod
+    def fetch_closed_orders(_symbol: str, since: int | None = None, limit: int = 10):
+        return []
+
+    @staticmethod
+    def fetch_ticker(_symbol: str):
+        return {"last": 100.0}
 
 
 class TaskHelpersTest(SimpleTestCase):
@@ -101,6 +128,30 @@ class TaskHelpersTest(SimpleTestCase):
         market = {"limits": {"amount": {"min": 0.2}}}
         self.assertEqual(_market_min_qty(market, fallback=1.0), 0.2)
         self.assertEqual(_market_min_qty({}, fallback=1.0), 1.0)
+
+    @override_settings(PER_INSTRUMENT_RISK={"BTCUSDT": 0.0015})
+    def test_volatility_adjusted_risk_caps_per_symbol_to_base_allocator_risk(self):
+        # Per-instrument config should never increase a low-confidence allocator budget.
+        risk = _volatility_adjusted_risk("BTCUSDT", atr_pct=0.01, base_risk=0.0005)
+        self.assertAlmostEqual(risk, 0.0005, places=8)
+
+    @override_settings(PER_INSTRUMENT_RISK={"BTCUSDT": 0.0015})
+    def test_volatility_adjusted_risk_still_honors_lower_per_symbol_cap(self):
+        # If allocator budget is higher than per-symbol cap, the lower cap wins.
+        risk = _volatility_adjusted_risk("BTCUSDT", atr_pct=0.01, base_risk=0.0025)
+        self.assertAlmostEqual(risk, 0.0015, places=8)
+
+    @override_settings(
+        PER_INSTRUMENT_RISK={},
+        INSTRUMENT_RISK_TIERS_ENABLED=False,
+        VOL_RISK_LOW_ATR_PCT=0.01,
+        VOL_RISK_HIGH_ATR_PCT=0.02,
+        VOL_RISK_MIN_SCALE=0.5,
+    )
+    def test_volatility_adjusted_risk_uses_configurable_atr_ramp(self):
+        # atr=1.5% is midpoint between 1.0% and 2.0% -> scale 0.75 when min_scale=0.5
+        risk = _volatility_adjusted_risk("ETHUSDT", atr_pct=0.015, base_risk=0.01)
+        self.assertAlmostEqual(risk, 0.0075, places=8)
 
     def test_normalize_order_qty_uses_exchange_precision(self):
         adapter = _DummyAdapter()
@@ -175,6 +226,37 @@ class TaskHelpersTest(SimpleTestCase):
     def test_signal_active_modules_falls_back_to_strategy_module(self):
         self.assertEqual(_signal_active_modules({}, "mod_meanrev_short"), ["meanrev"])
         self.assertEqual(_signal_active_modules({}, "smc_long"), ["smc"])
+
+    def test_signal_entry_reason_from_module_rows(self):
+        payload = {
+            "risk_budget_pct": 0.0007,
+            "reasons": {
+                "net_score": 1.234,
+                "module_rows": [
+                    {"module": "carry", "direction": "short", "confidence": 0.9886},
+                    {"module": "trend", "direction": "short", "confidence": 0.6238},
+                ],
+            },
+        }
+        reason = _signal_entry_reason(payload, "alloc_short")
+        self.assertIn("signal=alloc_short", reason)
+        self.assertIn("confluencia: carry short (0.99), trend short (0.62)", reason)
+        self.assertIn("risk_budget=0.070%", reason)
+        self.assertIn("net_score=1.234", reason)
+
+    def test_signal_entry_reason_falls_back_to_strategy_module(self):
+        reason = _signal_entry_reason({}, "mod_meanrev_long")
+        self.assertIn("signal=mod_meanrev_long", reason)
+        self.assertIn("confluencia: meanrev", reason)
+
+    def test_resolve_signal_direction_for_allocator(self):
+        self.assertEqual(_resolve_signal_direction("alloc_long"), ("long", "buy"))
+        self.assertEqual(_resolve_signal_direction("alloc_short"), ("short", "sell"))
+
+    def test_resolve_signal_direction_for_legacy_and_flat(self):
+        self.assertEqual(_resolve_signal_direction("mod_trend_long"), ("long", "buy"))
+        self.assertEqual(_resolve_signal_direction("mod_meanrev_short"), ("short", "sell"))
+        self.assertEqual(_resolve_signal_direction("mod_carry"), ("flat", ""))
 
     def test_task_lock_acquire_and_release(self):
         dummy = _DummyRedis()
@@ -274,6 +356,28 @@ class TaskHelpersTest(SimpleTestCase):
                     cancel_mock.assert_called_once()
                     place_mock.assert_called_once()
 
+    @override_settings(SL_RECONCILE_TOO_TIGHT_MULT=0.20, SL_RECONCILE_TOO_WIDE_MULT=2.0)
+    def test_reconcile_sl_tight_multiplier_can_avoid_replacement(self):
+        # current SL distance=0.3%; expected=1.0% -> with tight_mult=0.2, threshold=0.2% (not too tight)
+        with patch("execution.tasks._compute_tp_sl_prices", return_value=(101.0, 99.0, 0.01, 0.01)):
+            with patch("execution.tasks._has_sl_stop_order", return_value=(True, 99.7, [{"stopPrice": 99.7}])):
+                with patch("execution.tasks._cancel_stop_orders") as cancel_mock:
+                    with patch("execution.tasks._place_sl_order") as place_mock:
+                        _reconcile_sl(object(), "BTCUSDT", "buy", 1.0, 100.0, atr_pct=None)
+                        cancel_mock.assert_not_called()
+                        place_mock.assert_not_called()
+
+    @override_settings(SL_RECONCILE_TOO_TIGHT_MULT=0.50, SL_RECONCILE_TOO_WIDE_MULT=2.0)
+    def test_reconcile_sl_tight_multiplier_can_force_replacement(self):
+        # current SL distance=0.3%; expected=1.0% -> with tight_mult=0.5, threshold=0.5% (too tight)
+        with patch("execution.tasks._compute_tp_sl_prices", return_value=(101.0, 99.0, 0.01, 0.01)):
+            with patch("execution.tasks._has_sl_stop_order", return_value=(True, 99.7, [{"stopPrice": 99.7}])):
+                with patch("execution.tasks._cancel_stop_orders") as cancel_mock:
+                    with patch("execution.tasks._place_sl_order") as place_mock:
+                        _reconcile_sl(object(), "BTCUSDT", "buy", 1.0, 100.0, atr_pct=None)
+                        cancel_mock.assert_called_once()
+                        place_mock.assert_called_once()
+
     @override_settings(
         TAKE_PROFIT_PCT=0.01,
         STOP_LOSS_PCT=0.007,
@@ -290,6 +394,130 @@ class TaskHelpersTest(SimpleTestCase):
         _, _, tp_pct, _ = _compute_tp_sl_prices("buy", 100.0, atr_pct=0.02)
         # Base ATR TP=4.4%; dynamic mult (0.9) then fast-exit (0.75) -> 2.97%
         self.assertAlmostEqual(tp_pct, 0.0297, places=6)
+
+    @override_settings(
+        TRAILING_STOP_ENABLED=True,
+        PARTIAL_CLOSE_AT_R=0.8,
+        PARTIAL_CLOSE_PCT=0.5,
+        PARTIAL_CLOSE_MIN_REMAINING_QTY=0.0,
+    )
+    def test_partial_close_supports_fractional_position_size(self):
+        adapter = _DummyAdapter()
+        calls: list[dict] = []
+
+        def _capture_order(symbol, side, type_, amount, price=None, params=None):
+            calls.append(
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "type": type_,
+                    "amount": amount,
+                    "price": price,
+                    "params": params or {},
+                }
+            )
+            return {"id": "pc-1"}
+
+        adapter.create_order = _capture_order
+
+        with patch("execution.tasks._redis_client", return_value=_DummyRedis()):
+            closed, fee = _check_trailing_stop(
+                adapter=adapter,
+                symbol="BTCUSDT",
+                side="buy",
+                current_qty=1.5,
+                entry_price=100.0,
+                last_price=102.0,  # pnl=2%, with sl=2% => 1R
+                sl_pct=0.02,
+            )
+        self.assertFalse(closed)
+        self.assertEqual(fee, 0.0)
+        self.assertEqual(len(calls), 1)
+        self.assertGreater(calls[0]["amount"], 0.0)
+        self.assertLess(calls[0]["amount"], 1.5)
+        self.assertEqual(calls[0]["params"].get("reduceOnly"), True)
+
+    @override_settings(
+        TRAILING_STOP_ENABLED=True,
+        PARTIAL_CLOSE_AT_R=0.8,
+        PARTIAL_CLOSE_PCT=0.5,
+        TRAILING_STATE_TTL_SECONDS=111,
+    )
+    def test_trailing_state_uses_configured_ttl_seconds(self):
+        adapter = _DummyAdapter()
+        client = _DummyRedis()
+        with patch("execution.tasks._redis_client", return_value=client):
+            _check_trailing_stop(
+                adapter=adapter,
+                symbol="BTCUSDT",
+                side="buy",
+                current_qty=2.0,
+                entry_price=100.0,
+                last_price=102.0,
+                sl_pct=0.02,
+            )
+        self.assertTrue(any(k.startswith("trail:partial_done:") for k in client.expiry))
+        self.assertTrue(any(k.startswith("trail:max_fav:") for k in client.expiry))
+        self.assertTrue(all(v == 111 for v in client.expiry.values()))
+
+    @override_settings(
+        EXCHANGE_CLOSE_CLASSIFY_STOP_SCALE=0.35,
+        EXCHANGE_CLOSE_CLASSIFY_TP_SCALE=0.35,
+        EXCHANGE_CLOSE_CLASSIFY_MIN_BAND_PCT=0.0015,
+        EXCHANGE_CLOSE_CLASSIFY_BREAKEVEN_SCALE=0.20,
+        STOP_LOSS_PCT=0.015,
+        TAKE_PROFIT_PCT=0.02,
+        MIN_SL_PCT=0.012,
+    )
+    def test_classify_exchange_close_uses_scaled_sl_tp_hints(self):
+        adapter = _DummyAdapter()
+
+        stop_reason = _classify_exchange_close(
+            adapter=adapter,
+            symbol="BTCUSDT",
+            pos_side="buy",
+            entry_price=100.0,
+            liq_price_est=0.0,
+            exit_price=99.3,  # -0.70%
+            sl_pct_hint=0.012,
+            tp_pct_hint=0.02,
+        )
+        self.assertEqual(stop_reason, "exchange_stop")
+
+        tp_reason = _classify_exchange_close(
+            adapter=adapter,
+            symbol="BTCUSDT",
+            pos_side="buy",
+            entry_price=100.0,
+            liq_price_est=0.0,
+            exit_price=100.8,  # +0.80%
+            sl_pct_hint=0.012,
+            tp_pct_hint=0.02,
+        )
+        self.assertEqual(tp_reason, "exchange_tp_limit")
+
+    @override_settings(
+        EXCHANGE_CLOSE_CLASSIFY_STOP_SCALE=0.35,
+        EXCHANGE_CLOSE_CLASSIFY_TP_SCALE=0.35,
+        EXCHANGE_CLOSE_CLASSIFY_MIN_BAND_PCT=0.0015,
+        EXCHANGE_CLOSE_CLASSIFY_BREAKEVEN_SCALE=0.20,
+        STOP_LOSS_PCT=0.015,
+        TAKE_PROFIT_PCT=0.02,
+        MIN_SL_PCT=0.012,
+    )
+    def test_classify_exchange_close_near_breakeven_when_move_small_vs_sl(self):
+        adapter = _DummyAdapter()
+        reason = _classify_exchange_close(
+            adapter=adapter,
+            symbol="BTCUSDT",
+            pos_side="buy",
+            entry_price=100.0,
+            liq_price_est=0.0,
+            exit_price=99.61,  # -0.39%
+            sl_pct_hint=0.02,  # SL is 2%, so -0.4% is still near-breakeven band
+            tp_pct_hint=0.03,
+        )
+        self.assertEqual(reason, "near_breakeven")
 
     @override_settings(
         MACRO_HIGH_IMPACT_FILTER_ENABLED=True,

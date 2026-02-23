@@ -214,6 +214,7 @@ def resolve_symbol_allocation(
     session_risk_mult: float,
     weights: dict[str, float],
     risk_budgets: dict[str, float],
+    min_active_modules: int | None = None,
 ) -> dict:
     net_score = 0.0
     abs_capacity = 0.0
@@ -258,6 +259,34 @@ def resolve_symbol_allocation(
                 "contribution": round(contribution, 6),
             }
         )
+
+    required_modules = max(
+        1,
+        int(
+            min_active_modules
+            if min_active_modules is not None
+            else getattr(settings, "ALLOCATOR_MIN_MODULES_ACTIVE", 2)
+        ),
+    )
+    if len(module_contributions) < required_modules:
+        return {
+            "direction": "flat",
+            "raw_score": 0.0,
+            "net_score": 0.0,
+            "confidence": 0.0,
+            "risk_budget_pct": 0.0,
+            "symbol_state": "blocked",
+            "reasons": {
+                "threshold": round(float(threshold), 6),
+                "module_contributions": module_contributions,
+                "active_module_count": len(module_contributions),
+                "required_modules": required_modules,
+                "abs_capacity": round(abs_capacity, 6),
+                "base_risk_pct": round(float(base_risk_pct), 6),
+                "session_risk_mult": round(float(session_risk_mult), 6),
+                "budget_mix": 0.0,
+            },
+        }
 
     # --- Direction-aware score penalty (longs penalized in bear/range regimes) ---
     long_penalty = float(getattr(settings, "ALLOCATOR_LONG_SCORE_PENALTY", 1.0))

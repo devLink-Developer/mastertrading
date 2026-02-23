@@ -5,6 +5,7 @@ Supports sandbox via KUCOIN_SANDBOX env (default true).
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
 import ccxt
@@ -112,6 +113,57 @@ class KucoinFuturesAdapter:
     def fetch_balance(self):
         return self.client.fetch_balance()
 
+    @_retry_exchange
+    def _create_order_with_retry(
+        self,
+        mapped_symbol: str,
+        side: str,
+        type_: str,
+        amount: float,
+        price: Optional[float],
+        params: Dict[str, Any],
+    ):
+        return self.client.create_order(mapped_symbol, type_, side, amount, price, params)
+
+    @staticmethod
+    def _extract_client_oid(order: Dict[str, Any]) -> str:
+        if not isinstance(order, dict):
+            return ""
+        for key in ("clientOrderId", "clientOid", "client_order_id"):
+            raw = order.get(key)
+            if raw:
+                return str(raw)
+        info = order.get("info")
+        if isinstance(info, dict):
+            for key in ("clientOrderId", "clientOid", "client_id"):
+                raw = info.get(key)
+                if raw:
+                    return str(raw)
+        return ""
+
+    def _recover_order_by_client_oid(self, mapped_symbol: str, client_oid: str) -> Optional[Dict[str, Any]]:
+        if not client_oid:
+            return None
+        candidates: list[Dict[str, Any]] = []
+        try:
+            candidates.extend(self.fetch_open_orders(mapped_symbol) or [])
+        except Exception as exc:
+            logger.warning("open order recovery lookup failed for %s: %s", mapped_symbol, exc)
+        try:
+            candidates.extend(self.fetch_closed_orders(mapped_symbol, limit=30) or [])
+        except Exception as exc:
+            logger.warning("closed order recovery lookup failed for %s: %s", mapped_symbol, exc)
+
+        for order in candidates:
+            if self._extract_client_oid(order) == client_oid:
+                logger.warning(
+                    "Recovered KuCoin order by clientOid after create_order error: %s clientOid=%s",
+                    mapped_symbol,
+                    client_oid,
+                )
+                return order
+        return None
+
     def create_order(
         self,
         symbol: str,
@@ -121,7 +173,7 @@ class KucoinFuturesAdapter:
         price: Optional[float] = None,
         params: Optional[Dict[str, Any]] = None,
     ):
-        params = params or {}
+        params = dict(params or {})
         params.setdefault("marginMode", self.margin_mode)
         if self.leverage:
             params.setdefault("leverage", self.leverage)
@@ -134,7 +186,17 @@ class KucoinFuturesAdapter:
                 self._leverage_set_symbols.add(mapped)
         except Exception as exc:  # pragma: no cover - best effort
             logger.warning("set_leverage failed for %s: %s", mapped, exc)
-        return self.client.create_order(mapped, type_, side, amount, price, params)
+        client_oid = str(params.get("clientOid") or "").strip()
+        if not client_oid:
+            client_oid = f"mt-{uuid4().hex[:24]}"
+            params["clientOid"] = client_oid
+        try:
+            return self._create_order_with_retry(mapped, side, type_, amount, price, params)
+        except Exception:
+            recovered = self._recover_order_by_client_oid(mapped, client_oid)
+            if recovered is not None:
+                return recovered
+            raise
 
     @_retry_exchange
     def cancel_order(self, order_id: str, symbol: str):

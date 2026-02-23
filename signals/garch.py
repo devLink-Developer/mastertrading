@@ -70,12 +70,27 @@ def _fit_garch(returns: np.ndarray, p: int = 1, q: int = 1) -> Optional[dict]:
         return None
 
     params = result.params
+    alpha = float(params.get("alpha[1]", 0))
+    beta = float(params.get("beta[1]", 0))
+    persistence = alpha + beta
+    max_persistence = max(0.0, float(getattr(settings, "GARCH_MAX_PERSISTENCE", 1.0) or 1.0))
+    if not np.isfinite(persistence):
+        logger.warning("garch: invalid persistence (non-finite), dropping fit")
+        return None
+    if persistence > max_persistence:
+        logger.warning(
+            "garch: persistence %.4f above max %.4f, dropping fit",
+            persistence,
+            max_persistence,
+        )
+        return None
+
     return {
         "cond_vol": float(vol_forecast),
         "omega": float(params.get("omega", 0)) / 10000.0,   # back to original scale
-        "alpha": float(params.get("alpha[1]", 0)),
-        "beta": float(params.get("beta[1]", 0)),
-        "persistence": float(params.get("alpha[1]", 0)) + float(params.get("beta[1]", 0)),
+        "alpha": alpha,
+        "beta": beta,
+        "persistence": persistence,
         "log_likelihood": float(result.loglikelihood),
         "aic": float(result.aic),
         "bic": float(result.bic),
@@ -217,10 +232,15 @@ def blended_vol(symbol: str, atr_pct: float | None) -> float | None:
     w = float(getattr(settings, "GARCH_BLEND_WEIGHT", 0.6))
     w = max(0.0, min(1.0, w))
 
+    floor_abs = max(0.0, float(getattr(settings, "GARCH_BLEND_VOL_FLOOR_PCT", 0.003) or 0.003))
+    floor_atr_ratio = max(0.0, float(getattr(settings, "GARCH_BLEND_FLOOR_ATR_RATIO", 0.5) or 0.5))
+
     if garch is not None and atr_pct is not None and atr_pct > 0:
-        return w * garch + (1.0 - w) * atr_pct
+        blended = w * garch + (1.0 - w) * atr_pct
+        floor_dynamic = atr_pct * floor_atr_ratio
+        return max(blended, floor_abs, floor_dynamic)
     if garch is not None:
-        return garch
+        return max(garch, floor_abs)
     if atr_pct is not None and atr_pct > 0:
         return atr_pct
     return None

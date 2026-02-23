@@ -1,5 +1,7 @@
 from django.db import models
 
+from core.fields import EncryptedCredentialField
+
 
 class TimeStampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
@@ -41,9 +43,9 @@ class ExchangeCredential(TimeStampedModel):
         BINGX = "bingx", "BingX Perpetual"
 
     service = models.CharField(max_length=16, choices=Service.choices, unique=True)
-    api_key = models.CharField(max_length=256, blank=True, default="")
-    api_secret = models.CharField(max_length=256, blank=True, default="")
-    api_passphrase = models.CharField(max_length=256, blank=True, default="")
+    api_key = EncryptedCredentialField(blank=True, default="")
+    api_secret = EncryptedCredentialField(blank=True, default="")
+    api_passphrase = EncryptedCredentialField(blank=True, default="")
     sandbox = models.BooleanField(default=False)
     margin_mode = models.CharField(max_length=16, default="cross")
     leverage = models.PositiveIntegerField(default=3)

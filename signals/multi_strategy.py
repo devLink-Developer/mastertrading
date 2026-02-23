@@ -105,6 +105,24 @@ def _active_modules(flags: dict[str, bool]) -> list[str]:
         modules.append("smc")
     if bool(getattr(settings, "LIVE_GRADUAL_ENABLED", True)):
         cap = max(1, int(getattr(settings, "LIVE_GRADUAL_MAX_MODULES", len(modules))))
+        raw_priority = getattr(settings, "LIVE_GRADUAL_MODULE_PRIORITY", {}) or {}
+        priority_map: dict[str, float] = {}
+        if isinstance(raw_priority, dict):
+            for key, value in raw_priority.items():
+                try:
+                    priority_map[str(key).strip().lower()] = float(value)
+                except Exception:
+                    continue
+        if not priority_map:
+            weights = default_weight_map()
+            priority_map = {m: float(weights.get(m, 0.0)) for m in MODULE_ORDER}
+        modules = sorted(
+            modules,
+            key=lambda name: (
+                -float(priority_map.get(name, 0.0)),
+                MODULE_ORDER.index(name) if name in MODULE_ORDER else 999,
+            ),
+        )
         modules = modules[:cap]
     return modules
 
@@ -283,6 +301,7 @@ def run_allocator_cycle() -> str:
                 session_risk_mult=session_risk_mult * inst_regime_mult,
                 weights=weights,
                 risk_budgets=risk_budgets,
+                min_active_modules=min_modules,
             )
             alloc["reasons"]["session"] = session
             alloc["reasons"]["module_rows"] = module_rows

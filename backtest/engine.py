@@ -29,6 +29,10 @@ from django.conf import settings
 from django.utils import timezone as dj_tz
 
 from core.models import Instrument
+from execution.risk_policy import (
+    max_daily_trades_for_adx as _shared_max_daily_trades_for_adx,
+    volatility_adjusted_risk as _shared_volatility_adjusted_risk,
+)
 from marketdata.models import Candle, FundingRate
 from signals.sessions import (
     get_current_session,
@@ -58,52 +62,17 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Helpers ported from execution/tasks.py for backtest parity
+# Shared live/backtest risk helpers
 # ---------------------------------------------------------------------------
 
 def _max_daily_trades_for_adx(htf_adx: float | None) -> int:
-    """Regime-adaptive trade throttle (mirrors execution/tasks.py)."""
-    low_adx_limit = int(getattr(settings, "MAX_DAILY_TRADES_LOW_ADX", 3))
-    normal_limit = int(getattr(settings, "MAX_DAILY_TRADES", 6))
-    high_adx_limit = int(getattr(settings, "MAX_DAILY_TRADES_HIGH_ADX", 10))
-    if htf_adx is None:
-        return normal_limit
-    if htf_adx < 20:
-        return low_adx_limit
-    if htf_adx > 25:
-        return high_adx_limit
-    return normal_limit
+    return _shared_max_daily_trades_for_adx(htf_adx)
 
 
 def _volatility_adjusted_risk(
     symbol: str, atr_pct: float | None, base_risk: float,
 ) -> float:
-    """Scale risk inversely with vol (mirrors execution/tasks.py)."""
-    per_inst = getattr(settings, "PER_INSTRUMENT_RISK", {})
-    if symbol in per_inst:
-        return float(per_inst[symbol])
-
-    effective_base = base_risk
-    if getattr(settings, "INSTRUMENT_RISK_TIERS_ENABLED", False):
-        tier_map = getattr(settings, "INSTRUMENT_TIER_MAP", {})
-        tiers = getattr(settings, "INSTRUMENT_RISK_TIERS", {})
-        tier_name = tier_map.get(symbol, "")
-        if tier_name and tier_name in tiers:
-            effective_base = float(tiers[tier_name])
-
-    if atr_pct is None or atr_pct <= 0:
-        return effective_base
-
-    low_vol = 0.008
-    high_vol = 0.015
-    min_scale = 0.6
-    if atr_pct <= low_vol:
-        return effective_base
-    if atr_pct >= high_vol:
-        return effective_base * min_scale
-    ratio = (atr_pct - low_vol) / (high_vol - low_vol)
-    scale = 1.0 - ratio * (1.0 - min_scale)
-    return effective_base * scale
+    return _shared_volatility_adjusted_risk(symbol, atr_pct, base_risk)
 
 # ---------------------------------------------------------------------------
 # Fee model

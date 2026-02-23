@@ -116,6 +116,18 @@ class BingXFuturesAdapter:
     def fetch_balance(self):
         return self.client.fetch_balance()
 
+    @_retry_exchange
+    def _create_order_with_retry(
+        self,
+        mapped_symbol: str,
+        side: str,
+        type_: str,
+        amount: float,
+        price: Optional[float],
+        params: Dict[str, Any],
+    ):
+        return self.client.create_order(mapped_symbol, type_, side, amount, price, params)
+
     def create_order(
         self,
         symbol: str,
@@ -125,7 +137,7 @@ class BingXFuturesAdapter:
         price: Optional[float] = None,
         params: Optional[Dict[str, Any]] = None,
     ):
-        params = params or {}
+        params = dict(params or {})
         mapped = self._map_symbol(symbol)
         self._ensure_markets_loaded()
         try:
@@ -141,7 +153,7 @@ class BingXFuturesAdapter:
         except Exception as exc:
             logger.warning("set_leverage failed for %s: %s", mapped, exc)
         try:
-            return self.client.create_order(mapped, type_, side, amount, price, params)
+            return self._create_order_with_retry(mapped, side, type_, amount, price, params)
         except Exception as exc:
             msg = str(exc).lower()
             hedge_requires_side = "positionside" in msg and "long or short" in msg
@@ -166,7 +178,7 @@ class BingXFuturesAdapter:
             )
 
             try:
-                return self.client.create_order(mapped, type_, side, amount, price, retry_params)
+                return self._create_order_with_retry(mapped, side, type_, amount, price, retry_params)
             except Exception as retry_exc:
                 retry_msg = str(retry_exc).lower()
                 reduce_only_rejected = "reduceonly" in retry_msg and ("can not be filled" in retry_msg or "cannot be filled" in retry_msg)
@@ -186,7 +198,7 @@ class BingXFuturesAdapter:
                         mapped,
                     )
                     try:
-                        return self.client.create_order(mapped, type_, side, amount, price, hedged_params)
+                        return self._create_order_with_retry(mapped, side, type_, amount, price, hedged_params)
                     except Exception as hedged_exc:
                         hedged_msg = str(hedged_exc).lower()
                         if (

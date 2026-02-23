@@ -149,6 +149,50 @@ class TestLabelStates(TestCase):
         trending = [v for v in labels.values() if v["name"] == "trending"][0]
         self.assertLessEqual(choppy["risk_mult"], trending["risk_mult"])
 
+    @override_settings(
+        HMM_REGIME_TRENDING_RISK_MULT=1.0,
+        HMM_REGIME_CHOPPY_RISK_MULT=0.7,
+        HMM_REGIME_LABEL_HYSTERESIS_VOL=0.001,
+    )
+    @patch("signals.regime.get_cached_regime")
+    def test_label_hysteresis_prefers_previous_regime_when_gap_small(self, mock_cached):
+        from signals.regime import _label_states
+
+        model = MagicMock()
+        # State 1 has slightly higher vol by default (would be choppy without hysteresis).
+        model.means_ = np.array([
+            [0.0, 0.01000, 0.20],
+            [0.0, 0.01020, 0.30],
+        ])
+        mock_cached.return_value = {"name": "choppy", "mean_vol": 0.01002}
+
+        labels = _label_states(model, n_states=2, symbol="BTCUSDT")
+        self.assertEqual(labels[0]["name"], "choppy")
+        self.assertEqual(labels[1]["name"], "trending")
+
+    @override_settings(HMM_REGIME_TRENDING_RISK_MULT=1.0, HMM_REGIME_CHOPPY_RISK_MULT=0.7)
+    @patch("signals.regime.get_cached_regime")
+    @patch("signals.regime.get_cached_label_memory")
+    def test_label_memory_can_override_argmax_mapping(self, mock_label_memory, mock_cached):
+        from signals.regime import _label_states
+
+        model = MagicMock()
+        # Raw argmax would map state 0 as choppy (0.030 > 0.020),
+        # but memory indicates previous identity was state 1-like.
+        model.means_ = np.array([
+            [0.0, 0.03000, 0.20],
+            [0.0, 0.02000, 0.30],
+        ])
+        mock_label_memory.return_value = {
+            "choppy_mean_vol": 0.019,
+            "trending_mean_vol": 0.031,
+        }
+
+        labels = _label_states(model, n_states=2, symbol="BTCUSDT")
+        self.assertEqual(labels[1]["name"], "choppy")
+        self.assertEqual(labels[0]["name"], "trending")
+        mock_cached.assert_not_called()
+
 
 class TestPredictRegimeFromDf(TestCase):
     """Tests for predict_regime_from_df() (backtest helper)."""
@@ -203,3 +247,35 @@ class TestRegimeRiskMult(TestCase):
         mock_cache.return_value = None
         result = regime_risk_mult("BTCUSDT")
         self.assertEqual(result, 1.0)
+
+
+class TestLabelMemoryCache(TestCase):
+    """Tests for label-memory cache helpers."""
+
+    @patch("redis.from_url")
+    def test_cache_and_read_label_memory(self, mock_from_url):
+        from signals.regime import _cache_label_memory, get_cached_label_memory
+
+        redis_client = MagicMock()
+        mock_from_url.return_value = redis_client
+
+        payload = {
+            "choppy_mean_vol": 0.02,
+            "trending_mean_vol": 0.01,
+            "choppy_mean_adx": 18.0,
+            "trending_mean_adx": 25.0,
+            "n_states": 2,
+            "ts": "2026-02-22T00:00:00+00:00",
+        }
+        _cache_label_memory("BTCUSDT", payload, ttl_hours=24)
+
+        self.assertTrue(redis_client.setex.called)
+        key, ttl_secs, encoded = redis_client.setex.call_args.args
+        self.assertEqual(key, "regime:label-memory:BTCUSDT")
+        self.assertEqual(ttl_secs, 24 * 3600)
+
+        redis_client.get.return_value = encoded
+        cached = get_cached_label_memory("BTCUSDT")
+        self.assertIsNotNone(cached)
+        self.assertEqual(float(cached["choppy_mean_vol"]), 0.02)
+        self.assertEqual(float(cached["trending_mean_vol"]), 0.01)
