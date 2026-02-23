@@ -23,6 +23,11 @@ credenciales.md
 # Logs and temp
 *.log
 tmp/
+backups/*.dump
+backups/*.sql
+backups/*.gz
+backups/*.tar
+!backups/.gitkeep
 
 # IDE / local agent state
 .vscode/
