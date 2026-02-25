@@ -263,6 +263,7 @@ def run_allocator_cycle() -> str:
                 "raw_score": raw_score,
                 "signal_id": sig.id,
                 "ts": sig.ts.isoformat(),
+                "reasons": payload.get("reasons", {}) if isinstance(payload, dict) else {},
                 **smc_meta,
             }
         )

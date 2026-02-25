@@ -14,6 +14,65 @@ MODULE_ORDER = ("trend", "meanrev", "carry", "smc")
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _trend_context(module_signals: Iterable[dict]) -> dict[str, float | str | bool]:
+    best: dict[str, float | str | bool] = {
+        "found": False,
+        "direction": "flat",
+        "confidence": 0.0,
+        "adx_htf": 0.0,
+        "is_strong": False,
+    }
+    for sig in module_signals:
+        module = str(sig.get("module", "")).strip().lower()
+        if module != "trend":
+            continue
+        direction = str(sig.get("direction", "")).strip().lower()
+        if direction not in {"long", "short"}:
+            continue
+        confidence = normalize_score(_safe_float(sig.get("confidence", 0.0)))
+        reasons = sig.get("reasons", {})
+        adx_htf = 0.0
+        if isinstance(reasons, dict):
+            adx_htf = _safe_float(
+                reasons.get("adx_htf", reasons.get("htf_adx", 0.0)),
+                default=0.0,
+            )
+        if not bool(best["found"]) or confidence >= float(best["confidence"]):
+            best.update(
+                {
+                    "found": True,
+                    "direction": direction,
+                    "confidence": confidence,
+                    "adx_htf": adx_htf,
+                }
+            )
+
+    if not bool(best["found"]):
+        return best
+
+    adx_min = max(
+        0.0, float(getattr(settings, "ALLOCATOR_STRONG_TREND_ADX_MIN", 25.0))
+    )
+    conf_min = max(
+        0.0,
+        min(
+            1.0,
+            float(getattr(settings, "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN", 0.80)),
+        ),
+    )
+    best["is_strong"] = bool(
+        float(best["adx_htf"]) >= adx_min and float(best["confidence"]) >= conf_min
+    )
+    return best
+
+
 def normalize_weight_map(raw_map: dict | None, fallback: dict[str, float]) -> dict[str, float]:
     out: dict[str, float] = {}
     source = raw_map or {}
@@ -216,6 +275,10 @@ def resolve_symbol_allocation(
     risk_budgets: dict[str, float],
     min_active_modules: int | None = None,
 ) -> dict:
+    trend_ctx = _trend_context(module_signals)
+    strong_trend = bool(trend_ctx.get("is_strong", False))
+    trend_sign = direction_to_sign(str(trend_ctx.get("direction", "flat")))
+
     net_score = 0.0
     abs_capacity = 0.0
     module_contributions: list[dict] = []
@@ -242,6 +305,31 @@ def resolve_symbol_allocation(
                 weight_mult = float(
                     getattr(settings, "ALLOCATOR_SMC_NON_CONFLUENCE_WEIGHT_MULT", 0.85)
                 )
+        carry_contra_dampened = False
+        if (
+            module == "carry"
+            and bool(
+                getattr(settings, "ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED", True)
+            )
+            and strong_trend
+            and trend_sign != 0
+            and sign != trend_sign
+        ):
+            carry_mult = max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            settings,
+                            "ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT",
+                            0.50,
+                        )
+                    ),
+                ),
+            )
+            weight_mult *= carry_mult
+            carry_contra_dampened = carry_mult < 1.0
         weight_mult = max(0.0, float(weight_mult))
         weight = weight_base * weight_mult
         contribution = weight * confidence * sign
@@ -256,6 +344,7 @@ def resolve_symbol_allocation(
                 "weight_base": round(weight_base, 4),
                 "weight_mult": round(weight_mult, 4),
                 "smc_confluence": bool(sig.get("smc_confluence", False)),
+                "carry_contra_trend_dampened": bool(carry_contra_dampened),
                 "contribution": round(contribution, 6),
             }
         )
@@ -268,6 +357,22 @@ def resolve_symbol_allocation(
             else getattr(settings, "ALLOCATOR_MIN_MODULES_ACTIVE", 2)
         ),
     )
+    if (
+        bool(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_ENABLED", True))
+        and strong_trend
+        and trend_sign != 0
+    ):
+        trend_present_same_dir = any(
+            row.get("module") == "trend"
+            and (
+                1 if str(row.get("direction", "")).strip().lower() == "long" else -1
+            )
+            == trend_sign
+            for row in module_contributions
+        )
+        if trend_present_same_dir:
+            required_modules = 1
+
     if len(module_contributions) < required_modules:
         return {
             "direction": "flat",
@@ -285,6 +390,12 @@ def resolve_symbol_allocation(
                 "base_risk_pct": round(float(base_risk_pct), 6),
                 "session_risk_mult": round(float(session_risk_mult), 6),
                 "budget_mix": 0.0,
+                "trend_context": {
+                    "is_strong": bool(trend_ctx.get("is_strong", False)),
+                    "direction": str(trend_ctx.get("direction", "flat")),
+                    "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
+                    "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
+                },
             },
         }
 
@@ -330,5 +441,11 @@ def resolve_symbol_allocation(
             "base_risk_pct": round(float(base_risk_pct), 6),
             "session_risk_mult": round(float(session_risk_mult), 6),
             "budget_mix": round(float(budget_mix), 6),
+            "trend_context": {
+                "is_strong": bool(trend_ctx.get("is_strong", False)),
+                "direction": str(trend_ctx.get("direction", "flat")),
+                "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
+                "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
+            },
         },
     }

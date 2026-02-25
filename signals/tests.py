@@ -289,6 +289,104 @@ class AllocatorWeightingTest(TestCase):
         self.assertEqual(out["reasons"]["active_module_count"], 1)
         self.assertEqual(out["reasons"]["required_modules"], 2)
 
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_allows_strong_trend_solo(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 33.0},
+                }
+            ],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+        )
+        self.assertEqual(out["direction"], "long")
+        self.assertEqual(out["symbol_state"], "open")
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_blocks_trend_solo_when_not_strong(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 20.0},
+                }
+            ],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+        )
+        self.assertEqual(out["direction"], "flat")
+        self.assertEqual(out["symbol_state"], "blocked")
+        trend_ctx = out.get("reasons", {}).get("trend_context", {})
+        self.assertFalse(bool(trend_ctx.get("is_strong", False)))
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED=True,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT=0.5,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_dampens_counter_trend_carry(self):
+        module_signals = [
+            {
+                "module": "trend",
+                "direction": "long",
+                "confidence": 1.0,
+                "reasons": {"adx_htf": 35.0},
+            },
+            {"module": "carry", "direction": "short", "confidence": 1.0},
+        ]
+        weights = {"trend": 0.3, "meanrev": 0.0, "carry": 0.2, "smc": 0.0}
+        risk_budgets = dict(weights)
+
+        with self.settings(ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED=False):
+            baseline = resolve_symbol_allocation(
+                module_signals,
+                threshold=0.18,
+                base_risk_pct=0.01,
+                session_risk_mult=1.0,
+                weights=weights,
+                risk_budgets=risk_budgets,
+            )
+        dampened = resolve_symbol_allocation(
+            module_signals,
+            threshold=0.18,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights=weights,
+            risk_budgets=risk_budgets,
+        )
+
+        self.assertEqual(baseline["direction"], "flat")
+        self.assertEqual(dampened["direction"], "long")
+        self.assertGreater(float(dampened["net_score"]), float(baseline["net_score"]))
+
 
 class DirectionPolicyHelpersTest(TestCase):
     def test_normalize_helpers(self):
