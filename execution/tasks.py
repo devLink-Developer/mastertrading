@@ -4,7 +4,7 @@ import re
 import uuid
 from pathlib import Path
 from io import StringIO
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from datetime import datetime, timezone, timedelta
 from statistics import median
 from typing import Any
@@ -974,7 +974,43 @@ def _market_min_qty(market: dict | None, fallback: float = 0.0) -> float:
             return min_qty
     except Exception:
         pass
+    try:
+        precision = market.get("precision") or {}
+        amount_precision = _to_float(precision.get("amount"))
+        if math.isfinite(amount_precision) and amount_precision >= 0:
+            # Common CCXT case: precision.amount is decimal places (0 -> minimum 1).
+            if float(amount_precision).is_integer():
+                step = 10 ** (-int(amount_precision))
+                if step > 0:
+                    return step
+            # Some exchanges expose amount step directly.
+            if amount_precision > 0:
+                return amount_precision
+    except Exception:
+        pass
     return max(0.0, _to_float(fallback))
+
+
+def _floor_to_step(value: float, step: float) -> float:
+    if step <= 0 or not math.isfinite(value) or value <= 0:
+        return 0.0
+    try:
+        d_value = Decimal(str(value))
+        d_step = Decimal(str(step))
+        if d_step <= 0:
+            return 0.0
+        units = (d_value / d_step).to_integral_value(rounding=ROUND_FLOOR)
+        return _to_float(units * d_step)
+    except Exception:
+        return 0.0
+
+
+def _precision_step_from_error(exc: Exception) -> float:
+    msg = str(exc or "")
+    match = re.search(r"minimum amount precision of\s*([0-9]*\.?[0-9]+)", msg, re.IGNORECASE)
+    if not match:
+        return 0.0
+    return max(0.0, _to_float(match.group(1)))
 
 
 def _normalize_order_qty(adapter, symbol: str, qty: float) -> float:
@@ -991,8 +1027,18 @@ def _normalize_order_qty(adapter, symbol: str, qty: float) -> float:
         mapped = symbol
     try:
         normalized = _to_float(adapter.client.amount_to_precision(mapped, qty))
-    except Exception:
-        normalized = _to_float(qty)
+    except Exception as exc:
+        # Some BingX symbols reject sub-integer amounts (e.g. "minimum amount precision of 1").
+        # Never return raw qty here; derive a safe floor from market metadata/error text.
+        step = 0.0
+        try:
+            market = adapter.client.market(mapped)
+            step = _market_min_qty(market, fallback=0.0)
+        except Exception:
+            step = 0.0
+        if step <= 0:
+            step = _precision_step_from_error(exc)
+        normalized = _floor_to_step(qty, step) if step > 0 else 0.0
     if not math.isfinite(normalized) or normalized <= 0:
         return 0.0
     return normalized

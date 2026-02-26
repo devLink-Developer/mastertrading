@@ -97,6 +97,23 @@ class _DummyAdapter:
         return {"last": 100.0}
 
 
+class _DummyAdapterPrecisionError:
+    class _Client:
+        @staticmethod
+        def amount_to_precision(_symbol: str, _amount: float) -> str:
+            raise Exception("amount of SOL/USDT:USDT must be greater than minimum amount precision of 1")
+
+        @staticmethod
+        def market(_symbol: str) -> dict:
+            return {"precision": {"amount": 0}}
+
+    client = _Client()
+
+    @staticmethod
+    def _map_symbol(symbol: str) -> str:
+        return symbol
+
+
 class TaskHelpersTest(SimpleTestCase):
     def test_extract_fee_from_fees_list(self):
         fee = _extract_fee_usdt({"fees": [{"cost": 0.11}, {"cost": "0.04"}]})
@@ -129,6 +146,10 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertEqual(_market_min_qty(market, fallback=1.0), 0.2)
         self.assertEqual(_market_min_qty({}, fallback=1.0), 1.0)
 
+    def test_market_min_qty_uses_precision_when_limits_missing(self):
+        market = {"precision": {"amount": 0}}
+        self.assertEqual(_market_min_qty(market, fallback=0.0), 1.0)
+
     @override_settings(PER_INSTRUMENT_RISK={"BTCUSDT": 0.0015})
     def test_volatility_adjusted_risk_caps_per_symbol_to_base_allocator_risk(self):
         # Per-instrument config should never increase a low-confidence allocator budget.
@@ -157,6 +178,10 @@ class TaskHelpersTest(SimpleTestCase):
         adapter = _DummyAdapter()
         self.assertAlmostEqual(_normalize_order_qty(adapter, "BTC/USDT:USDT", 1.29), 1.2, places=8)
         self.assertEqual(_normalize_order_qty(adapter, "BTC/USDT:USDT", -1), 0.0)
+
+    def test_normalize_order_qty_does_not_fallback_to_raw_when_precision_fails(self):
+        adapter = _DummyAdapterPrecisionError()
+        self.assertEqual(_normalize_order_qty(adapter, "SOL/USDT:USDT", 0.1024), 0.0)
 
     def test_extract_trigger_price_prefers_unified_and_info(self):
         self.assertEqual(_extract_trigger_price({"triggerPrice": "123.4"}), 123.4)
