@@ -254,6 +254,8 @@ SHORT_SCORE_PENALTY = float(os.getenv("SHORT_SCORE_PENALTY", "0.15"))  # penaliz
 
 # -- Uptrend short killer (risk skill: 88% success rate, 675 samples) --
 UPTREND_SHORT_KILLER_ENABLED = os.getenv("UPTREND_SHORT_KILLER_ENABLED", "true").lower() == "true"  # close shorts when HTF turns bullish
+# -- Downtrend long killer (symmetry to protect longs when HTF flips bearish) --
+DOWNTREND_LONG_KILLER_ENABLED = os.getenv("DOWNTREND_LONG_KILLER_ENABLED", "true").lower() == "true"
 
 # -- New: Kill-switch thresholds --
 MAX_CONSECUTIVE_ERRORS = int(os.getenv("MAX_CONSECUTIVE_ERRORS", "3"))

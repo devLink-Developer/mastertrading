@@ -27,6 +27,20 @@ class RiskPolicyHelpersTest(SimpleTestCase):
         )
 
     @override_settings(
+        PER_INSTRUMENT_RISK={"BTCUSDT": 0.0015},
+        VOL_RISK_LOW_ATR_PCT=0.008,
+        VOL_RISK_HIGH_ATR_PCT=0.015,
+        VOL_RISK_MIN_SCALE=0.6,
+    )
+    def test_volatility_adjusted_risk_applies_atr_scaling_after_symbol_cap(self):
+        # High ATR must still scale down capped per-symbol risk (regression for early-return bug).
+        self.assertAlmostEqual(
+            volatility_adjusted_risk("BTCUSDT", atr_pct=0.02, base_risk=0.003),
+            0.0009,
+            places=8,
+        )
+
+    @override_settings(
         PER_INSTRUMENT_RISK={},
         INSTRUMENT_RISK_TIERS_ENABLED=False,
         VOL_RISK_LOW_ATR_PCT=0.01,

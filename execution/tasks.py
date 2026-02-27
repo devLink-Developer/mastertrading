@@ -3521,6 +3521,77 @@ def _manage_open_position(
         except Exception as exc:
             logger.debug("Uptrend short killer check failed for %s: %s", symbol, exc)
 
+    # Close long positions immediately when HTF turns bearish.
+    if (
+        current_qty > 0
+        and getattr(settings, "DOWNTREND_LONG_KILLER_ENABLED", False)
+        and last
+        and entry_price
+    ):
+        try:
+            from signals.tasks import _trend_from_swings
+            htf_candles = list(
+                Candle.objects.filter(
+                    instrument=inst,
+                    timeframe="4h",
+                ).order_by("-open_time")[:100]
+            )
+            if htf_candles:
+                import pandas as _pd
+                htf_df = _pd.DataFrame([
+                    {"high": float(c.high), "low": float(c.low), "close": float(c.close)}
+                    for c in reversed(htf_candles)
+                ])
+                htf_trend = _trend_from_swings(htf_df)
+                if htf_trend == "bear":
+                    close_side = "sell"
+                    close_qty = abs(current_qty)
+                    pnl_pct_kill = (last - entry_price) / entry_price
+                    close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
+                    close_fee = _extract_fee_usdt(close_resp)
+                    pnl_abs_kill = (last - entry_price) * close_qty * contract_size
+                    dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+                    logger.info(
+                        "Downtrend long killer closed %s: HTF=bear pnl=%.4f",
+                        symbol,
+                        pnl_pct_kill,
+                    )
+                    _log_operation(
+                        inst,
+                        "buy",
+                        close_qty,
+                        entry_price,
+                        last,
+                        reason="downtrend_long_kill",
+                        signal_id=str(sig.id) if sig else "",
+                        correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                        leverage=leverage,
+                        equity_before=equity_usdt,
+                        equity_after=None,
+                        fee_usdt=close_fee,
+                        opened_at=pos_opened_at,
+                        contract_size=contract_size,
+                    )
+                    notify_trade_closed(
+                        inst.symbol,
+                        "downtrend_long_kill",
+                        pnl_pct_kill,
+                        pnl_abs=pnl_abs_kill,
+                        entry_price=entry_price,
+                        exit_price=last,
+                        qty=close_qty,
+                        equity_before=equity_usdt,
+                        duration_min=dur_min,
+                        side="buy",
+                        leverage=leverage,
+                        strategy_name=strategy_name,
+                        active_modules=_signal_active_modules(sig_payload, strategy_name),
+                    )
+                    _mark_position_closed(inst)
+                    return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+        except Exception as exc:
+            logger.debug("Downtrend long killer check failed for %s: %s", symbol, exc)
+
     # Regular TP/SL
     if last and entry_price:
         pnl_pct_live_gross = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)

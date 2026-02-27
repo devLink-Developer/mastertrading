@@ -28,24 +28,24 @@ def volatility_adjusted_risk(symbol: str, atr_pct: float | None, base_risk: floa
     """
     # 1) Per-instrument cap: do not allow symbol config to raise allocator/base risk.
     per_inst = getattr(settings, "PER_INSTRUMENT_RISK", {})
+    effective_base = float(base_risk)
     if symbol in per_inst:
         try:
             per_symbol_risk = float(per_inst[symbol])
         except Exception:
             per_symbol_risk = float(base_risk)
-        return max(0.0, min(per_symbol_risk, float(base_risk)))
-
-    # 2) Risk tiers: use tier-specific base risk, then ATR scaling.
-    effective_base = float(base_risk)
-    if getattr(settings, "INSTRUMENT_RISK_TIERS_ENABLED", False):
-        tier_map = getattr(settings, "INSTRUMENT_TIER_MAP", {})
-        tiers = getattr(settings, "INSTRUMENT_RISK_TIERS", {})
-        tier_name = tier_map.get(symbol, "")
-        if tier_name and tier_name in tiers:
-            try:
-                effective_base = float(tiers[tier_name])
-            except Exception:
-                effective_base = float(base_risk)
+        effective_base = max(0.0, min(per_symbol_risk, float(base_risk)))
+    else:
+        # 2) Risk tiers: use tier-specific base risk, then ATR scaling.
+        if getattr(settings, "INSTRUMENT_RISK_TIERS_ENABLED", False):
+            tier_map = getattr(settings, "INSTRUMENT_TIER_MAP", {})
+            tiers = getattr(settings, "INSTRUMENT_RISK_TIERS", {})
+            tier_name = tier_map.get(symbol, "")
+            if tier_name and tier_name in tiers:
+                try:
+                    effective_base = float(tiers[tier_name])
+                except Exception:
+                    pass
 
     if atr_pct is None or atr_pct <= 0:
         return effective_base
