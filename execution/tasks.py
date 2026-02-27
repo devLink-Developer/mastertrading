@@ -1991,6 +1991,12 @@ def _sync_positions(
                 sym, sub_reason, entry, last, liq_est,
             )
 
+            if sub_reason == "bot_close_missed":
+                logger.info("Skipping duplicate exchange_close log for %s (bot_close_missed)", sym)
+                pos.is_open = False
+                pos.save()
+                continue
+
             # Log operation
             _log_operation(
                 pos.instrument, trade_side, qty_abs, entry, last,
