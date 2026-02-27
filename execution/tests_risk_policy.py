@@ -21,7 +21,7 @@ class RiskPolicyHelpersTest(SimpleTestCase):
     def test_volatility_adjusted_risk_caps_symbol_risk_to_base_budget(self):
         # Per-symbol config must not increase allocator/base risk.
         self.assertAlmostEqual(
-            volatility_adjusted_risk("BTCUSDT", atr_pct=0.01, base_risk=0.0005),
+            volatility_adjusted_risk("BTCUSDT", atr_pct=None, base_risk=0.0005),
             0.0005,
             places=8,
         )

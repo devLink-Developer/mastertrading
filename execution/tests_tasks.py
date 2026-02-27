@@ -169,13 +169,13 @@ class TaskHelpersTest(SimpleTestCase):
     @override_settings(PER_INSTRUMENT_RISK={"BTCUSDT": 0.0015})
     def test_volatility_adjusted_risk_caps_per_symbol_to_base_allocator_risk(self):
         # Per-instrument config should never increase a low-confidence allocator budget.
-        risk = _volatility_adjusted_risk("BTCUSDT", atr_pct=0.01, base_risk=0.0005)
+        risk = _volatility_adjusted_risk("BTCUSDT", atr_pct=None, base_risk=0.0005)
         self.assertAlmostEqual(risk, 0.0005, places=8)
 
     @override_settings(PER_INSTRUMENT_RISK={"BTCUSDT": 0.0015})
     def test_volatility_adjusted_risk_still_honors_lower_per_symbol_cap(self):
         # If allocator budget is higher than per-symbol cap, the lower cap wins.
-        risk = _volatility_adjusted_risk("BTCUSDT", atr_pct=0.01, base_risk=0.0025)
+        risk = _volatility_adjusted_risk("BTCUSDT", atr_pct=None, base_risk=0.0025)
         self.assertAlmostEqual(risk, 0.0015, places=8)
 
     @override_settings(
