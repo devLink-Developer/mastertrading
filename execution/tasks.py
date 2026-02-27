@@ -888,6 +888,22 @@ def _volatility_adjusted_risk(symbol: str, atr_pct: float | None, base_risk: flo
     return _shared_volatility_adjusted_risk(symbol, atr_pct, base_risk)
 
 
+def _tp_sl_gate_pnl_pct(pnl_pct_gross: float) -> tuple[float, float]:
+    """
+    Return (pnl_pct_for_gate, fee_pct_estimate).
+
+    The TP/SL gate can use a conservative net estimate by discounting
+    an expected roundtrip fee from the live (gross) pnl%.
+    """
+    fee_pct_estimate = 0.0
+    if bool(getattr(settings, "TP_SL_FEE_ADJUST_ENABLED", True)):
+        fee_pct_estimate = max(
+            0.0,
+            float(getattr(settings, "TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT", 0.0010) or 0.0010),
+        )
+    return pnl_pct_gross - fee_pct_estimate, fee_pct_estimate
+
+
 # ---------------------------------------------------------------------------
 # Daily trade count limiter (risk-management skill: 95% success rate)
 # "Trade count inversely correlates with performance in flat markets"
@@ -3507,11 +3523,12 @@ def _manage_open_position(
 
     # Regular TP/SL
     if last and entry_price:
-        pnl_pct_live = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
-        if pnl_pct_live >= tp_pct_pos or pnl_pct_live <= -sl_pct_pos:
+        pnl_pct_live_gross = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+        pnl_pct_live_gate, fee_pct_estimate = _tp_sl_gate_pnl_pct(pnl_pct_live_gross)
+        if pnl_pct_live_gate >= tp_pct_pos or pnl_pct_live_gate <= -sl_pct_pos:
             close_side = "sell" if current_qty > 0 else "buy"
             close_qty = abs(current_qty)
-            reason = "tp" if pnl_pct_live >= tp_pct_pos else "sl"
+            reason = "tp" if pnl_pct_live_gate >= tp_pct_pos else "sl"
             try:
                 close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
                 close_fee = _extract_fee_usdt(close_resp)
@@ -3519,10 +3536,12 @@ def _manage_open_position(
                 trade_side = "buy" if current_qty > 0 else "sell"
                 dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
                 logger.info(
-                    "Closed %s by %s pnl=%.4f tp=%.4f sl=%.4f pnl_usdt=%.4f",
+                    "Closed %s by %s pnl_gross=%.4f pnl_gate=%.4f fee_gate=%.4f tp=%.4f sl=%.4f pnl_usdt=%.4f",
                     symbol,
                     reason,
-                    pnl_pct_live,
+                    pnl_pct_live_gross,
+                    pnl_pct_live_gate,
+                    fee_pct_estimate,
                     tp_pct_pos,
                     sl_pct_pos,
                     pnl_abs_tpsl,
@@ -3546,7 +3565,7 @@ def _manage_open_position(
                 notify_trade_closed(
                     inst.symbol,
                     reason,
-                    pnl_pct_live,
+                    pnl_pct_live_gross,
                     pnl_abs=pnl_abs_tpsl,
                     entry_price=entry_price,
                     exit_price=last,

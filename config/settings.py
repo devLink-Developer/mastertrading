@@ -25,6 +25,11 @@ ORDER_SIZE_USDT = float(os.getenv("ORDER_SIZE_USDT", "1.0"))
 MIN_EQUITY_USDT = float(os.getenv("MIN_EQUITY_USDT", "5.0"))
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "0.018"))   # 1.8% default TP floor (was 2% — tighter for earlier captures)
 STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "0.015"))     # 1.5% default SL floor (was 1.2% — wider to avoid noise stop-outs)
+TP_SL_FEE_ADJUST_ENABLED = os.getenv("TP_SL_FEE_ADJUST_ENABLED", "true").lower() == "true"
+TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT = max(
+    0.0,
+    float(os.getenv("TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT", "0.0010")),
+)
 TAKE_PROFIT_DYNAMIC_MULT = max(
     0.1,
     min(2.0, float(os.getenv("TAKE_PROFIT_DYNAMIC_MULT", "1.0"))),

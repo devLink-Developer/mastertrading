@@ -36,6 +36,7 @@ from execution.tasks import (
     _volume_activity_ratio,
     _volume_gate_allowed,
     _volume_gate_min_ratio,
+    _tp_sl_gate_pnl_pct,
     _volatility_adjusted_risk,
 )
 
@@ -149,6 +150,21 @@ class TaskHelpersTest(SimpleTestCase):
     def test_market_min_qty_uses_precision_when_limits_missing(self):
         market = {"precision": {"amount": 0}}
         self.assertEqual(_market_min_qty(market, fallback=0.0), 1.0)
+
+    @override_settings(
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_tp_sl_gate_pnl_pct_applies_fee_adjustment(self):
+        pnl_gate, fee_est = _tp_sl_gate_pnl_pct(0.0100)
+        self.assertAlmostEqual(fee_est, 0.0010, places=8)
+        self.assertAlmostEqual(pnl_gate, 0.0090, places=8)
+
+    @override_settings(TP_SL_FEE_ADJUST_ENABLED=False)
+    def test_tp_sl_gate_pnl_pct_can_be_disabled(self):
+        pnl_gate, fee_est = _tp_sl_gate_pnl_pct(0.0100)
+        self.assertAlmostEqual(fee_est, 0.0, places=8)
+        self.assertAlmostEqual(pnl_gate, 0.0100, places=8)
 
     @override_settings(PER_INSTRUMENT_RISK={"BTCUSDT": 0.0015})
     def test_volatility_adjusted_risk_caps_per_symbol_to_base_allocator_risk(self):
