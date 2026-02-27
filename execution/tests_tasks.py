@@ -597,6 +597,68 @@ class OperationReportFeeNetTest(TestCase):
         self.assertAlmostEqual(float(op.fee_usdt), 0.5, places=8)
         self.assertEqual(op.outcome, OperationReport.Outcome.WIN)
 
+    @override_settings(
+        ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False,
+        NEAR_BREAKEVEN_LOSS_TO_BE_PCT=0.0015,
+    )
+    def test_log_operation_marks_small_near_breakeven_loss_as_be(self):
+        inst = Instrument.objects.create(
+            symbol="ETHUSDT",
+            exchange="bingx",
+            base="ETH",
+            quote="USDT",
+        )
+
+        _log_operation(
+            inst=inst,
+            side="buy",
+            qty=1.0,
+            entry_price=100.0,
+            exit_price=99.95,  # -0.05%
+            reason="exchange_close",
+            signal_id="2",
+            correlation_id="2-ETHUSDT",
+            leverage=5.0,
+            fee_usdt=0.0,
+            opened_at=None,
+            contract_size=1.0,
+            close_sub_reason="near_breakeven",
+        )
+
+        op = OperationReport.objects.get(instrument=inst)
+        self.assertEqual(op.outcome, OperationReport.Outcome.BE)
+
+    @override_settings(
+        ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False,
+        NEAR_BREAKEVEN_LOSS_TO_BE_PCT=0.0015,
+    )
+    def test_log_operation_keeps_larger_near_breakeven_loss_as_loss(self):
+        inst = Instrument.objects.create(
+            symbol="XRPUSDT",
+            exchange="bingx",
+            base="XRP",
+            quote="USDT",
+        )
+
+        _log_operation(
+            inst=inst,
+            side="buy",
+            qty=1.0,
+            entry_price=100.0,
+            exit_price=99.6,  # -0.40%
+            reason="exchange_close",
+            signal_id="3",
+            correlation_id="3-XRPUSDT",
+            leverage=5.0,
+            fee_usdt=0.0,
+            opened_at=None,
+            contract_size=1.0,
+            close_sub_reason="near_breakeven",
+        )
+
+        op = OperationReport.objects.get(instrument=inst)
+        self.assertEqual(op.outcome, OperationReport.Outcome.LOSS)
+
 
 class OperationReportMlRetrainTriggerTest(TestCase):
     def _create_inst(self, symbol: str = "SOLUSDT") -> Instrument:

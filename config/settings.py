@@ -132,6 +132,10 @@ EXCHANGE_CLOSE_CLASSIFY_BREAKEVEN_SCALE = max(
     0.0,
     float(os.getenv("EXCHANGE_CLOSE_CLASSIFY_BREAKEVEN_SCALE", "0.20")),
 )
+NEAR_BREAKEVEN_LOSS_TO_BE_PCT = max(
+    0.0,
+    float(os.getenv("NEAR_BREAKEVEN_LOSS_TO_BE_PCT", "0.0015")),
+)
 EXCHANGE_CLOSE_RECENT_BOT_CLOSE_MINUTES = max(
     1,
     int(os.getenv("EXCHANGE_CLOSE_RECENT_BOT_CLOSE_MINUTES", "5")),
@@ -210,6 +214,10 @@ EXECUTION_LOCK_TTL_SECONDS = int(os.getenv("EXECUTION_LOCK_TTL_SECONDS", "90"))
 
 # -- New: Weekly drawdown --
 WEEKLY_DD_LIMIT = float(os.getenv("WEEKLY_DD_LIMIT", "0.10"))  # 10%
+CIRCUIT_BREAKER_CONSECUTIVE_LOSS_WINDOW_HOURS = max(
+    0.0,
+    float(os.getenv("CIRCUIT_BREAKER_CONSECUTIVE_LOSS_WINDOW_HOURS", "24")),
+)
 
 # -- Daily trade count limit (risk-management skill: 95% success rate) --
 MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "6"))  # max new entries per day across all instruments

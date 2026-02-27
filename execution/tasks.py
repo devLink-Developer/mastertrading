@@ -1588,6 +1588,16 @@ def _log_operation(
         outcome = OperationReport.Outcome.WIN
     elif pnl_abs < 0:
         outcome = OperationReport.Outcome.LOSS
+
+    # Small exchange closes classified as near_breakeven should not count as operational losses.
+    if (
+        reason == "exchange_close"
+        and str(close_sub_reason or "").strip().lower() == "near_breakeven"
+        and pnl_pct < 0
+        and abs(pnl_pct)
+        <= float(getattr(settings, "NEAR_BREAKEVEN_LOSS_TO_BE_PCT", 0.0015) or 0.0015)
+    ):
+        outcome = OperationReport.Outcome.BE
     OperationReport.objects.create(
         instrument=inst,
         side=side,
@@ -2508,14 +2518,30 @@ def _apply_circuit_breaker_gate(
                     can_open = False
 
             if not cb.is_tripped and cb.max_consecutive_losses > 0:
+                window_hours = max(
+                    0.0,
+                    float(
+                        getattr(settings, "CIRCUIT_BREAKER_CONSECUTIVE_LOSS_WINDOW_HOURS", 24.0)
+                        or 24.0
+                    ),
+                )
+                recent_ops_qs = OperationReport.objects.order_by("-closed_at")
+                if window_hours > 0:
+                    recent_ops_qs = recent_ops_qs.filter(
+                        closed_at__gte=dj_tz.now() - timedelta(hours=window_hours)
+                    )
                 recent_ops = list(
-                    OperationReport.objects.order_by("-closed_at")[:cb.max_consecutive_losses]
-                    .values_list("outcome", flat=True)
+                    recent_ops_qs[:cb.max_consecutive_losses].values_list("outcome", flat=True)
                 )
                 if len(recent_ops) >= cb.max_consecutive_losses and all(o == "loss" for o in recent_ops):
                     cb.is_tripped = True
                     cb.tripped_at = dj_tz.now()
-                    cb.trip_reason = f"{cb.max_consecutive_losses} consecutive losses"
+                    if window_hours > 0:
+                        cb.trip_reason = (
+                            f"{cb.max_consecutive_losses} consecutive losses in {window_hours:.0f}h"
+                        )
+                    else:
+                        cb.trip_reason = f"{cb.max_consecutive_losses} consecutive losses"
                     cb.save(update_fields=["is_tripped", "tripped_at", "trip_reason"])
                     _create_risk_event(
                         "circuit_breaker_consec_losses",
