@@ -18,6 +18,7 @@
 8. [Estado Actual de Producción](#8-estado-actual-de-producción)
 9. [Deuda Técnica y Brechas](#9-deuda-técnica-y-brechas)
 10. [Plan de Acción Validado](#10-plan-de-acción-validado)
+11. [Runbook Proyecto Camping](#11-runbook-proyecto-camping)
 
 ---
 
@@ -416,3 +417,72 @@ SESSION_RISK_MULTIPLIER={"asia":0.70,"london":1.0,"ny":0.90,"overlap":1.0,"dead"
 2. RL solo sandbox, sin paso a live hasta validación OOS dura
 
 **GO:** Fase 1 + Fase 2 | **GO condicionado:** HMM/GARCH | **NO-GO:** RL en producción
+
+---
+
+## 11. RUNBOOK PROYECTO CAMPING
+
+### Objetivo
+Dejar un procedimiento operativo simple y repetible para:
+1. Entrar al server
+2. Subir cambios al remoto (push)
+3. Bajar cambios en server (pull)
+4. Deploy con Docker
+
+### Datos operativos actuales (2026-02-26)
+- Repo remoto: `https://github.com/devLink-Developer/chatbot_camping.git`
+- Ruta en server: `/opt/chatbot`
+- Host prod: `200.58.107.187`
+- Puerto SSH: `5344`
+- Usuario SSH: `rortigoza`
+- Puerto app: `8006`
+
+### A. Push desde local (repo camping)
+```bash
+cd C:\Users\rortigoza\Documents\Proyectos\chatbot_camping
+git checkout main
+git pull --ff-only origin main
+git status
+git add -A
+git commit -m "tu mensaje"
+git push origin main
+```
+
+### B. Entrar al server
+Linux/macOS:
+```bash
+ssh -p 5344 rortigoza@200.58.107.187
+```
+
+Windows (PuTTY/plink):
+```powershell
+& "C:\Program Files\PuTTY\plink.exe" -ssh -P 5344 -l rortigoza 200.58.107.187
+```
+
+### C. Pull en server (repo camping)
+```bash
+cd /opt/chatbot
+git checkout main
+git pull --ff-only origin main
+git rev-parse --short HEAD
+```
+
+### D. Deploy en server
+```bash
+cd /opt/chatbot
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=120 chatbot
+```
+
+### E. Verificación rápida post deploy
+1. Contenedor `aca_lujan_chatbot` en estado `Up`
+2. Responde admin: `https://chatbot-api.devlink.com.ar:8006/admin`
+3. Logs sin errores críticos en `docker compose logs --tail=120 chatbot`
+
+### F. Nota de operación
+- `entrypoint.sh` ya ejecuta automáticamente:
+1. `python manage.py migrate --noinput`
+2. `python scripts/importar_datos.py`
+3. `python manage.py collectstatic --noinput`
+- Por eso el deploy estándar es `docker compose up -d --build` y no hace falta correr esos comandos a mano cada vez.

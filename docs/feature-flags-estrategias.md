@@ -9,6 +9,7 @@ Este proyecto permite prender/apagar estrategias **sin reiniciar servicios** usa
 - `feature_mod_meanrev`: habilita modulo `meanrev`.
 - `feature_mod_carry`: habilita modulo `carry`.
 - `feature_allocator`: habilita allocator y emision `alloc_*`.
+- `CONFIDENCE_RISK_BOOST_ENABLED`: habilita el apalancamiento dinámico (Fractional Kelly) cuando se detecta alta probabilidad de ganancia. Por defecto `False` protegido por variables de entorno.
 
 Version de flags: `feature_flags_v1`.
 
@@ -18,6 +19,12 @@ Version de flags: `feature_flags_v1`.
 - Si `feature_allocator=false`, `execution` vuelve a consumir la ultima senal general (modo legacy).
 - Si ambos (`feature_multi_strategy=true` y `feature_allocator=true`), `execution` consume solo `alloc_*`.
 - Senal `alloc_flat`: no abre posiciones nuevas; solo gestiona posiciones abiertas.
+- `CONFIDENCE_RISK_BOOST_ENABLED=True`: aplica "Kelly Fraccional", escalando el tamaño de riesgo de la posición si la puntuación de la señal o la probabilidad ML superan un umbral de confianza muy alto. Variables de entorno configurables asociadas:
+  - `CONFIDENCE_SCORE_THRESHOLD` (Default: `0.85`)
+  - `CONFIDENCE_SCORE_BOOST` (Default: `0.25`, = +25% de tamaño)
+  - `CONFIDENCE_ML_PROB_THRESHOLD` (Default: `0.70`)
+  - `CONFIDENCE_ML_BOOST` (Default: `0.25`, = +25% de tamaño)
+  - `CONFIDENCE_MAX_MULT` (Default: `1.5` límite estricto de seguridad Fractional Kelly)
 
 ## API para control rapido
 
