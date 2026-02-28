@@ -3005,6 +3005,37 @@ def _attempt_entry_open(
 
     inst_risk_pct = _volatility_adjusted_risk(inst.symbol, atr, inst_risk_pct)
     effective_risk_pct = inst_risk_pct * effective_risk_mult
+    
+    # Optional Fractional Kelly Risk Boost (disabled by default via feature flag)
+    if getattr(settings, "CONFIDENCE_RISK_BOOST_ENABLED", False):
+        try:
+            confidence_mult = 1.0
+            
+            # 1. Boost via High Allocator Confluence Score
+            if sig_score > getattr(settings, "CONFIDENCE_SCORE_THRESHOLD", 0.85):
+                confidence_mult += getattr(settings, "CONFIDENCE_SCORE_BOOST", 0.25)
+                
+            # 2. Boost via Machine Learning Probability (if enabled)
+            if ml_entry_filter_enabled and ml_prob is not None:
+                if ml_prob > getattr(settings, "CONFIDENCE_ML_PROB_THRESHOLD", 0.70):
+                    confidence_mult += getattr(settings, "CONFIDENCE_ML_BOOST", 0.25)
+                    
+            # 3. Cap the multiplier (Fractional Kelly Safety)
+            max_boost_mult = getattr(settings, "CONFIDENCE_MAX_MULT", 1.5)
+            confidence_mult = min(confidence_mult, max_boost_mult)
+            
+            if confidence_mult > 1.0:
+                logger.info(
+                    "Applying Fractional Kelly Boost on %s: mult=%.2f "
+                    "(sig_score=%.3f, ml_prob=%s)",
+                    inst.symbol, confidence_mult, sig_score, 
+                    f"{ml_prob:.3f}" if ml_prob is not None else "None"
+                )
+                effective_risk_pct *= confidence_mult
+                
+        except Exception as exc:
+            logger.warning("Error calculating Confidence Risk Boost for %s: %s", inst.symbol, exc)
+
     if allow_scale_entry:
         pyramid_risk_scale = max(
             0.0,
@@ -3469,7 +3500,7 @@ def _manage_open_position(
                 Candle.objects.filter(
                     instrument=inst,
                     timeframe="4h",
-                ).order_by("-open_time")[:100]
+                ).order_by("-ts")[:100]
             )
             if htf_candles:
                 import pandas as _pd
@@ -3540,7 +3571,7 @@ def _manage_open_position(
                 Candle.objects.filter(
                     instrument=inst,
                     timeframe="4h",
-                ).order_by("-open_time")[:100]
+                ).order_by("-ts")[:100]
             )
             if htf_candles:
                 import pandas as _pd
