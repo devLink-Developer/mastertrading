@@ -213,6 +213,16 @@ ML_ENTRY_FILTER_AUTO_TRAIN_HOUR = int(os.getenv("ML_ENTRY_FILTER_AUTO_TRAIN_HOUR
 ML_ENTRY_FILTER_AUTO_TRAIN_MINUTE = int(os.getenv("ML_ENTRY_FILTER_AUTO_TRAIN_MINUTE", "20"))
 ML_TRAINING_QUEUE = os.getenv("ML_TRAINING_QUEUE", "ml")
 
+# -- AI entry gate (account-level + global switches) --
+AI_ENTRY_GATE_ENABLED = os.getenv("AI_ENTRY_GATE_ENABLED", "true").lower() == "true"
+AI_ENTRY_GATE_FAIL_OPEN = os.getenv("AI_ENTRY_GATE_FAIL_OPEN", "true").lower() == "true"
+AI_ENTRY_GATE_ONLY_ALLOCATOR = os.getenv("AI_ENTRY_GATE_ONLY_ALLOCATOR", "true").lower() == "true"
+AI_ENTRY_GATE_DEFAULT_PROVIDER = os.getenv("AI_ENTRY_GATE_DEFAULT_PROVIDER", "openai").strip().lower()
+AI_ENTRY_GATE_MAX_OUTPUT_TOKENS = max(
+    32,
+    int(os.getenv("AI_ENTRY_GATE_MAX_OUTPUT_TOKENS", "180")),
+)
+
 EXECUTION_LOCK_ENABLED = os.getenv("EXECUTION_LOCK_ENABLED", "true").lower() == "true"
 EXECUTION_LOCK_KEY = os.getenv("EXECUTION_LOCK_KEY", "lock:execute_orders")
 EXECUTION_LOCK_TTL_SECONDS = int(os.getenv("EXECUTION_LOCK_TTL_SECONDS", "90"))

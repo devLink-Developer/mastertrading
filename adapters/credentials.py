@@ -42,22 +42,39 @@ def _env_account_owner() -> str:
 
 def _serialize_db_row(row: Any) -> dict[str, Any]:
     owner_username = ""
+    owner_id = None
     try:
         owner_obj = getattr(row, "owner", None)
         owner_username = str(getattr(owner_obj, "username", "") or "")
+        owner_id = int(getattr(owner_obj, "id", 0) or 0) or None
     except Exception:
         owner_username = ""
+        owner_id = None
+    ai_cfg_id = None
+    ai_cfg_alias = ""
+    try:
+        ai_cfg = getattr(row, "ai_provider_config", None)
+        if ai_cfg is not None:
+            ai_cfg_id = int(getattr(ai_cfg, "id", 0) or 0) or None
+            ai_cfg_alias = str(getattr(ai_cfg, "name_alias", "") or "")
+    except Exception:
+        ai_cfg_id = None
+        ai_cfg_alias = ""
     return {
         "credential_id": int(row.id),
         "service": row.service,
         "name_alias": str(row.name_alias or ""),
         "owner_username": owner_username,
+        "owner_id": owner_id,
         "api_key": row.api_key or "",
         "api_secret": row.api_secret or "",
         "api_passphrase": row.api_passphrase or "",
         "sandbox": bool(row.sandbox),
         "margin_mode": row.margin_mode or "cross",
         "leverage": int(row.leverage or 3),
+        "ai_enabled": bool(getattr(row, "ai_enabled", False)),
+        "ai_provider_config_id": ai_cfg_id,
+        "ai_provider_config_alias": ai_cfg_alias,
         "active": bool(row.active),
         "updated_at": row.updated_at.isoformat(),
         "source": "db",
@@ -76,7 +93,7 @@ def _select_db_credential_row(service: str | None, allow_cross_service: bool) ->
     try:
         from core.models import ExchangeCredential
 
-        qs = ExchangeCredential.objects.all()
+        qs = ExchangeCredential.objects.select_related("owner", "ai_provider_config").all()
         alias = _env_account_alias()
         owner_username = _env_account_owner()
         sandbox_hint = _env_optional_bool("EXCHANGE_ACCOUNT_SANDBOX")
@@ -130,12 +147,16 @@ def _env_credentials_for(service: str) -> dict[str, Any]:
             "service": "binance",
             "name_alias": "",
             "owner_username": "",
+            "owner_id": None,
             "api_key": os.getenv("BINANCE_API_KEY", ""),
             "api_secret": os.getenv("BINANCE_API_SECRET", ""),
             "api_passphrase": "",
             "sandbox": _env_bool("BINANCE_TESTNET", True),
             "margin_mode": os.getenv("BINANCE_MARGIN_MODE", "cross"),
             "leverage": int(os.getenv("BINANCE_LEVERAGE", "3")),
+            "ai_enabled": _env_bool("BINANCE_AI_ENABLED", False),
+            "ai_provider_config_id": None,
+            "ai_provider_config_alias": "",
             "active": True,
             "updated_at": "env",
             "source": "env",
@@ -146,12 +167,16 @@ def _env_credentials_for(service: str) -> dict[str, Any]:
             "service": "bingx",
             "name_alias": "",
             "owner_username": "",
+            "owner_id": None,
             "api_key": os.getenv("BINGX_API_KEY", ""),
             "api_secret": os.getenv("BINGX_API_SECRET", ""),
             "api_passphrase": os.getenv("BINGX_API_PASSPHRASE", ""),
             "sandbox": _env_bool("BINGX_SANDBOX", False),
             "margin_mode": os.getenv("BINGX_MARGIN_MODE", "cross"),
             "leverage": int(os.getenv("BINGX_LEVERAGE", "3")),
+            "ai_enabled": _env_bool("BINGX_AI_ENABLED", False),
+            "ai_provider_config_id": None,
+            "ai_provider_config_alias": "",
             "active": True,
             "updated_at": "env",
             "source": "env",
@@ -161,12 +186,16 @@ def _env_credentials_for(service: str) -> dict[str, Any]:
         "service": "kucoin",
         "name_alias": "",
         "owner_username": "",
+        "owner_id": None,
         "api_key": os.getenv("KUCOIN_API_KEY", ""),
         "api_secret": os.getenv("KUCOIN_API_SECRET", ""),
         "api_passphrase": os.getenv("KUCOIN_API_PASSPHRASE", ""),
         "sandbox": _env_bool("KUCOIN_SANDBOX", True),
         "margin_mode": os.getenv("KUCOIN_MARGIN_MODE", "cross"),
         "leverage": int(os.getenv("KUCOIN_LEVERAGE", "3")),
+        "ai_enabled": _env_bool("KUCOIN_AI_ENABLED", False),
+        "ai_provider_config_id": None,
+        "ai_provider_config_alias": "",
         "active": True,
         "updated_at": "env",
         "source": "env",

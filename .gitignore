@@ -20,6 +20,13 @@ celerybeat-schedule
 !.env.example
 credenciales.md
 
+# Local credential files (never commit)
+credenciales_agents.txt
+**/credenciales_agents.txt
+*credenciales*agents*.txt
+*credentials*agents*.txt
+*api_keys*.txt
+
 # Logs and temp
 *.log
 tmp/

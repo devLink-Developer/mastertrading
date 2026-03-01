@@ -1,0 +1,103 @@
+# Environment Reference
+
+Last update: 2026-03-01
+
+Source of truth: `config/settings.py`.
+This document lists high-impact variables only. Keep secrets out of git.
+
+## 1) Core runtime
+- `MODE`: `paper|live|demo` style mode tag used in reports/runtime behavior.
+- `TRADING_ENABLED`: hard on/off for new entries.
+- `USE_SQLITE`: local test mode switch.
+- `DEBUG`: Django debug toggle.
+
+## 2) Exchange and execution safety
+- `MAX_EFF_LEVERAGE`: global effective leverage cap.
+- `MIN_EQUITY_USDT`: minimum equity required to trade.
+- `ORDER_MARGIN_BUFFER_PCT`: reserve margin for fees/slippage.
+- `MAX_EXPOSURE_PER_INSTRUMENT_PCT`: concentration cap per symbol.
+
+## 3) Risk per trade and volatility scaling
+- `RISK_PER_TRADE_PCT`: base risk budget.
+- `VOL_RISK_LOW_ATR_PCT`, `VOL_RISK_HIGH_ATR_PCT`, `VOL_RISK_MIN_SCALE`: ATR-to-risk scaling.
+- `PER_INSTRUMENT_RISK`: symbol-specific overrides.
+- `INSTRUMENT_RISK_TIERS`: tiered risk profile mapping.
+
+## 4) TP/SL and management
+- `STOP_LOSS_PCT`, `TAKE_PROFIT_PCT`: base floors.
+- `ATR_MULT_SL`, `ATR_MULT_TP`: ATR multipliers.
+- `MIN_SL_PCT`, `TAKE_PROFIT_MIN_PCT`: hard floors.
+- `TP_SL_FEE_ADJUST_ENABLED`: include estimated fees in TP/SL decisions.
+- `TRAILING_STOP_ENABLED`, `TRAILING_STOP_ACTIVATION_R`, `TRAILING_STOP_LOCK_IN_PCT`
+- `BREAKEVEN_STOP_ENABLED`, `BREAKEVEN_STOP_AT_R`, `BREAKEVEN_STOP_OFFSET_PCT`
+- `PARTIAL_CLOSE_AT_R`, `PARTIAL_CLOSE_PCT`
+
+## 5) Signal quality and timing
+- `MIN_SIGNAL_SCORE`, `EXECUTION_MIN_SIGNAL_SCORE`
+- `SIGNAL_TTL_SECONDS`, `SIGNAL_DEDUP_SECONDS`
+- `SIGNAL_FLIP_MIN_AGE_ENABLED`, `SIGNAL_FLIP_MIN_AGE_MINUTES`
+- `MODULE_SIGNAL_TTL_SECONDS` (module-level)
+
+## 6) Session and regime controls
+- `SESSION_POLICY_ENABLED`
+- `SESSION_SCORE_MIN` (json map)
+- `SESSION_RISK_MULTIPLIER` (json map)
+- `SESSION_DEAD_ZONE_BLOCK`
+- `MARKET_REGIME_ADX_MIN`
+- `MAX_DAILY_TRADES`, `MAX_DAILY_TRADES_LOW_ADX`, `MAX_DAILY_TRADES_HIGH_ADX`
+
+## 7) Strategy composition and allocator
+- `MULTI_STRATEGY_ENABLED`
+- `MODULE_TREND_ENABLED`, `MODULE_MEANREV_ENABLED`, `MODULE_CARRY_ENABLED`
+- `ALLOCATOR_MODULE_WEIGHTS` (json)
+- `ALLOCATOR_THRESHOLD`
+- `ALLOCATOR_MIN_MODULES_ACTIVE`
+- `ALLOCATOR_DYNAMIC_WEIGHTS_ENABLED`
+- `ALLOCATOR_DYNAMIC_WINDOW_DAYS`
+- `ALLOCATOR_LONG_SCORE_PENALTY`, `SHORT_SCORE_PENALTY`
+
+## 8) Guardrail killers
+- `UPTREND_SHORT_KILLER_ENABLED`
+- `DOWNTREND_LONG_KILLER_ENABLED`
+
+## 9) Optional ML/AI overlay switches
+- `ML_ENTRY_FILTER_ENABLED`
+- `ML_ENTRY_FILTER_MIN_PROB`
+- Per-symbol and per-strategy ML toggles
+- Auto-train/retrain flags and cadence
+
+## 10) Operational and locks
+- `EXECUTION_LOCK_ENABLED`, `EXECUTION_LOCK_KEY`, `EXECUTION_LOCK_TTL_SECONDS`
+- Circuit-breaker and drawdown limits:
+  - `DAILY_DD_LIMIT`
+  - `WEEKLY_DD_LIMIT`
+
+## 11) JSON env examples
+`SESSION_SCORE_MIN` example:
+```json
+{"asia":0.62,"london":0.56,"ny":0.58,"overlap":0.55,"dead":0.80}
+```
+
+`SESSION_RISK_MULTIPLIER` example:
+```json
+{"asia":0.70,"london":1.0,"ny":0.90,"overlap":1.0,"dead":0.0}
+```
+
+`ALLOCATOR_MODULE_WEIGHTS` example:
+```json
+{"trend":0.30,"meanrev":0.20,"carry":0.15,"smc":0.35}
+```
+
+`PER_INSTRUMENT_RISK` example:
+```json
+{"BTCUSDT":0.0015,"SOLUSDT":0.002,"LINKUSDT":0.002,"ADAUSDT":0.002}
+```
+
+## 12) Change policy for env
+- Change one logical group at a time.
+- Save before/after values in deploy notes.
+- Validate with at least:
+  - smoke run (services up, no crashes)
+  - first-hour logs
+  - next-day performance dashboard
+

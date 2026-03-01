@@ -17,3 +17,4 @@ tenacity>=8.2
 scikit-learn>=1.4
 hmmlearn>=0.3
 arch>=7.0
+tiktoken>=0.8

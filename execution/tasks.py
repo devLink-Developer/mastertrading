@@ -43,6 +43,7 @@ from risk.notifications import (
     notify_risk_event, notify_error,
 )
 from execution.ml_entry_filter import load_model, predict_entry_success_probability
+from execution.ai_entry_gate import evaluate_ai_entry_gate
 from execution.risk_policy import (
     max_daily_trades_for_adx as _shared_max_daily_trades_for_adx,
     volatility_adjusted_risk as _shared_volatility_adjusted_risk,
@@ -2770,6 +2771,11 @@ def _attempt_entry_open(
     leverage: float,
     total_notional: float,
     cycle_notional_added: float,
+    account_ai_enabled: bool,
+    account_ai_config_id: int | None,
+    account_owner_id: int | None,
+    account_alias: str,
+    account_service: str,
 ) -> tuple[int, float]:
     if not can_open:
         return 0, 0.0
@@ -2960,6 +2966,40 @@ def _attempt_entry_open(
             )
         return 0, 0.0
 
+    ai_risk_mult = 1.0
+    ai_allow, ai_risk_mult, ai_reason, ai_meta = evaluate_ai_entry_gate(
+        account_ai_enabled=account_ai_enabled,
+        account_ai_config_id=account_ai_config_id,
+        account_owner_id=account_owner_id,
+        account_alias=account_alias,
+        account_service=account_service,
+        symbol=inst.symbol,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        sig_score=sig_score,
+        atr=atr,
+        spread_bps=spread_bps_selected,
+        sl_pct=sl_pct,
+        session_name=current_session,
+        sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+    )
+    if not ai_allow:
+        logger.info(
+            "AI gate blocked entry on %s: reason=%s cfg=%s",
+            inst.symbol,
+            ai_reason,
+            ai_meta.get("cfg_alias", "n/a"),
+        )
+        return 0, 0.0
+    if ai_risk_mult < 1.0:
+        logger.info(
+            "AI gate risk reduction on %s: risk_mult=%.3f reason=%s",
+            inst.symbol,
+            ai_risk_mult,
+            ai_reason,
+        )
+    ai_risk_mult = max(0.0, min(float(ai_risk_mult), 1.0))
+
     inst_notional = 0.0
     try:
         pos_obj = Position.objects.filter(instrument=inst, is_open=True).first()
@@ -2975,7 +3015,7 @@ def _attempt_entry_open(
     is_allocator_signal = use_allocator_signals and strategy_name.startswith("alloc_")
     if is_allocator_signal:
         inst_risk_pct = max(0.0, _to_float(sig_payload.get("risk_budget_pct", 0.0)))
-        effective_risk_mult = 1.0
+        effective_risk_mult = ai_risk_mult if ai_risk_mult > 0 else 0.0
         if inst_risk_pct <= 0:
             logger.info(
                 "Allocator blocked entry on %s: risk_budget_pct=%.5f strategy=%s",
@@ -2987,7 +3027,7 @@ def _attempt_entry_open(
         if macro_active and not macro_block_entries:
             inst_risk_pct *= macro_risk_mult
     else:
-        effective_risk_mult = session_risk_mult if session_policy_enabled else 1.0
+        effective_risk_mult = (session_risk_mult if session_policy_enabled else 1.0) * ai_risk_mult
         if macro_active and not macro_block_entries:
             effective_risk_mult *= macro_risk_mult
         if effective_risk_mult <= 0:
@@ -3893,6 +3933,17 @@ def execute_orders():
     risk_ns = str(runtime_ctx.get("risk_namespace") or "global")
     balance_assets = list(runtime_ctx.get("balance_assets") or ["USDT"])
     env_label = str(runtime_ctx.get("label") or "EXCHANGE")
+    account_ai_enabled = bool(runtime_ctx.get("ai_enabled", False))
+    try:
+        account_ai_config_id = int(runtime_ctx.get("ai_provider_config_id") or 0) or None
+    except Exception:
+        account_ai_config_id = None
+    try:
+        account_owner_id = int(runtime_ctx.get("owner_id") or 0) or None
+    except Exception:
+        account_owner_id = None
+    account_alias = str(runtime_ctx.get("account_alias") or "")
+    account_service = str(runtime_ctx.get("service") or "")
     placed = 0
     positions_snapshot = []
     try:
@@ -4097,6 +4148,11 @@ def execute_orders():
             leverage=leverage,
             total_notional=total_notional,
             cycle_notional_added=cycle_notional_added,
+            account_ai_enabled=account_ai_enabled,
+            account_ai_config_id=account_ai_config_id,
+            account_owner_id=account_owner_id,
+            account_alias=account_alias,
+            account_service=account_service,
         )
         placed += placed_delta
         cycle_notional_added += cycle_notional_delta

@@ -4,8 +4,9 @@ import os
 
 from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
+from django.db import OperationalError, ProgrammingError
 
-from core.models import ExchangeCredential
+from core.models import ApiProviderConfig, ExchangeCredential
 
 
 class Command(BaseCommand):
@@ -29,6 +30,23 @@ class Command(BaseCommand):
             return None
         return int(user.id)
 
+    def _resolve_ai_provider_config_id(self, alias: str) -> int | None:
+        alias = (alias or "").strip()
+        if not alias:
+            return None
+        try:
+            row = ApiProviderConfig.objects.filter(name_alias=alias).only("id").first()
+        except (OperationalError, ProgrammingError):
+            return None
+        if not row:
+            self.stderr.write(
+                self.style.WARNING(
+                    f"AI provider config alias '{alias}' not found. Credential will keep ai_provider_config empty."
+                )
+            )
+            return None
+        return int(row.id)
+
     def handle(self, *args, **options):
         kucoin_sandbox = os.getenv("KUCOIN_SANDBOX", "true").lower() == "true"
         binance_sandbox = os.getenv("BINANCE_TESTNET", "true").lower() == "true"
@@ -50,6 +68,8 @@ class Command(BaseCommand):
                 "margin_mode": os.getenv("KUCOIN_MARGIN_MODE", "cross"),
                 "leverage": int(os.getenv("KUCOIN_LEVERAGE", "3")),
                 "label": os.getenv("KUCOIN_API_LABEL", ""),
+                "ai_enabled": os.getenv("KUCOIN_AI_ENABLED", "false").lower() == "true",
+                "ai_provider_config_alias": os.getenv("KUCOIN_AI_PROVIDER_CONFIG_ALIAS", ""),
             },
             {
                 "service": ExchangeCredential.Service.BINANCE,
@@ -62,6 +82,8 @@ class Command(BaseCommand):
                 "margin_mode": os.getenv("BINANCE_MARGIN_MODE", "cross"),
                 "leverage": int(os.getenv("BINANCE_LEVERAGE", "3")),
                 "label": os.getenv("BINANCE_API_LABEL", ""),
+                "ai_enabled": os.getenv("BINANCE_AI_ENABLED", "false").lower() == "true",
+                "ai_provider_config_alias": os.getenv("BINANCE_AI_PROVIDER_CONFIG_ALIAS", ""),
             },
             {
                 "service": ExchangeCredential.Service.BINGX,
@@ -74,6 +96,8 @@ class Command(BaseCommand):
                 "margin_mode": os.getenv("BINGX_MARGIN_MODE", "cross"),
                 "leverage": int(os.getenv("BINGX_LEVERAGE", "3")),
                 "label": os.getenv("BINGX_API_LABEL", ""),
+                "ai_enabled": os.getenv("BINGX_AI_ENABLED", "false").lower() == "true",
+                "ai_provider_config_alias": os.getenv("BINGX_AI_PROVIDER_CONFIG_ALIAS", ""),
             },
         ]
 
@@ -85,6 +109,9 @@ class Command(BaseCommand):
             service = row["service"]
             alias = row["name_alias"]
             owner_id = self._resolve_owner_id(row.get("owner_username", ""))
+            ai_provider_config_id = self._resolve_ai_provider_config_id(
+                row.get("ai_provider_config_alias", "")
+            )
             is_default_alias = not default_active_alias or alias == default_active_alias
             defaults = {
                 "service": service,
@@ -97,6 +124,8 @@ class Command(BaseCommand):
                 "margin_mode": row["margin_mode"],
                 "leverage": row["leverage"],
                 "label": row["label"],
+                "ai_enabled": row.get("ai_enabled", False),
+                "ai_provider_config_id": ai_provider_config_id,
                 "active": service == default_active_service and is_default_alias,
             }
             obj, was_created = ExchangeCredential.objects.update_or_create(
@@ -119,7 +148,8 @@ class Command(BaseCommand):
             self.stdout.write(
                 f"{service}/{obj.name_alias}: active={obj.active} "
                 f"owner={getattr(obj.owner, 'username', 'unowned')} "
-                f"key_set={'yes' if bool(obj.api_key) else 'no'}"
+                f"key_set={'yes' if bool(obj.api_key) else 'no'} "
+                f"ai={'on' if bool(getattr(obj, 'ai_enabled', False)) else 'off'}"
             )
 
         self.stdout.write(

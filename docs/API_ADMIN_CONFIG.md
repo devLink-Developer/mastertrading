@@ -1,0 +1,91 @@
+# API Config In Admin + Token Optimization
+
+Last update: 2026-03-01
+
+## What was added
+- `core.ApiProviderConfig`
+- `core.ApiContextFile`
+- `core.ApiTokenUsageLog`
+- `core.ExchangeCredential.ai_enabled` (bool per trading account)
+- `core.ExchangeCredential.ai_provider_config` (optional FK)
+- Runtime helpers: `core/api_runtime.py`
+- Command: `python manage.py preview_api_context`
+
+## Admin tables
+
+`ApiProviderConfig`
+- One row per provider/model profile.
+- Stores encrypted `api_key`.
+- Includes token budgets:
+  - `max_input_tokens`
+  - `max_output_tokens`
+- Supports `active` and `is_default`.
+
+`ApiContextFile`
+- Links files to a provider config.
+- Controls:
+  - `priority`
+  - `max_tokens` per file
+  - `trim_mode` (`head`/`tail`)
+  - `required` vs optional
+
+`ApiTokenUsageLog`
+- Stores prompt/completion/total tokens and metadata for auditing and cost tracking.
+
+`ExchangeCredential` (updated)
+- `ai_enabled`: enable/disable AI gate for that account (`bingx`, `kucoin`, etc).
+- `ai_provider_config`: optional direct profile binding for the account.
+
+## Token optimization flow
+1. Resolve active API config from DB.
+2. Read enabled context files in priority order.
+3. Apply per-file token cap and trim strategy.
+4. Fit all context into:  
+   `max_input_tokens - reserve_output_tokens - user_prompt_tokens`
+5. Return optimized context text + file-level token report.
+
+## Entry gate integration
+- Execution uses account context from active `ExchangeCredential`.
+- If `ai_enabled=false` -> no AI call.
+- If `ai_enabled=true`:
+  1. Resolve config from `ai_provider_config`, else fallback by owner/global default.
+  2. Build optimized context from `ApiContextFile`.
+  3. Call `/v1/responses` (or custom `base_url`) and expect JSON:
+     - `allow` (bool)
+     - `risk_mult` (0..1)
+     - `reason` (short text)
+  4. If `allow=false`, entry is blocked.
+  5. If `risk_mult<1`, position risk is reduced.
+  6. Token usage is logged in `ApiTokenUsageLog`.
+
+## Preview command
+Examples:
+```bash
+python manage.py preview_api_context --alias gpt-main --prompt-text "analiza ETH"
+python manage.py preview_api_context --alias gpt-main --prompt-file tmp/prompt.txt --reserve-output 800 --write tmp/ctx.txt
+```
+
+Output includes:
+- user tokens
+- context tokens
+- total prompt tokens
+- budget available
+- per-file include/skip reason
+
+## Security notes
+- `api_key` is encrypted at rest (`EncryptedCredentialField`).
+- Context file paths are restricted to `BASE_DIR` to block path traversal.
+- Keep API secrets out of git and `.md` docs.
+
+## Optional env flags
+- `AI_ENTRY_GATE_ENABLED=true|false`
+- `AI_ENTRY_GATE_FAIL_OPEN=true|false`
+- `AI_ENTRY_GATE_ONLY_ALLOCATOR=true|false`
+- `AI_ENTRY_GATE_DEFAULT_PROVIDER=openai`
+- `AI_ENTRY_GATE_MAX_OUTPUT_TOKENS=180`
+
+Per service env sync support:
+- `BINGX_AI_ENABLED=true|false`
+- `BINGX_AI_PROVIDER_CONFIG_ALIAS=gpt-main`
+- `KUCOIN_AI_ENABLED=true|false`
+- `BINANCE_AI_ENABLED=true|false`

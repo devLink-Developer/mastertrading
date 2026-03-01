@@ -20,6 +20,18 @@ def get_runtime_exchange_context(default_env: str | None = None) -> dict[str, An
     sandbox = bool(cfg.get("sandbox"))
     account_alias = str(cfg.get("name_alias", "") or "")
     owner_username = str(cfg.get("owner_username", "") or "")
+    owner_id = cfg.get("owner_id")
+    try:
+        owner_id = int(owner_id) if owner_id is not None else None
+    except Exception:
+        owner_id = None
+    ai_enabled = bool(cfg.get("ai_enabled", False))
+    ai_provider_config_id = cfg.get("ai_provider_config_id")
+    try:
+        ai_provider_config_id = int(ai_provider_config_id) if ai_provider_config_id is not None else None
+    except Exception:
+        ai_provider_config_id = None
+    ai_provider_config_alias = str(cfg.get("ai_provider_config_alias", "") or "")
     mode = str(getattr(settings, "MODE", "live") or "live")
 
     if service == "bingx" and sandbox:
@@ -43,7 +55,11 @@ def get_runtime_exchange_context(default_env: str | None = None) -> dict[str, An
         "service": service,
         "account_alias": account_alias,
         "owner_username": owner_username,
+        "owner_id": owner_id,
         "sandbox": sandbox,
+        "ai_enabled": ai_enabled,
+        "ai_provider_config_id": ai_provider_config_id,
+        "ai_provider_config_alias": ai_provider_config_alias,
         "env": env,
         "mode": mode,
         "balance_assets": assets,
