@@ -50,6 +50,79 @@ def _collect_output_text(resp_json: dict[str, Any]) -> str:
     return "\n".join(chunks).strip()
 
 
+def _model_name_lc(model_name: str | None) -> str:
+    return str(model_name or "").strip().lower()
+
+
+def _supports_sampling_controls(model_name: str | None) -> bool:
+    """
+    Some reasoning-oriented model families reject temperature/top_p in Responses API.
+    Keep the request minimal for those families.
+    """
+    model = _model_name_lc(model_name)
+    if not model:
+        return True
+    unsupported_prefixes = (
+        "gpt-5",
+        "o1",
+        "o3",
+        "o4-mini",
+    )
+    return not any(model.startswith(prefix) for prefix in unsupported_prefixes)
+
+
+def _build_responses_body(
+    *,
+    cfg: ApiProviderConfig,
+    system_msg: str,
+    user_msg: str,
+    reserve_out: int,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "model": cfg.model_name,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_msg}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_msg}]},
+        ],
+        "max_output_tokens": reserve_out,
+    }
+    if _supports_sampling_controls(cfg.model_name):
+        body["temperature"] = float(cfg.temperature)
+        body["top_p"] = float(cfg.top_p)
+
+    if isinstance(cfg.extra_params_json, dict):
+        body.update(cfg.extra_params_json)
+        # Enforce compatibility if extra params inject unsupported knobs.
+        if not _supports_sampling_controls(cfg.model_name):
+            body.pop("temperature", None)
+            body.pop("top_p", None)
+    return body
+
+
+def _http_status_error_detail(exc: httpx.HTTPStatusError) -> str:
+    status = getattr(exc.response, "status_code", None)
+    detail = ""
+    try:
+        payload = exc.response.json()
+        if isinstance(payload, dict):
+            err = payload.get("error")
+            if isinstance(err, dict):
+                detail = str(err.get("message") or "")
+    except Exception:
+        detail = ""
+    if not detail:
+        try:
+            detail = str(exc.response.text or "").strip()
+        except Exception:
+            detail = ""
+    detail = detail[:500] if detail else ""
+    if status is None:
+        return f"{exc}"
+    if detail:
+        return f"HTTP {status}: {detail}"
+    return f"HTTP {status}: {exc}"
+
+
 def _extract_json_blob(raw: str) -> dict[str, Any] | None:
     txt = (raw or "").strip()
     if not txt:
@@ -256,18 +329,12 @@ def evaluate_ai_entry_gate(
         "Return JSON only."
     )
 
-    body: dict[str, Any] = {
-        "model": cfg.model_name,
-        "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": system_msg}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user_msg}]},
-        ],
-        "max_output_tokens": reserve_out,
-        "temperature": float(cfg.temperature),
-        "top_p": float(cfg.top_p),
-    }
-    if isinstance(cfg.extra_params_json, dict):
-        body.update(cfg.extra_params_json)
+    body = _build_responses_body(
+        cfg=cfg,
+        system_msg=system_msg,
+        user_msg=user_msg,
+        reserve_out=reserve_out,
+    )
 
     base_url = (str(cfg.base_url or "").strip() or "https://api.openai.com/v1").rstrip("/")
     url = f"{base_url}/responses"
@@ -360,6 +427,50 @@ def evaluate_ai_entry_gate(
             }
         )
         return allow, risk_mult, reason, meta
+    except httpx.HTTPStatusError as exc:
+        err_detail = _http_status_error_detail(exc)
+        logger.warning("AI entry gate failed for %s (%s): %s", symbol, strategy_name, err_detail)
+        latency_ms = max(0, int((time.perf_counter() - started) * 1000))
+        log_token_usage(
+            config=cfg,
+            provider=cfg.provider,
+            model_name=cfg.model_name,
+            operation="ai_entry_gate_error",
+            prompt_tokens=prompt_tokens_est,
+            completion_tokens=0,
+            context_tokens=ctx.used_context_tokens + feedback_tokens,
+            estimated=True,
+            metadata={**metadata, "error": err_detail, "cfg_alias": cfg.name_alias},
+        )
+        record_ai_feedback_event(
+            event_type="ai_gate_error",
+            level="error",
+            config=cfg,
+            account_alias=account_alias,
+            account_service=account_service,
+            symbol=symbol,
+            strategy=strategy_name,
+            allow=True if fail_open else False,
+            risk_mult=1.0 if fail_open else 0.0,
+            reason=err_detail[:255],
+            latency_ms=latency_ms,
+            payload={
+                "cfg_alias": cfg.name_alias,
+                "error_type": type(exc).__name__,
+                "fail_open": fail_open,
+                "status_code": getattr(exc.response, "status_code", None),
+            },
+        )
+        if bool(getattr(settings, "AI_ENTRY_GATE_NOTIFY_ERRORS", True)):
+            try:
+                from risk.notifications import notify_error
+
+                notify_error("AI entry gate", err_detail)
+            except Exception:
+                pass
+        if fail_open:
+            return True, 1.0, "ai_error_fail_open", meta
+        return False, 0.0, "ai_error_fail_closed", meta
     except Exception as exc:
         logger.warning("AI entry gate failed for %s (%s): %s", symbol, strategy_name, exc)
         latency_ms = max(0, int((time.perf_counter() - started) * 1000))
