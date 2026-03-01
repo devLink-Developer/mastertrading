@@ -39,6 +39,28 @@ class AiEntryGateParseTest(SimpleTestCase):
         self.assertEqual(risk_mult, 1.0)
         self.assertEqual(reason, "x")
 
+    def test_parse_ai_decision_accepts_nested_decision_payload(self):
+        allow, risk_mult, reason = _parse_ai_decision(
+            '{"decision":{"allow":false,"risk_multiplier":0.42,"rationale":"regime_conflict"}}'
+        )
+        self.assertFalse(allow)
+        self.assertEqual(risk_mult, 0.42)
+        self.assertEqual(reason, "regime_conflict")
+
+    def test_parse_ai_decision_accepts_python_dict_like_text(self):
+        allow, risk_mult, reason = _parse_ai_decision("{'allow': True, 'risk_mult': 0.7, 'reason': 'ok'}")
+        self.assertTrue(allow)
+        self.assertEqual(risk_mult, 0.7)
+        self.assertEqual(reason, "ok")
+
+    def test_parse_ai_decision_uses_heuristic_fallback_when_not_json(self):
+        allow, risk_mult, reason = _parse_ai_decision(
+            "allow=no; risk_multiplier=0.35; reason=spread_too_wide"
+        )
+        self.assertFalse(allow)
+        self.assertEqual(risk_mult, 0.35)
+        self.assertEqual(reason, "spread_too_wide")
+
 
 class AiEntryGateRequestBodyTest(SimpleTestCase):
     def _cfg(self, model_name: str, extra_params: dict | None = None):

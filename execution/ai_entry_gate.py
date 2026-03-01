@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
@@ -133,33 +134,142 @@ def _http_status_error_detail(exc: httpx.HTTPStatusError) -> str:
 
 
 def _extract_json_blob(raw: str) -> dict[str, Any] | None:
-    txt = (raw or "").strip()
+    def _parse_dict_candidate(candidate: str) -> dict[str, Any] | None:
+        c = str(candidate or "").strip()
+        if not c:
+            return None
+        try:
+            parsed = json.loads(c)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        try:
+            parsed = ast.literal_eval(c)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        return None
+
+    def _iter_brace_blobs(text: str):
+        depth = 0
+        start = -1
+        in_str = False
+        esc = False
+        quote = ""
+        for idx, ch in enumerate(text):
+            if in_str:
+                if esc:
+                    esc = False
+                    continue
+                if ch == "\\":
+                    esc = True
+                    continue
+                if ch == quote:
+                    in_str = False
+                continue
+            if ch in {"'", '"'}:
+                in_str = True
+                quote = ch
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = idx
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        yield text[start : idx + 1]
+                        start = -1
+
+    txt = str(raw or "").strip()
     if not txt:
         return None
-    try:
-        parsed = json.loads(txt)
-        if isinstance(parsed, dict):
+
+    for candidate in (txt,):
+        parsed = _parse_dict_candidate(candidate)
+        if parsed is not None:
             return parsed
-    except Exception:
-        pass
-    m = re.search(r"\{.*\}", txt, flags=re.DOTALL)
-    if not m:
-        return None
-    try:
-        parsed = json.loads(m.group(0))
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        return None
+
+    fence = re.search(r"```(?:json)?\s*(.*?)```", txt, flags=re.DOTALL | re.IGNORECASE)
+    if fence:
+        fenced_body = str(fence.group(1) or "").strip()
+        parsed = _parse_dict_candidate(fenced_body)
+        if parsed is not None:
+            return parsed
+
+    for blob in _iter_brace_blobs(txt):
+        parsed = _parse_dict_candidate(blob)
+        if parsed is not None:
+            return parsed
+
+    return None
+
+
+def _extract_bool(val: Any, default: bool = True) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    txt = str(val or "").strip().lower()
+    if txt in {"true", "1", "yes", "y", "allow", "allowed", "open", "approved"}:
+        return True
+    if txt in {"false", "0", "no", "n", "deny", "denied", "block", "blocked", "reject", "rejected"}:
+        return False
+    return bool(default)
+
+
+def _extract_payload_value(payload: dict[str, Any], keys: tuple[str, ...], default: Any = None) -> Any:
+    for key in keys:
+        if key in payload and payload.get(key) is not None:
+            return payload.get(key)
+    return default
 
 
 def _parse_ai_decision(raw_text: str) -> tuple[bool, float, str]:
     payload = _extract_json_blob(raw_text)
+    if payload:
+        # Accept nested decision wrappers.
+        nested = payload.get("decision")
+        if isinstance(nested, dict):
+            payload = nested
+
     if not payload:
-        return True, 1.0, "ai_parse_failed"
-    allow = bool(payload.get("allow", True))
-    risk_mult = _clamp(_to_float(payload.get("risk_mult", 1.0), 1.0), 0.0, 1.0)
-    reason = str(payload.get("reason") or "").strip() or "ai_no_reason"
+        txt = str(raw_text or "")
+        m_allow = re.search(
+            r"(allow|approved|should_open|open)\s*[:=]\s*(true|false|yes|no|1|0)",
+            txt,
+            flags=re.IGNORECASE,
+        )
+        m_risk = re.search(
+            r"(risk_mult|risk_multiplier|risk|size_mult)\s*[:=]\s*([0-9]*\.?[0-9]+)",
+            txt,
+            flags=re.IGNORECASE,
+        )
+        m_reason = re.search(r"(reason|rationale|note|why)\s*[:=]\s*([^\n\r]+)", txt, flags=re.IGNORECASE)
+        if not (m_allow or m_risk or m_reason):
+            return True, 1.0, "ai_parse_failed"
+        allow = _extract_bool(m_allow.group(2), default=True) if m_allow else True
+        risk_mult = _clamp(_to_float(m_risk.group(2), 1.0), 0.0, 1.0) if m_risk else 1.0
+        reason = str(m_reason.group(2) if m_reason else "ai_parse_heuristic").strip() or "ai_parse_heuristic"
+        return allow, risk_mult, reason[:160]
+
+    allow_raw = _extract_payload_value(payload, ("allow", "approved", "should_open", "open"), True)
+    risk_raw = _extract_payload_value(payload, ("risk_mult", "risk_multiplier", "risk", "size_mult"), 1.0)
+    reason_raw = _extract_payload_value(payload, ("reason", "rationale", "note", "why"), "")
+    allow = _extract_bool(allow_raw, default=True)
+    risk_mult = _clamp(_to_float(risk_raw, 1.0), 0.0, 1.0)
+    reason = str(reason_raw or "").strip() or "ai_no_reason"
     return allow, risk_mult, reason
+
+
+def _preview_text(raw_text: str, max_len: int = 240) -> str:
+    txt = re.sub(r"\s+", " ", str(raw_text or "").strip())
+    if len(txt) <= max_len:
+        return txt
+    return txt[: max(0, max_len - 3)] + "..."
 
 
 def _compact_payload(sig_payload: dict[str, Any]) -> dict[str, Any]:
@@ -421,7 +531,7 @@ def evaluate_ai_entry_gate(
                 "latency_ms": latency_ms,
             },
         )
-        feedback_level = "warning" if not allow else "info"
+        feedback_level = "warning" if (not allow or reason == "ai_parse_failed") else "info"
         record_ai_feedback_event(
             event_type="ai_gate_decision",
             level=feedback_level,
@@ -440,6 +550,8 @@ def evaluate_ai_entry_gate(
                 "session": session_name,
                 "spread_bps": None if spread_bps is None else round(_to_float(spread_bps, 0.0), 3),
                 "cfg_alias": cfg.name_alias,
+                "ai_output_preview": _preview_text(output_text),
+                "ai_output_chars": len(str(output_text or "")),
             },
         )
         meta.update(
