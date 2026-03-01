@@ -2,7 +2,10 @@ from django.test import SimpleTestCase
 
 from core.models import ApiProviderConfig
 from execution.ai_entry_gate import (
+    _build_gate_messages,
     _build_responses_body,
+    _compact_payload,
+    _dir_code,
     _extract_json_blob,
     _parse_ai_decision,
     _supports_sampling_controls,
@@ -99,3 +102,56 @@ class AiEntryGateRequestBodyTest(SimpleTestCase):
         self.assertNotIn("temperature", body)
         self.assertNotIn("top_p", body)
         self.assertEqual(body.get("foo"), "bar")
+
+
+class AiEntryGatePromptCompactTest(SimpleTestCase):
+    def test_dir_code(self):
+        self.assertEqual(_dir_code("long"), "l")
+        self.assertEqual(_dir_code("short"), "s")
+        self.assertEqual(_dir_code("LONG"), "l")
+        self.assertEqual(_dir_code(""), "u")
+
+    def test_compact_payload_uses_short_keys(self):
+        payload = {
+            "reasons": {
+                "net_score": 0.42,
+                "module_rows": [
+                    {
+                        "module": "trend",
+                        "direction": "long",
+                        "confidence": 0.8,
+                        "raw_score": 0.3,
+                    }
+                ],
+            },
+            "risk_budget_pct": 0.003,
+            "entry_reason": "x",
+            "regime": "trending",
+            "session": "london",
+        }
+        out = _compact_payload(payload)
+        self.assertEqual(out.get("ns"), 0.42)
+        self.assertEqual(out.get("rb"), 0.003)
+        self.assertEqual(out.get("er"), "x")
+        self.assertEqual(out.get("rg"), "trending")
+        self.assertEqual(out.get("se"), "london")
+        self.assertEqual(out.get("mr"), [["trend", "l", 0.8, 0.3]])
+
+    def test_build_gate_messages_omits_empty_sections(self):
+        system_msg, user_msg = _build_gate_messages(
+            user_prompt='{"sym":"BTCUSDT"}',
+            ctx_text="",
+            feedback_text="",
+        )
+        self.assertIn("Return JSON only", system_msg)
+        self.assertEqual(user_msg, 'in={"sym":"BTCUSDT"}')
+
+    def test_build_gate_messages_includes_ctx_feedback_when_present(self):
+        _, user_msg = _build_gate_messages(
+            user_prompt='{"sym":"BTCUSDT"}',
+            ctx_text="ctx-line",
+            feedback_text='{"ev":"x"}',
+        )
+        self.assertIn('in={"sym":"BTCUSDT"}', user_msg)
+        self.assertIn("ctx=ctx-line", user_msg)
+        self.assertIn('fb={"ev":"x"}', user_msg)

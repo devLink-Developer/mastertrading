@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,63 @@ def count_tokens(text: str, model_name: str = "") -> tuple[int, bool]:
             pass
     # Safe fallback when tokenizer package is unavailable.
     return max(1, int(math.ceil(len(txt) / 4.0))), True
+
+
+def _looks_like_toon(file_path: str, text: str) -> bool:
+    fp = str(file_path or "").strip().lower()
+    if ".toon." in fp or fp.endswith(".toon.md"):
+        return True
+    head = "\n".join(str(text or "").splitlines()[:40]).upper()
+    return "FORMAT: TOON" in head and "SECTION:" in head
+
+
+def _compact_toon_text(text: str) -> str:
+    """
+    Normalize TOON documents to high-signal lines only.
+    Removes markdown/separator noise while keeping deterministic rules.
+    """
+    lines: list[str] = []
+    for raw in str(text or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if set(s) <= {"=", "-", "_"}:
+            continue
+        if s.startswith("---"):
+            continue
+        if s.startswith("# "):
+            title = s[2:].strip()
+            if not title:
+                continue
+            # Keep header in key:value style.
+            s = f"NAME: {title}" if ":" not in title else title
+
+        keep = False
+        if ":" in s:
+            keep = True
+        elif s.startswith("- "):
+            keep = True
+        elif s.startswith("IF ") or s.startswith("ELSE"):
+            keep = True
+        elif ("→" in s) or ("∈" in s):
+            keep = True
+        elif s.startswith("END_OF_TOON_"):
+            keep = True
+
+        if not keep:
+            continue
+
+        # Normalize excessive spaces but preserve semantics.
+        s = re.sub(r"[ \t]+", " ", s).strip()
+        lines.append(s)
+
+    # Drop duplicate adjacent lines.
+    compact: list[str] = []
+    for line in lines:
+        if compact and compact[-1] == line:
+            continue
+        compact.append(line)
+    return "\n".join(compact).strip()
 
 
 def trim_text_to_token_budget(
@@ -198,6 +256,8 @@ def build_optimized_context(
         if source.max_chars and source.max_chars > 0:
             limit = int(source.max_chars)
             text = text[:limit] if source.trim_mode == ApiContextFile.TrimMode.HEAD else text[-limit:]
+        if _looks_like_toon(source.file_path, text):
+            text = _compact_toon_text(text)
 
         header = ""
         if source.include_header:

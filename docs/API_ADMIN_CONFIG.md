@@ -69,6 +69,16 @@ Last update: 2026-03-01
      - `AiFeedbackEvent` table
      - `AI_FEEDBACK_JSONL_PATH` compact stream (append-only JSONL)
 
+## Prompt/response format (token-efficient)
+- Prompt payload uses compact JSON keys (`sym, st, dir, sc, atr, spr, sl, ses, sig`).
+- Signal subpayload uses compact keys (`ns, mr, rb, er, rg, se`), where `mr` rows are arrays `[module,dir,confidence,raw_score]`.
+- Response contract remains strict JSON only:
+  - `allow` (bool)
+  - `risk_mult` (0..1)
+  - `reason` (short text)
+- Runtime supports TOON context files (`*.toon.md` or files containing `FORMAT: TOON`) and compacts them automatically before token trim.
+- Effective context path: compact JSON prompt + compact TOON context + compact JSONL feedback stream.
+
 ## Efficient file for AI (always-readable stream)
 - Default path: `tmp/ai/feedback_stream.jsonl`
 - Format: compact JSONL keys (`t, ev, lv, acc, svc, sym, st, ok, rm, r, lat, fp, p`)
@@ -105,9 +115,9 @@ Output includes:
 - `AI_ENTRY_GATE_FAIL_OPEN=true|false`
 - `AI_ENTRY_GATE_ONLY_ALLOCATOR=true|false`
 - `AI_ENTRY_GATE_DEFAULT_PROVIDER=openai`
-- `AI_ENTRY_GATE_MAX_OUTPUT_TOKENS=180`
+- `AI_ENTRY_GATE_MAX_OUTPUT_TOKENS=96`
 - `AI_ENTRY_GATE_NOTIFY_ERRORS=true|false`
-- `AI_FEEDBACK_CONTEXT_MAX_TOKENS=900`
+- `AI_FEEDBACK_CONTEXT_MAX_TOKENS=700`
 - `AI_FEEDBACK_JSONL_ENABLED=true|false`
 - `AI_FEEDBACK_JSONL_PATH=tmp/ai/feedback_stream.jsonl`
 - `AI_FEEDBACK_JSONL_MAX_BYTES=2000000`

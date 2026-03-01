@@ -21,6 +21,15 @@ from core.models import ApiProviderConfig
 logger = logging.getLogger(__name__)
 
 
+def _dir_code(direction: str) -> str:
+    d = str(direction or "").strip().lower()
+    if d.startswith("long"):
+        return "l"
+    if d.startswith("short"):
+        return "s"
+    return d[:1] if d else "u"
+
+
 def _to_float(val: Any, default: float = 0.0) -> float:
     try:
         return float(val)
@@ -158,27 +167,56 @@ def _compact_payload(sig_payload: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     reasons = payload.get("reasons")
     if isinstance(reasons, dict):
-        out["net_score"] = reasons.get("net_score")
+        out["ns"] = reasons.get("net_score")
         rows = reasons.get("module_rows")
-        compact_rows: list[dict[str, Any]] = []
+        compact_rows: list[list[Any]] = []
         if isinstance(rows, list):
             for row in rows[:6]:
                 if not isinstance(row, dict):
                     continue
                 compact_rows.append(
-                    {
-                        "module": row.get("module"),
-                        "direction": row.get("direction"),
-                        "confidence": row.get("confidence"),
-                        "raw_score": row.get("raw_score"),
-                    }
+                    [
+                        row.get("module"),
+                        _dir_code(str(row.get("direction") or "")),
+                        row.get("confidence"),
+                        row.get("raw_score"),
+                    ]
                 )
         if compact_rows:
-            out["module_rows"] = compact_rows
-    for key in ("risk_budget_pct", "entry_reason", "regime", "session"):
-        if key in payload:
-            out[key] = payload.get(key)
+            out["mr"] = compact_rows
+    if "risk_budget_pct" in payload:
+        out["rb"] = payload.get("risk_budget_pct")
+    if "entry_reason" in payload:
+        out["er"] = payload.get("entry_reason")
+    if "regime" in payload:
+        out["rg"] = payload.get("regime")
+    if "session" in payload:
+        out["se"] = payload.get("session")
     return out
+
+
+def _build_gate_messages(
+    *,
+    user_prompt: str,
+    ctx_text: str,
+    feedback_text: str,
+) -> tuple[str, str]:
+    # Keep instruction and payload compact; this path runs on each allocator candidate.
+    system_msg = (
+        "Trading risk gate. "
+        "Input keys: sym,st,dir,sc,atr,spr,sl,ses,sig(ns,mr=[m,d,c,s],rb,er,rg,se). "
+        "Return JSON only: {\"allow\":bool,\"risk_mult\":0..1,\"reason\":\"short\"}."
+    )
+
+    parts = [f"in={user_prompt}"]
+    ctx = str(ctx_text or "").strip()
+    fb = str(feedback_text or "").strip()
+    if ctx:
+        parts.append(f"ctx={ctx}")
+    if fb:
+        parts.append(f"fb={fb}")
+    user_msg = "\n".join(parts)
+    return system_msg, user_msg
 
 
 def _resolve_config(
@@ -278,15 +316,15 @@ def evaluate_ai_entry_gate(
 
     started = time.perf_counter()
     candidate = {
-        "symbol": symbol,
-        "strategy": strategy_name,
-        "direction": signal_direction,
-        "sig_score": round(_to_float(sig_score, 0.0), 6),
-        "atr_pct": None if atr is None else round(_to_float(atr, 0.0), 6),
-        "spread_bps": None if spread_bps is None else round(_to_float(spread_bps, 0.0), 3),
-        "sl_pct": round(_to_float(sl_pct, 0.0), 6),
-        "session": session_name,
-        "signal": _compact_payload(sig_payload),
+        "sym": symbol,
+        "st": strategy_name,
+        "dir": _dir_code(signal_direction),
+        "sc": round(_to_float(sig_score, 0.0), 6),
+        "atr": None if atr is None else round(_to_float(atr, 0.0), 6),
+        "spr": None if spread_bps is None else round(_to_float(spread_bps, 0.0), 3),
+        "sl": round(_to_float(sl_pct, 0.0), 6),
+        "ses": session_name,
+        "sig": _compact_payload(sig_payload),
     }
     user_prompt = json.dumps(candidate, ensure_ascii=True, separators=(",", ":"))
 
@@ -313,20 +351,10 @@ def evaluate_ai_entry_gate(
         max_tokens=feedback_budget,
     )
 
-    system_msg = (
-        "You are a strict risk gate for an automated trading system. "
-        "Return ONLY valid JSON with keys: allow (bool), risk_mult (0..1), reason (short string). "
-        "Set allow=false for low-quality/high-risk entries. "
-        "Set risk_mult<1.0 to reduce size when setup is marginal."
-    )
-    user_msg = (
-        "Candidate:\n"
-        f"{user_prompt}\n\n"
-        "Project context:\n"
-        f"{ctx.context_text or '(no extra context)'}\n\n"
-        "Recent execution feedback stream (JSONL):\n"
-        f"{feedback_text or '(no recent feedback)'}\n\n"
-        "Return JSON only."
+    system_msg, user_msg = _build_gate_messages(
+        user_prompt=user_prompt,
+        ctx_text=ctx.context_text,
+        feedback_text=feedback_text,
     )
 
     body = _build_responses_body(

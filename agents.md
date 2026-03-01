@@ -486,3 +486,38 @@ docker compose logs --tail=120 chatbot
 2. `python scripts/importar_datos.py`
 3. `python manage.py collectstatic --noinput`
 - Por eso el deploy estándar es `docker compose up -d --build` y no hace falta correr esos comandos a mano cada vez.
+
+---
+
+## 12. AI Prompt Token Efficiency (2026-03-01)
+
+### Applied changes
+- execution/ai_entry_gate.py now uses compact candidate payload keys:
+  - top-level: sym, st, dir, sc, atr, spr, sl, ses, sig
+  - signal: ns, mr, rb, er, rg, se (mr rows: [module,dir,confidence,raw_score])
+- System/user prompt text reduced to minimize fixed token overhead per call.
+- Empty placeholders were removed (no "(no extra context)" or "(no recent feedback)").
+
+### New conservative defaults
+- AI_ENTRY_GATE_MAX_OUTPUT_TOKENS: 96 (was 180)
+- AI_FEEDBACK_CONTEXT_MAX_TOKENS: 700 (was 900)
+- Updated in config/settings.py, .env.example and docs/API_ADMIN_CONFIG.md.
+
+### "toon" format status
+- No runtime format named "toon" exists in this project.
+- The active efficient format is compact JSON + compact JSONL stream (tmp/ai/feedback_stream.jsonl).
+
+### 2026-03-01 (TOON integration)
+
+- New docs detected and reviewed:
+  - `docs/TOON_FORMAT_SPECIFICATION_2026.md`
+  - `docs/AI_TOON_MASTERTRADING_CONTEXT_2026.toon.md`
+- Runtime updated to support TOON context natively:
+  - `core/api_runtime.py` detects TOON files (`*.toon.md` or `FORMAT: TOON`) and compacts them before token trim.
+  - Compaction keeps deterministic rule lines and removes separator/narrative noise.
+- Tests added/updated:
+  - `core/tests_api_runtime.py` now validates TOON compaction + auto-compaction in `build_optimized_context`.
+- Docs synced:
+  - `docs/API_ADMIN_CONFIG.md` now states TOON support is active.
+  - `docs/LLM_INDEX.md` now includes TOON spec/context in recommended read order.
+

@@ -7,6 +7,7 @@ from django.conf import settings
 from django.test import TestCase
 
 from core.api_runtime import (
+    _compact_toon_text,
     _resolve_safe_context_path,
     build_optimized_context,
     get_active_api_config,
@@ -106,3 +107,54 @@ class ApiRuntimeTest(TestCase):
         self.assertEqual(stored.total_tokens, 150)
         self.assertEqual(stored.context_tokens, 70)
         self.assertTrue(stored.estimated)
+
+    def test_compact_toon_text_removes_narrative_noise(self):
+        raw = """
+# TEST_CTX
+FORMAT: TOON
+MODE: TOKEN_OPTIMIZED
+This narrative line should be removed.
+============================================================
+SECTION: HARD_CONSTRAINTS
+============================================================
+NO:
+- LEVERAGE increase
+ALWAYS:
+- WALK_FORWARD_VALIDATION
+END_OF_TOON_CONTEXT
+"""
+        out = _compact_toon_text(raw)
+        self.assertIn("FORMAT: TOON", out)
+        self.assertIn("SECTION: HARD_CONSTRAINTS", out)
+        self.assertIn("- LEVERAGE increase", out)
+        self.assertNotIn("This narrative line should be removed.", out)
+
+    def test_build_context_auto_compacts_toon_file(self):
+        toon = self.tmp_dir / "ctx.toon.md"
+        toon.write_text(
+            (
+                "# MASTER\n"
+                "FORMAT: TOON\n"
+                "MODE: TOKEN_OPTIMIZED\n"
+                "Narrative sentence that should be dropped.\n"
+                "SECTION: CORE\n"
+                "IF ATR_PCTL>=70 -> risk_mult=0.75\n"
+                "END_OF_TOON_CONTEXT\n"
+            ),
+            encoding="utf-8",
+        )
+        rel = toon.relative_to(settings.BASE_DIR).as_posix()
+        ApiContextFile.objects.create(
+            config=self.cfg,
+            name="TOON",
+            file_path=rel,
+            required=True,
+            priority=1,
+            max_tokens=120,
+            trim_mode=ApiContextFile.TrimMode.HEAD,
+            include_header=False,
+        )
+        result = build_optimized_context(self.cfg, user_prompt='{"sym":"BTCUSDT"}', reserve_output_tokens=40)
+        self.assertIn("FORMAT: TOON", result.context_text)
+        self.assertIn("IF ATR_PCTL>=70 -> risk_mult=0.75", result.context_text)
+        self.assertNotIn("Narrative sentence that should be dropped.", result.context_text)

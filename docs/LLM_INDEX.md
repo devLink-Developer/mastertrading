@@ -14,8 +14,10 @@ Recommended read order
 5. `docs/OPERATIONS_RUNBOOK.md`
 6. `docs/KNOWN_ISSUES_AND_GUARDRAILS.md`
 7. `docs/API_ADMIN_CONFIG.md` (LLM API setup and token budget flow)
-8. `agents.md` (historical context and decisions log)
-9. `tmp/ai/feedback_stream.jsonl` (compact runtime feedback stream; append-only)
+8. `docs/TOON_FORMAT_SPECIFICATION_2026.md` (TOON format contract)
+9. `docs/AI_TOON_MASTERTRADING_CONTEXT_2026.toon.md` (token-optimized operational context)
+10. `agents.md` (historical context and decisions log)
+11. `tmp/ai/feedback_stream.jsonl` (compact runtime feedback stream; append-only)
 
 Code map (high value files)
 - `execution/tasks.py`: live execution loop, entries, exits, sync, risk guards.

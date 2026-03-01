@@ -235,12 +235,12 @@ AI_ENTRY_GATE_ONLY_ALLOCATOR = os.getenv("AI_ENTRY_GATE_ONLY_ALLOCATOR", "true")
 AI_ENTRY_GATE_DEFAULT_PROVIDER = os.getenv("AI_ENTRY_GATE_DEFAULT_PROVIDER", "openai").strip().lower()
 AI_ENTRY_GATE_MAX_OUTPUT_TOKENS = max(
     32,
-    int(os.getenv("AI_ENTRY_GATE_MAX_OUTPUT_TOKENS", "180")),
+    int(os.getenv("AI_ENTRY_GATE_MAX_OUTPUT_TOKENS", "96")),
 )
 AI_ENTRY_GATE_NOTIFY_ERRORS = os.getenv("AI_ENTRY_GATE_NOTIFY_ERRORS", "true").lower() == "true"
 AI_FEEDBACK_CONTEXT_MAX_TOKENS = max(
     0,
-    int(os.getenv("AI_FEEDBACK_CONTEXT_MAX_TOKENS", "900")),
+    int(os.getenv("AI_FEEDBACK_CONTEXT_MAX_TOKENS", "700")),
 )
 AI_FEEDBACK_JSONL_ENABLED = os.getenv("AI_FEEDBACK_JSONL_ENABLED", "true").lower() == "true"
 AI_FEEDBACK_JSONL_PATH = os.getenv("AI_FEEDBACK_JSONL_PATH", "tmp/ai/feedback_stream.jsonl").strip()
