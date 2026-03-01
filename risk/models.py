@@ -27,6 +27,44 @@ class RiskEvent(models.Model):
         return f"{self.kind} {self.severity}"
 
 
+class DrawdownBaseline(models.Model):
+    class PeriodType(models.TextChoices):
+        DAILY = "daily", "Daily"
+        WEEKLY = "weekly", "Weekly"
+
+    risk_namespace = models.CharField(max_length=64, default="global")
+    period_type = models.CharField(
+        max_length=12,
+        choices=PeriodType.choices,
+    )
+    period_key = models.CharField(max_length=32)
+    start_equity = models.DecimalField(max_digits=28, decimal_places=10, default=0)
+    last_equity = models.DecimalField(max_digits=28, decimal_places=10, default=0)
+    last_dd = models.DecimalField(max_digits=12, decimal_places=8, default=0)
+    last_emitted_dd = models.DecimalField(max_digits=12, decimal_places=8, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["risk_namespace", "period_type", "period_key"],
+                name="risk_ddb_ns_period_uq",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["risk_namespace", "period_type", "period_key"],
+                name="risk_ddb_ns_period_idx",
+            ),
+            models.Index(fields=["updated_at"], name="risk_ddb_updated_idx"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"{self.risk_namespace}:{self.period_type}:{self.period_key}"
+
+
 # ---------------------------------------------------------------------------
 # Circuit Breaker — singleton config editable via admin
 # ---------------------------------------------------------------------------

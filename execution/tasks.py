@@ -1,7 +1,9 @@
-import logging
+﻿import logging
 import math
 import re
 import uuid
+import hashlib
+import json
 from pathlib import Path
 from io import StringIO
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
@@ -19,6 +21,7 @@ from django.utils import timezone as dj_tz
 import redis
 
 from adapters import get_default_adapter, get_default_adapter_signature
+from core.ai_feedback import record_ai_feedback_event
 from core.models import Instrument
 from core.exchange_runtime import (
     extract_balance_values,
@@ -38,6 +41,11 @@ from signals.feature_flags import FEATURE_KEYS, resolve_runtime_flags
 from signals.models import Signal
 from marketdata.models import Candle
 from risk.models import RiskEvent
+from risk.drawdown_state import (
+    compute_drawdown as _compute_drawdown_state,
+    mark_drawdown_event_emitted as _mark_drawdown_event_emitted,
+    should_emit_drawdown_event as _should_emit_drawdown_event,
+)
 from risk.notifications import (
     notify_kill_switch, notify_trade_opened, notify_trade_closed,
     notify_risk_event, notify_error,
@@ -152,7 +160,7 @@ def _is_insufficient_margin_error(exc: Exception) -> bool:
 
 def _norm_symbol(sym: str) -> str:
     """
-    Normaliza sÃƒÂ­mbolos provenientes de diferentes exchanges/ccxt
+    Normaliza sÃƒÆ’Ã‚Â­mbolos provenientes de diferentes exchanges/ccxt
     para que BTCUSDT, BTC/USDT, BTC/USDT:USDT o XBTUSDTM coincidan.
     """
     if not sym:
@@ -347,11 +355,11 @@ def _last_pyramid_add_opened_at(inst: Instrument, side: str, root_correlation_id
 
 
 def _current_position(adapter, symbol: str, positions: list | None = None):
-    """Devuelve (qty, entry_price) de la posiciÃƒÂ³n abierta para el sÃƒÂ­mbolo normalizado."""
+    """Devuelve (qty, entry_price) de la posiciÃƒÆ’Ã‚Â³n abierta para el sÃƒÆ’Ã‚Â­mbolo normalizado."""
     target = _norm_symbol(symbol)
     if positions is None:
         try:
-            # KuCoin ignora a veces el filtro por sÃƒÂ­mbolo, preferimos traer todo y filtrar local.
+            # KuCoin ignora a veces el filtro por sÃƒÆ’Ã‚Â­mbolo, preferimos traer todo y filtrar local.
             positions = adapter.fetch_positions()
         except Exception:
             positions = []
@@ -619,72 +627,69 @@ def _ml_entry_filter_model_path(symbol: str, strategy_name: str = "") -> str:
     return global_path
 
 
-def _check_drawdown(equity: float, risk_ns: str = "global") -> tuple[bool, float]:
+def _check_drawdown(equity: float, risk_ns: str = "global") -> tuple[bool, float, dict[str, Any]]:
     """
-    Tracks starting equity of the UTC day in redis and computes drawdown.
-    Returns (allowed, dd).
+    Compute daily drawdown using DB baseline as source of truth.
+    Redis is used as read-through cache by the drawdown_state service.
+    Returns (allowed, dd, meta).
     """
-    client = _redis_client()
-    if client is None:
-        return True, 0.0
     if not _is_valid_equity_value(equity):
         logger.warning("Skipping daily DD check: invalid equity=%.8f ns=%s", equity, risk_ns)
-        return True, 0.0
-    key = f"risk:equity_start:{risk_ns}:{dj_tz.now().date().isoformat()}"
-    start = client.get(key)
-    if start is None:
-        client.set(key, equity)
-        return True, 0.0
-    try:
-        start_val = float(start)
-    except Exception:
-        client.set(key, equity)
-        return True, 0.0
-    if not _is_valid_equity_value(start_val):
-        client.set(key, equity)
-        return True, 0.0
-    dd = (equity - start_val) / start_val if start_val else 0.0
+        return True, 0.0, {"emit_event": False}
+    period_key = dj_tz.now().date().isoformat()
+    baseline, dd = _compute_drawdown_state(
+        risk_ns=risk_ns,
+        period_type="daily",
+        period_key=period_key,
+        equity=equity,
+    )
     if not math.isfinite(dd):
-        client.set(key, equity)
-        return True, 0.0
-    if dd <= -settings.DAILY_DD_LIMIT:
-        return False, dd
-    return True, dd
+        return True, 0.0, {"emit_event": False}
+    breach = dd <= -settings.DAILY_DD_LIMIT
+    emit_event = breach and _should_emit_drawdown_event(baseline, dd, min_delta=0.01)
+    return (
+        (not breach),
+        dd,
+        {
+            "emit_event": emit_event,
+            "baseline": baseline,
+            "period_type": "daily",
+            "period_key": period_key,
+        },
+    )
 
 
-def _check_weekly_drawdown(equity: float, risk_ns: str = "global") -> tuple[bool, float]:
+def _check_weekly_drawdown(equity: float, risk_ns: str = "global") -> tuple[bool, float, dict[str, Any]]:
     """
-    Tracks starting equity of the ISO week in redis and computes weekly drawdown.
-    Returns (allowed, dd).
+    Compute weekly drawdown using DB baseline as source of truth.
+    Returns (allowed, dd, meta).
     """
-    client = _redis_client()
-    if client is None:
-        return True, 0.0
     if not _is_valid_equity_value(equity):
         logger.warning("Skipping weekly DD check: invalid equity=%.8f ns=%s", equity, risk_ns)
-        return True, 0.0
+        return True, 0.0, {"emit_event": False}
     today = dj_tz.now().date()
     iso_year, iso_week, _ = today.isocalendar()
-    key = f"risk:equity_week_start:{risk_ns}:{iso_year}-W{iso_week:02d}"
-    start = client.get(key)
-    if start is None:
-        client.set(key, equity)
-        return True, 0.0
-    try:
-        start_val = float(start)
-    except Exception:
-        client.set(key, equity)
-        return True, 0.0
-    if not _is_valid_equity_value(start_val):
-        client.set(key, equity)
-        return True, 0.0
-    dd = (equity - start_val) / start_val if start_val else 0.0
+    period_key = f"{iso_year}-W{iso_week:02d}"
+    baseline, dd = _compute_drawdown_state(
+        risk_ns=risk_ns,
+        period_type="weekly",
+        period_key=period_key,
+        equity=equity,
+    )
     if not math.isfinite(dd):
-        client.set(key, equity)
-        return True, 0.0
-    if dd <= -settings.WEEKLY_DD_LIMIT:
-        return False, dd
-    return True, dd
+        return True, 0.0, {"emit_event": False}
+    breach = dd <= -settings.WEEKLY_DD_LIMIT
+    emit_event = breach and _should_emit_drawdown_event(baseline, dd, min_delta=0.01)
+    return (
+        (not breach),
+        dd,
+        {
+            "emit_event": emit_event,
+            "baseline": baseline,
+            "period_type": "weekly",
+            "period_key": period_key,
+        },
+    )
 
 
 def _check_data_staleness(instrument: Instrument) -> bool:
@@ -725,26 +730,40 @@ def _create_risk_event(
     details: dict = None,
     risk_ns: str = "global",
 ):
-    """Create a RiskEvent record and send notification (throttled)."""
+    """Create a RiskEvent record and send notification (throttled + deduplicated)."""
     try:
+        symbol = instrument.symbol if instrument else "global"
+        details_obj = details or {}
+        dedup_seconds = max(
+            1,
+            int(getattr(settings, "RISK_EVENT_DEDUP_SECONDS", 300) or 300),
+        )
+        bucket = int(dj_tz.now().timestamp()) // dedup_seconds
+        # Stable fingerprint by namespace/kind/symbol/window to avoid event spam.
+        fp_raw = f"{risk_ns}|{kind}|{symbol}|{bucket}"
+        fp = hashlib.sha1(fp_raw.encode("utf-8", errors="ignore")).hexdigest()
+        dedup_key = f"risk:event:dedup:{fp}"
+        client = _redis_client()
+        if client is not None:
+            allow_emit = bool(client.set(dedup_key, "1", nx=True, ex=dedup_seconds))
+            if not allow_emit:
+                return
+
         RiskEvent.objects.create(
             instrument=instrument,
             kind=kind,
             severity=severity,
-            details_json=details or {},
+            details_json=details_obj,
         )
         # Throttle Telegram: only notify once per kind+instrument every 30 min
-        symbol = instrument.symbol if instrument else "global"
         throttle_key = f"risk:notified:{risk_ns}:{kind}:{symbol}"
-        client = _redis_client()
         if client and client.set(throttle_key, "1", nx=True, ex=1800):
-            notify_risk_event(kind, severity, str(details) if details else "")
+            notify_risk_event(kind, severity, str(details_obj) if details_obj else "")
         elif client is None:
-            notify_risk_event(kind, severity, str(details) if details else "")
-        # else: throttled Ã¢â‚¬â€œ skip Telegram
+            notify_risk_event(kind, severity, str(details_obj) if details_obj else "")
+        # else: throttled - skip Telegram
     except Exception as exc:
         logger.warning("Failed to create risk event: %s", exc)
-
 
 def _atr_pct(instrument: Instrument, period: int = 14, tf: str = "5m"):
     qs = (
@@ -976,7 +995,7 @@ def _should_close_stale_position(
     if age_hours < max_hours:
         return False
 
-    # Position is old â€” close if PnL is within the breakeven band
+    # Position is old Ã¢â‚¬â€ close if PnL is within the breakeven band
     return -pnl_band <= pnl_pct <= pnl_band
 
 
@@ -1104,8 +1123,12 @@ def _compute_tp_sl_prices(side: str, entry_price: float, atr_pct: float | None):
     tp_pct = settings.TAKE_PROFIT_PCT
     sl_pct = settings.STOP_LOSS_PCT
     min_sl = getattr(settings, 'MIN_SL_PCT', 0.008)
+    tp_mult_default = float(getattr(settings, "ATR_MULT_TP", 0.0) or 0.0)
+    tp_mult_long = float(getattr(settings, "ATR_MULT_TP_LONG", tp_mult_default) or tp_mult_default)
+    tp_mult_short = float(getattr(settings, "ATR_MULT_TP_SHORT", tp_mult_default) or tp_mult_default)
+    tp_mult_side = tp_mult_long if side == "buy" else tp_mult_short
     if atr_pct:
-        tp_pct = max(tp_pct, atr_pct * settings.ATR_MULT_TP)
+        tp_pct = max(tp_pct, atr_pct * tp_mult_side)
         sl_pct = max(sl_pct, atr_pct * settings.ATR_MULT_SL)
 
     # Global TP tuning: allow slightly closer TP to secure gains earlier.
@@ -1148,8 +1171,8 @@ def _place_sl_order(adapter, symbol: str, side: str, qty: float, sl_price: float
     only accepts ``market``/``limit`` types with a trigger).
 
     For a SL:
-      - long  position Ã¢â€ â€™ close with sell when price drops  Ã¢â€ â€™ stop="down"
-      - short position Ã¢â€ â€™ close with buy  when price rises  Ã¢â€ â€™ stop="up"
+      - long  position ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ close with sell when price drops  ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ stop="down"
+      - short position ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ close with buy  when price rises  ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ stop="up"
     """
     close_side = "sell" if side == "buy" else "buy"
     # Determine trigger direction: price moving *against* the position
@@ -1198,7 +1221,7 @@ def _has_sl_stop_order(adapter, symbol: str, position_side: str) -> tuple[bool, 
         stop_orders = adapter.fetch_open_stop_orders(symbol)
     except Exception as exc:
         logger.debug("fetch_open_stop_orders failed for %s: %s", symbol, exc)
-        return True, None, []  # assume exists Ã¢â€ â€™ avoid placing duplicates on API error
+        return True, None, []  # assume exists ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ avoid placing duplicates on API error
 
     if stop_orders:
         logger.debug("Found %d stop order(s) for %s", len(stop_orders), symbol)
@@ -1291,7 +1314,7 @@ def _reconcile_sl(
         return  # SL exists and is aligned enough or was replaced
 
     if exists:
-        return  # SL exists but couldn't read price Ã¢â‚¬â€ leave it alone
+        return  # SL exists but couldn't read price ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â leave it alone
 
     # SL missing entirely
     logger.warning(
@@ -1306,12 +1329,13 @@ def _position_state_key(symbol: str, opened_at, entry_price: float) -> str:
     Build a per-position key for Redis state (HWM, partial-close, etc).
     Prefer exchange-provided opened_at; fallback to entry_price.
     """
+    safe_symbol = _norm_symbol(symbol)
     if opened_at:
         try:
-            return f"{symbol}:{int(opened_at.timestamp())}"
+            return f"{safe_symbol}:{int(opened_at.timestamp())}"
         except Exception:
             pass
-    return f"{symbol}:{round(float(entry_price or 0.0), 6)}"
+    return f"{safe_symbol}:{round(float(entry_price or 0.0), 6)}"
 
 
 def _trail_sl_from_hwm(entry_price: float, max_fav_pct: float, lock_in_pct: float, is_long: bool) -> float:
@@ -1365,6 +1389,14 @@ def _check_trailing_stop(
 
     partial_r_trigger = float(getattr(settings, "PARTIAL_CLOSE_AT_R", 1.0) or 1.0)
     trail_activation_r = float(getattr(settings, "TRAILING_STOP_ACTIVATION_R", 2.5) or 2.5)
+    if bool(getattr(settings, "TRAILING_ADAPTIVE_ENABLED", True)) and atr_pct is not None:
+        atr_gate = float(
+            getattr(settings, "TRAILING_ACTIVATION_ATR_THRESHOLD", getattr(settings, "VOL_RISK_HIGH_ATR_PCT", 0.015))
+            or getattr(settings, "VOL_RISK_HIGH_ATR_PCT", 0.015)
+        )
+        low_vol_r = float(getattr(settings, "TRAILING_ACTIVATION_R_LOWVOL", 2.5) or 2.5)
+        high_vol_r = float(getattr(settings, "TRAILING_ACTIVATION_R_HIGHVOL", 1.5) or 1.5)
+        trail_activation_r = high_vol_r if atr_pct >= atr_gate else low_vol_r
     if (
         bool(getattr(settings, "VOL_FAST_EXIT_ENABLED", False))
         and atr_pct is not None
@@ -1426,10 +1458,13 @@ def _check_trailing_stop(
                     except Exception as exc:
                         logger.warning("Partial close failed %s: %s", symbol, exc)
 
-    # Track max favorable move (HWM) in Redis so trailing uses peak, not current pnl.
+    # Track favorable/adverse excursions in Redis so exits can be measured ex-post.
     max_fav = max(pnl_pct, 0.0)
+    max_adv = max(-pnl_pct, 0.0)
     if client:
         hwm_key = f"trail:max_fav:{state_key}"
+        adv_key = f"trail:max_adv:{state_key}"
+        sl_key = f"trail:sl_pct:{state_key}"
         try:
             prev = client.get(hwm_key)
             if prev is not None:
@@ -1437,7 +1472,15 @@ def _check_trailing_stop(
                     max_fav = max(max_fav, float(prev))
                 except Exception:
                     pass
+            prev_adv = client.get(adv_key)
+            if prev_adv is not None:
+                try:
+                    max_adv = max(max_adv, float(prev_adv))
+                except Exception:
+                    pass
             client.set(hwm_key, str(max_fav), ex=trail_state_ttl)
+            client.set(adv_key, str(max_adv), ex=trail_state_ttl)
+            client.set(sl_key, str(max(0.0, float(sl_pct))), ex=trail_state_ttl)
         except Exception:
             pass
 
@@ -1508,6 +1551,12 @@ def _check_trailing_stop(
         return False, 0.0
 
     lock_in = float(getattr(settings, "TRAILING_STOP_LOCK_IN_PCT", 0.5) or 0.5)
+    if bool(getattr(settings, "TRAILING_ADAPTIVE_ENABLED", True)) and atr_pct is not None:
+        lock_min = float(getattr(settings, "TRAILING_LOCKIN_MIN", 0.4) or 0.4)
+        lock_max = float(getattr(settings, "TRAILING_LOCKIN_MAX", 0.7) or 0.7)
+        lock_slope = float(getattr(settings, "TRAILING_LOCKIN_SLOPE", 15.0) or 15.0)
+        dyn_lock = lock_min + (atr_pct * lock_slope)
+        lock_in = max(lock_min, min(lock_max, dyn_lock))
     trail_sl = _trail_sl_from_hwm(entry_price, max_fav, lock_in, is_long)
 
     # If trailing already violated, force-close as fallback (exchange SL should also trigger).
@@ -1615,6 +1664,45 @@ def _log_operation(
         <= float(getattr(settings, "NEAR_BREAKEVEN_LOSS_TO_BE_PCT", 0.0015) or 0.0015)
     ):
         outcome = OperationReport.Outcome.BE
+
+    mfe_r = None
+    mae_r = None
+    mfe_capture_ratio = None
+    state_key = _position_state_key(inst.symbol, opened_at, entry_price)
+    try:
+        client = _redis_client()
+        max_fav = 0.0
+        max_adv = 0.0
+        sl_ref = 0.0
+        if client is not None:
+            try:
+                raw_fav = client.get(f"trail:max_fav:{state_key}")
+                raw_adv = client.get(f"trail:max_adv:{state_key}")
+                raw_sl = client.get(f"trail:sl_pct:{state_key}")
+                max_fav = max(0.0, _to_float(raw_fav))
+                max_adv = max(0.0, _to_float(raw_adv))
+                sl_ref = max(0.0, _to_float(raw_sl))
+            except Exception:
+                max_fav = 0.0
+                max_adv = 0.0
+                sl_ref = 0.0
+        if sl_ref <= 0:
+            sl_ref = max(
+                _to_float(getattr(settings, "STOP_LOSS_PCT", 0.0)),
+                _to_float(getattr(settings, "MIN_SL_PCT", 0.0)),
+                1e-6,
+            )
+        if sl_ref > 0:
+            mfe_r = max_fav / sl_ref if max_fav > 0 else 0.0
+            mae_r = max_adv / sl_ref if max_adv > 0 else 0.0
+            realized_r = pnl_pct / sl_ref
+            if mfe_r and mfe_r > 0:
+                mfe_capture_ratio = realized_r / mfe_r
+    except Exception:
+        mfe_r = None
+        mae_r = None
+        mfe_capture_ratio = None
+
     OperationReport.objects.create(
         instrument=inst,
         side=side,
@@ -1636,8 +1724,23 @@ def _log_operation(
         close_sub_reason=close_sub_reason,
         signal_id=str(signal_id or ""),
         correlation_id=correlation_id or "",
+        mfe_r=mfe_r,
+        mae_r=mae_r,
+        mfe_capture_ratio=mfe_capture_ratio,
         closed_at=dj_tz.now(),
     )
+    try:
+        client = _redis_client()
+        if client is not None:
+            for key in (
+                f"trail:max_fav:{state_key}",
+                f"trail:max_adv:{state_key}",
+                f"trail:sl_pct:{state_key}",
+                f"trail:partial_done:{state_key}",
+            ):
+                client.delete(key)
+    except Exception:
+        pass
     _queue_ml_retrain_after_operation(inst.symbol, settings.MODE, reason)
 
 
@@ -1882,7 +1985,7 @@ def _sync_positions(
         )
         touched.add(inst.id)
 
-    # Mark others as closed Ã¢â‚¬â€ detect transitions and notify
+    # Mark others as closed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â detect transitions and notify
     newly_closed = Position.objects.filter(is_open=True).exclude(instrument_id__in=touched)
     for pos in newly_closed:
         try:
@@ -2415,33 +2518,37 @@ def _evaluate_balance_and_guardrails(
             )
             can_open = False
 
-        allowed_dd, dd = _check_drawdown(equity_usdt, risk_ns=risk_ns)
+        allowed_dd, dd, dd_meta = _check_drawdown(equity_usdt, risk_ns=risk_ns)
         if not allowed_dd:
             logger.warning("Daily DD limit hit dd=%.4f; blocking new trades", dd)
             _client = _redis_client()
-            _ks_key = f"risk:ks_notified:daily_dd:{risk_ns}:{dj_tz.now().date().isoformat()}"
-            if _client is None or _client.set(_ks_key, "1", nx=True, ex=86400):
+            _period_key = str(dd_meta.get("period_key") or dj_tz.now().date().isoformat())
+            _ks_key = f"risk:ks_notified:daily_dd:{risk_ns}:{_period_key}"
+            if (dd_meta.get("emit_event", True)) and (_client is None or _client.set(_ks_key, "1", nx=True, ex=86400)):
                 _create_risk_event(
                     "daily_dd_limit",
                     "high",
                     details={"dd": dd},
                     risk_ns=risk_ns,
                 )
+                _mark_drawdown_event_emitted(dd_meta.get("baseline"), dd)
                 notify_kill_switch(f"Daily DD limit: {dd:.4f}")
             can_open = False
 
-        allowed_wdd, wdd = _check_weekly_drawdown(equity_usdt, risk_ns=risk_ns)
+        allowed_wdd, wdd, wdd_meta = _check_weekly_drawdown(equity_usdt, risk_ns=risk_ns)
         if not allowed_wdd:
             logger.warning("Weekly DD limit hit wdd=%.4f; blocking new trades", wdd)
             _client = _redis_client()
-            _ks_key = f"risk:ks_notified:weekly_dd:{risk_ns}:{dj_tz.now().date().isoformat()}"
-            if _client is None or _client.set(_ks_key, "1", nx=True, ex=86400):
+            _period_key = str(wdd_meta.get("period_key") or dj_tz.now().date().isoformat())
+            _ks_key = f"risk:ks_notified:weekly_dd:{risk_ns}:{_period_key}"
+            if (wdd_meta.get("emit_event", True)) and (_client is None or _client.set(_ks_key, "1", nx=True, ex=86400)):
                 _create_risk_event(
                     "weekly_dd_limit",
                     "high",
                     details={"wdd": wdd},
                     risk_ns=risk_ns,
                 )
+                _mark_drawdown_event_emitted(wdd_meta.get("baseline"), wdd)
                 notify_kill_switch(f"Weekly DD limit: {wdd:.4f}")
             can_open = False
 
@@ -2464,6 +2571,17 @@ def _evaluate_balance_and_guardrails(
     except Exception as exc:
         logger.warning("Balance check failed (manage-only): %s", exc)
         notify_error(f"Balance check failed: {exc}")
+        record_ai_feedback_event(
+            event_type="balance_check_error",
+            level="error",
+            account_alias=str(runtime_ctx.get("account_alias") or ""),
+            account_service=str(runtime_ctx.get("service") or ""),
+            reason=str(exc)[:255],
+            payload={
+                "risk_ns": risk_ns,
+                "env": str(runtime_ctx.get("env") or ""),
+            },
+        )
         can_open = False
 
     return can_open, free_usdt, equity_usdt, eff_lev, total_notional, leverage
@@ -2613,8 +2731,9 @@ def _load_enabled_instruments_and_latest_signals(
 
 def _compute_regime_adx_gate(
     enabled_instruments: list[Instrument],
-) -> tuple[dict[str, float], set[str], float, float | None]:
+) -> tuple[dict[str, float], set[str], float, float | None, dict[str, str]]:
     _regime_adx_by_symbol: dict[str, float] = {}
+    _regime_bias_by_symbol: dict[str, str] = {}
     _regime_adx_min = float(getattr(settings, "MARKET_REGIME_ADX_MIN", 0))
     try:
         from signals.modules.common import compute_adx as _compute_adx
@@ -2632,6 +2751,18 @@ def _compute_regime_adx_gate(
                         _htf_df[_col] = _htf_df[_col].astype(float)
                     _htf_df.set_index("ts", inplace=True)
                     _regime_adx_by_symbol[_ri.symbol] = _compute_adx(_htf_df, period=14)
+                    if len(_htf_df) >= 50:
+                        _ema20 = _htf_df["close"].ewm(span=20, adjust=False).mean().iloc[-1]
+                        _ema50 = _htf_df["close"].ewm(span=50, adjust=False).mean().iloc[-1]
+                        _last = float(_htf_df["close"].iloc[-1])
+                        if _ema20 > _ema50 and _last >= _ema20:
+                            _regime_bias_by_symbol[_ri.symbol] = "bull"
+                        elif _ema20 < _ema50 and _last <= _ema20:
+                            _regime_bias_by_symbol[_ri.symbol] = "bear"
+                        else:
+                            _regime_bias_by_symbol[_ri.symbol] = "neutral"
+                    else:
+                        _regime_bias_by_symbol[_ri.symbol] = "neutral"
             except Exception:
                 pass
     except Exception:
@@ -2649,11 +2780,35 @@ def _compute_regime_adx_gate(
                 _regime_blocked_symbols.add(_sym)
         if _regime_blocked_symbols:
             logger.warning(
-                "Market regime gate ACTIVE (per-instrument): ADX < %.1f â€” blocked: %s",
+                "Market regime gate ACTIVE (per-instrument): ADX < %.1f Ã¢â‚¬â€ blocked: %s",
                 _regime_adx_min,
                 ", ".join(f"{s}({_regime_adx_by_symbol[s]:.1f})" for s in sorted(_regime_blocked_symbols)),
             )
-    return _regime_adx_by_symbol, _regime_blocked_symbols, _regime_adx_min, _market_regime_adx
+    return _regime_adx_by_symbol, _regime_blocked_symbols, _regime_adx_min, _market_regime_adx, _regime_bias_by_symbol
+
+
+def _regime_directional_risk_mult(
+    symbol: str,
+    signal_direction: str,
+    regime_bias: str,
+) -> tuple[float, bool, str]:
+    """
+    Returns (multiplier, blocked, reason) for directional risk adjustment by HTF bias.
+    """
+    if not bool(getattr(settings, "REGIME_DIRECTIONAL_PENALTY_ENABLED", True)):
+        return 1.0, False, "disabled"
+    sym = str(symbol or "").strip().upper()
+    direction = str(signal_direction or "").strip().lower()
+    bias = str(regime_bias or "neutral").strip().lower()
+    if bias == "bear" and direction == "long":
+        if sym == "BTCUSDT" and bool(getattr(settings, "BTC_BEAR_LONG_BLOCK_ENABLED", False)):
+            return 0.0, True, "btc_bear_long_block"
+        penalty = max(0.0, min(float(getattr(settings, "REGIME_BEAR_LONG_PENALTY", 0.15) or 0.15), 0.95))
+        return (1.0 - penalty), False, "bear_long_penalty"
+    if bias == "bull" and direction == "short":
+        penalty = max(0.0, min(float(getattr(settings, "REGIME_BULL_SHORT_PENALTY", 0.10) or 0.10), 0.95))
+        return (1.0 - penalty), False, "bull_short_penalty"
+    return 1.0, False, "neutral"
 
 
 def _resolve_signal_direction(strategy_name: str) -> tuple[str, str]:
@@ -2745,6 +2900,7 @@ def _attempt_entry_open(
     macro_risk_mult: float,
     regime_blocked_symbols: set[str],
     regime_adx_by_symbol: dict[str, float],
+    regime_bias_by_symbol: dict[str, str],
     regime_adx_min: float,
     market_regime_adx: float | None,
     allow_scale_entry: bool,
@@ -2813,7 +2969,7 @@ def _attempt_entry_open(
         daily_count = _get_daily_trade_count()
         if daily_count >= daily_limit:
             logger.info(
-                "Daily trade limit reached: %d/%d (adx=%.1f) â€” blocking entry on %s",
+                "Daily trade limit reached: %d/%d (adx=%.1f) Ã¢â‚¬â€ blocking entry on %s",
                 daily_count,
                 daily_limit,
                 htf_adx_for_limit or 0,
@@ -2841,6 +2997,7 @@ def _attempt_entry_open(
         )
         return 0, 0.0
 
+    ml_prob = None
     if ml_entry_filter_enabled:
         ml_model_path = _ml_entry_filter_model_path(inst.symbol, strategy_name=strategy_name)
         ml_entry_filter_min_prob = _ml_entry_filter_min_prob(
@@ -2999,6 +3156,30 @@ def _attempt_entry_open(
             ai_reason,
         )
     ai_risk_mult = max(0.0, min(float(ai_risk_mult), 1.0))
+    regime_bias = str(regime_bias_by_symbol.get(inst.symbol, "neutral") or "neutral").strip().lower()
+    regime_mult, regime_blocked, regime_reason = _regime_directional_risk_mult(
+        inst.symbol,
+        signal_direction,
+        regime_bias,
+    )
+    if regime_blocked:
+        logger.info(
+            "Regime directional block on %s: bias=%s reason=%s",
+            inst.symbol,
+            regime_bias,
+            regime_reason,
+        )
+        return 0, 0.0
+    if regime_mult < 1.0:
+        ai_risk_mult *= regime_mult
+        logger.info(
+            "Regime directional penalty on %s: bias=%s mult=%.3f reason=%s",
+            inst.symbol,
+            regime_bias,
+            regime_mult,
+            regime_reason,
+        )
+    ai_risk_mult = max(0.0, min(float(ai_risk_mult), 1.0))
 
     inst_notional = 0.0
     try:
@@ -3089,7 +3270,7 @@ def _attempt_entry_open(
     min_atr_for_entry = float(getattr(settings, "MIN_ATR_FOR_ENTRY", 0.003) or 0.003)
     if atr is not None and atr < min_atr_for_entry:
         logger.info(
-            "ATR too low for %s (%.4f%% < %.4f%%), market compressed â€” skipping entry",
+            "ATR too low for %s (%.4f%% < %.4f%%), market compressed Ã¢â‚¬â€ skipping entry",
             symbol,
             atr * 100,
             min_atr_for_entry * 100,
@@ -3312,11 +3493,46 @@ def _attempt_entry_open(
         order.status_reason = str(exc)
         order.closed_at = dj_tz.now()
         order.save(update_fields=["status", "status_reason", "closed_at"])
+        err_count = 0
         if is_margin_error:
             _track_consecutive_errors(symbol, success=True)
+            record_ai_feedback_event(
+                event_type="order_send_error",
+                level="warning",
+                account_alias=account_alias,
+                account_service=account_service,
+                symbol=inst.symbol,
+                strategy=strategy_name,
+                allow=False,
+                risk_mult=0.0,
+                reason=str(exc)[:255],
+                payload={
+                    "side": side,
+                    "qty": qty,
+                    "is_margin_error": True,
+                    "err_count": 0,
+                },
+            )
             return 0, 0.0
         err_count = _track_consecutive_errors(symbol, success=False)
         notify_error(f"Order failed {inst.symbol}: {exc}")
+        record_ai_feedback_event(
+            event_type="order_send_error",
+            level="error",
+            account_alias=account_alias,
+            account_service=account_service,
+            symbol=inst.symbol,
+            strategy=strategy_name,
+            allow=False,
+            risk_mult=0.0,
+            reason=str(exc)[:255],
+            payload={
+                "side": side,
+                "qty": qty,
+                "is_margin_error": False,
+                "err_count": err_count,
+            },
+        )
         if err_count >= settings.MAX_CONSECUTIVE_ERRORS:
             _create_risk_event(
                 "consecutive_errors",
@@ -3483,7 +3699,7 @@ def _manage_open_position(
                 trade_side = "buy" if current_qty > 0 else "sell"
                 dur_min = age_h * 60
                 logger.info(
-                    "Stale position cleanup %s: pnl=%.4f age=%.1fh — freeing margin",
+                    "Stale position cleanup %s: pnl=%.4f age=%.1fh â€” freeing margin",
                     symbol,
                     pnl_pct_stale,
                     age_h,
@@ -3951,7 +4167,7 @@ def execute_orders():
     except Exception:
         positions_snapshot = []
 
-    # Ã¢â€â‚¬Ã¢â€â‚¬ 1. Sync positions for admin visibility Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 1. Sync positions for admin visibility ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _sync_positions(adapter, positions=positions_snapshot, balance_assets=balance_assets)
 
     # 2. Balance & global guardrails
@@ -4001,7 +4217,7 @@ def execute_orders():
     macro_risk_mult = float(getattr(settings, "MACRO_HIGH_IMPACT_RISK_MULTIPLIER", 1.0) or 1.0)
     macro_risk_mult = max(0.0, min(macro_risk_mult, 1.0))
 
-    # Running notional accumulator Ã¢â‚¬â€ tracks new positions opened THIS cycle
+    # Running notional accumulator ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â tracks new positions opened THIS cycle
     # so we don't exceed leverage by opening multiple trades before the
     # balance refresh catches up.
     cycle_notional_added = 0.0
@@ -4009,7 +4225,7 @@ def execute_orders():
     enabled_instruments, latest_signals, now_cycle = _load_enabled_instruments_and_latest_signals(
         use_allocator_signals,
     )
-    _regime_adx_by_symbol, _regime_blocked_symbols, _regime_adx_min, _market_regime_adx = (
+    _regime_adx_by_symbol, _regime_blocked_symbols, _regime_adx_min, _market_regime_adx, _regime_bias_by_symbol = (
         _compute_regime_adx_gate(enabled_instruments)
     )
 
@@ -4122,6 +4338,7 @@ def execute_orders():
             macro_risk_mult=macro_risk_mult,
             regime_blocked_symbols=_regime_blocked_symbols,
             regime_adx_by_symbol=_regime_adx_by_symbol,
+            regime_bias_by_symbol=_regime_bias_by_symbol,
             regime_adx_min=_regime_adx_min,
             market_regime_adx=_market_regime_adx,
             allow_scale_entry=allow_scale_entry,
@@ -4159,4 +4376,6 @@ def execute_orders():
 
     _release_task_lock(lock_client, lock_key, lock_token)
     return f"orders_placed={placed}"
+
+
 

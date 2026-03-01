@@ -131,7 +131,7 @@ class ApiProviderConfig(TimeStampedModel):
 
     class Meta:
         indexes = [
-            models.Index(fields=["provider", "active"], name="core_apicfg_provider_active_idx"),
+            models.Index(fields=["provider", "active"], name="core_apicfg_prv_active_idx"),
             models.Index(fields=["owner", "active"], name="core_apicfg_owner_active_idx"),
         ]
         constraints = [
@@ -172,7 +172,7 @@ class ApiContextFile(TimeStampedModel):
         ordering = ["priority", "id"]
         unique_together = ("config", "file_path")
         indexes = [
-            models.Index(fields=["config", "enabled", "priority"], name="core_apictx_cfg_enabled_prio_idx"),
+            models.Index(fields=["config", "enabled", "priority"], name="core_apictx_cfg_en_pri_idx"),
         ]
 
     def __str__(self) -> str:  # pragma: no cover - trivial
@@ -207,3 +207,49 @@ class ApiTokenUsageLog(TimeStampedModel):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"{self.provider}:{self.model_name} {self.total_tokens}t ({self.operation})"
+
+
+class AiFeedbackEvent(TimeStampedModel):
+    """
+    Compact, structured event stream for AI-guided execution feedback.
+    Stored in PostgreSQL for filtering/analytics and mirrored to JSONL for fast LLM reads.
+    """
+
+    class Level(models.TextChoices):
+        INFO = "info", "Info"
+        WARNING = "warning", "Warning"
+        ERROR = "error", "Error"
+        CRITICAL = "critical", "Critical"
+
+    config = models.ForeignKey(
+        ApiProviderConfig,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="feedback_events",
+    )
+    account_alias = models.CharField(max_length=64, blank=True, default="")
+    account_service = models.CharField(max_length=16, blank=True, default="")
+    symbol = models.CharField(max_length=32, blank=True, default="")
+    strategy = models.CharField(max_length=64, blank=True, default="")
+    event_type = models.CharField(max_length=48)
+    level = models.CharField(max_length=16, choices=Level.choices, default=Level.INFO)
+    allow = models.BooleanField(null=True, blank=True)
+    risk_mult = models.DecimalField(max_digits=6, decimal_places=4, null=True, blank=True)
+    reason = models.CharField(max_length=255, blank=True, default="")
+    latency_ms = models.PositiveIntegerField(default=0)
+    fingerprint = models.CharField(max_length=64, blank=True, default="")
+    payload_json = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["created_at"], name="core_aifb_created_idx"),
+            models.Index(fields=["event_type", "level", "created_at"], name="core_aifb_type_lvl_created_idx"),
+            models.Index(fields=["account_alias", "created_at"], name="core_aifb_account_created_idx"),
+            models.Index(fields=["symbol", "created_at"], name="core_aifb_symbol_created_idx"),
+            models.Index(fields=["fingerprint", "created_at"], name="core_aifb_fp_created_idx"),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return f"{self.event_type}:{self.level} {self.symbol} ({self.account_alias})"

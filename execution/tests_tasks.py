@@ -9,11 +9,13 @@ from django.utils import timezone as dj_tz
 from core.models import Instrument
 from execution.models import OperationReport, Order
 from marketdata.models import Candle
+from risk.models import RiskEvent
 from execution.tasks import (
     _acquire_task_lock,
     _check_trailing_stop,
     _classify_exchange_close,
     _count_pyramid_adds,
+    _create_risk_event,
     _check_drawdown,
     _compute_tp_sl_prices,
     _extract_trigger_price,
@@ -33,6 +35,7 @@ from execution.tasks import (
     _signal_active_modules,
     _signal_entry_reason,
     _is_macro_high_impact_window,
+    _regime_directional_risk_mult,
     _volume_activity_ratio,
     _volume_gate_allowed,
     _volume_gate_min_ratio,
@@ -130,17 +133,20 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertFalse(_is_no_position_error(Exception("network timeout")))
 
     def test_drawdown_skips_invalid_equity(self):
-        dummy = _DummyRedis()
-        with patch("execution.tasks._redis_client", return_value=dummy):
-            allowed, dd = _check_drawdown(0.0, risk_ns="t")
+        with patch("execution.tasks._compute_drawdown_state", return_value=(None, 0.0)) as dd_mock:
+            allowed, dd, meta = _check_drawdown(0.0, risk_ns="t")
             self.assertTrue(allowed)
             self.assertEqual(dd, 0.0)
-            self.assertEqual(dummy.store, {})
+            self.assertFalse(meta.get("emit_event", True))
+            dd_mock.assert_not_called()
 
-            allowed2, dd2 = _check_drawdown(100.0, risk_ns="t")
+        fake_baseline = object()
+        with patch("execution.tasks._compute_drawdown_state", return_value=(fake_baseline, -0.01)) as dd_mock:
+            allowed2, dd2, meta2 = _check_drawdown(100.0, risk_ns="t")
             self.assertTrue(allowed2)
-            self.assertEqual(dd2, 0.0)
-            self.assertTrue(any(k.startswith("risk:equity_start:t:") for k in dummy.store.keys()))
+            self.assertEqual(dd2, -0.01)
+            self.assertFalse(meta2.get("emit_event", True))
+            dd_mock.assert_called_once()
 
     def test_market_min_qty_prefers_market_limits(self):
         market = {"limits": {"amount": {"min": 0.2}}}
@@ -425,6 +431,8 @@ class TaskHelpersTest(SimpleTestCase):
         TAKE_PROFIT_DYNAMIC_MULT=0.9,
         TAKE_PROFIT_MIN_PCT=0.006,
         ATR_MULT_TP=2.2,
+        ATR_MULT_TP_LONG=2.2,
+        ATR_MULT_TP_SHORT=2.2,
         ATR_MULT_SL=1.5,
         VOL_FAST_EXIT_ENABLED=True,
         VOL_FAST_EXIT_ATR_PCT=0.012,
@@ -435,6 +443,56 @@ class TaskHelpersTest(SimpleTestCase):
         _, _, tp_pct, _ = _compute_tp_sl_prices("buy", 100.0, atr_pct=0.02)
         # Base ATR TP=4.4%; dynamic mult (0.9) then fast-exit (0.75) -> 2.97%
         self.assertAlmostEqual(tp_pct, 0.0297, places=6)
+
+    @override_settings(
+        TAKE_PROFIT_PCT=0.01,
+        STOP_LOSS_PCT=0.007,
+        ATR_MULT_TP=2.0,
+        ATR_MULT_TP_LONG=1.6,
+        ATR_MULT_TP_SHORT=2.2,
+        ATR_MULT_SL=1.5,
+        TAKE_PROFIT_DYNAMIC_MULT=1.0,
+        TAKE_PROFIT_MIN_PCT=0.0,
+        VOL_FAST_EXIT_ENABLED=False,
+    )
+    def test_compute_tp_sl_prices_supports_directional_asymmetry(self):
+        _, _, tp_long, sl_long = _compute_tp_sl_prices("buy", 100.0, atr_pct=0.02)
+        _, _, tp_short, sl_short = _compute_tp_sl_prices("sell", 100.0, atr_pct=0.02)
+        self.assertAlmostEqual(tp_long, 0.032, places=6)   # 2% * 1.6
+        self.assertAlmostEqual(tp_short, 0.044, places=6)  # 2% * 2.2
+        self.assertAlmostEqual(sl_long, sl_short, places=6)
+
+    @override_settings(
+        REGIME_DIRECTIONAL_PENALTY_ENABLED=True,
+        REGIME_BEAR_LONG_PENALTY=0.15,
+        REGIME_BULL_SHORT_PENALTY=0.10,
+        BTC_BEAR_LONG_BLOCK_ENABLED=True,
+    )
+    def test_regime_directional_penalty_and_btc_block(self):
+        mult1, blocked1, reason1 = _regime_directional_risk_mult("BTCUSDT", "long", "bear")
+        self.assertTrue(blocked1)
+        self.assertEqual(mult1, 0.0)
+        self.assertEqual(reason1, "btc_bear_long_block")
+
+        mult2, blocked2, reason2 = _regime_directional_risk_mult("ETHUSDT", "long", "bear")
+        self.assertFalse(blocked2)
+        self.assertAlmostEqual(mult2, 0.85, places=6)
+        self.assertEqual(reason2, "bear_long_penalty")
+
+        mult3, blocked3, reason3 = _regime_directional_risk_mult("ETHUSDT", "short", "bull")
+        self.assertFalse(blocked3)
+        self.assertAlmostEqual(mult3, 0.90, places=6)
+        self.assertEqual(reason3, "bull_short_penalty")
+
+    @override_settings(
+        REGIME_DIRECTIONAL_PENALTY_ENABLED=False,
+        BTC_BEAR_LONG_BLOCK_ENABLED=True,
+    )
+    def test_regime_directional_penalty_can_be_disabled(self):
+        mult, blocked, reason = _regime_directional_risk_mult("BTCUSDT", "long", "bear")
+        self.assertFalse(blocked)
+        self.assertAlmostEqual(mult, 1.0, places=6)
+        self.assertEqual(reason, "disabled")
 
     @override_settings(
         TRAILING_STOP_ENABLED=True,
@@ -483,6 +541,13 @@ class TaskHelpersTest(SimpleTestCase):
         PARTIAL_CLOSE_AT_R=0.8,
         PARTIAL_CLOSE_PCT=0.5,
         TRAILING_STATE_TTL_SECONDS=111,
+        TRAILING_ADAPTIVE_ENABLED=True,
+        TRAILING_ACTIVATION_R_LOWVOL=2.5,
+        TRAILING_ACTIVATION_R_HIGHVOL=1.5,
+        TRAILING_ACTIVATION_ATR_THRESHOLD=0.015,
+        TRAILING_LOCKIN_MIN=0.4,
+        TRAILING_LOCKIN_MAX=0.7,
+        TRAILING_LOCKIN_SLOPE=15.0,
     )
     def test_trailing_state_uses_configured_ttl_seconds(self):
         adapter = _DummyAdapter()
@@ -496,9 +561,12 @@ class TaskHelpersTest(SimpleTestCase):
                 entry_price=100.0,
                 last_price=102.0,
                 sl_pct=0.02,
+                atr_pct=0.02,
             )
         self.assertTrue(any(k.startswith("trail:partial_done:") for k in client.expiry))
         self.assertTrue(any(k.startswith("trail:max_fav:") for k in client.expiry))
+        self.assertTrue(any(k.startswith("trail:max_adv:") for k in client.expiry))
+        self.assertTrue(any(k.startswith("trail:sl_pct:") for k in client.expiry))
         self.assertTrue(all(v == 111 for v in client.expiry.values()))
 
     @override_settings(
@@ -674,6 +742,46 @@ class OperationReportFeeNetTest(TestCase):
 
         op = OperationReport.objects.get(instrument=inst)
         self.assertEqual(op.outcome, OperationReport.Outcome.LOSS)
+
+    @override_settings(ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False)
+    def test_log_operation_persists_mfe_mae_capture_metrics(self):
+        inst = Instrument.objects.create(
+            symbol="BTCUSDT",
+            exchange="bingx",
+            base="BTC",
+            quote="USDT",
+        )
+        opened_at = dj_tz.now().replace(microsecond=0)
+        state_key = f"{inst.symbol}:{int(opened_at.timestamp())}"
+        redis_stub = _DummyRedis()
+        redis_stub.set(f"trail:max_fav:{state_key}", "0.04")
+        redis_stub.set(f"trail:max_adv:{state_key}", "0.01")
+        redis_stub.set(f"trail:sl_pct:{state_key}", "0.02")
+        redis_stub.set(f"trail:partial_done:{state_key}", "1")
+
+        with patch("execution.tasks._redis_client", return_value=redis_stub):
+            _log_operation(
+                inst=inst,
+                side="buy",
+                qty=1.0,
+                entry_price=100.0,
+                exit_price=101.0,
+                reason="tp",
+                signal_id="4",
+                correlation_id="4-BTCUSDT",
+                leverage=5.0,
+                fee_usdt=0.0,
+                opened_at=opened_at,
+                contract_size=1.0,
+            )
+        op = OperationReport.objects.get(instrument=inst)
+        self.assertAlmostEqual(float(op.mfe_r or 0.0), 2.0, places=6)
+        self.assertAlmostEqual(float(op.mae_r or 0.0), 0.5, places=6)
+        self.assertAlmostEqual(float(op.mfe_capture_ratio or 0.0), 0.25, places=6)
+        self.assertIsNone(redis_stub.get(f"trail:max_fav:{state_key}"))
+        self.assertIsNone(redis_stub.get(f"trail:max_adv:{state_key}"))
+        self.assertIsNone(redis_stub.get(f"trail:sl_pct:{state_key}"))
+        self.assertIsNone(redis_stub.get(f"trail:partial_done:{state_key}"))
 
 
 class OperationReportMlRetrainTriggerTest(TestCase):
@@ -865,3 +973,45 @@ class PyramidingHelpersTest(TestCase):
         )
         self.assertEqual(_position_root_correlation(inst, "buy"), root)
         self.assertEqual(_count_pyramid_adds(inst, "buy", root), 1)
+
+
+class RiskEventDedupTest(TestCase):
+    @override_settings(RISK_EVENT_DEDUP_SECONDS=120)
+    def test_create_risk_event_dedups_by_kind_symbol_namespace_window(self):
+        inst = Instrument.objects.create(
+            symbol="SOLUSDT",
+            exchange="bingx",
+            base="SOL",
+            quote="USDT",
+        )
+        redis_stub = _DummyRedis()
+        fixed_now = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
+
+        with patch("execution.tasks._redis_client", return_value=redis_stub):
+            with patch("execution.tasks.notify_risk_event"):
+                with patch("execution.tasks.dj_tz.now", return_value=fixed_now):
+                    _create_risk_event(
+                        "daily_dd_limit",
+                        "high",
+                        instrument=inst,
+                        details={"dd": -0.05},
+                        risk_ns="stack_rortigoza",
+                    )
+                    _create_risk_event(
+                        "daily_dd_limit",
+                        "critical",  # different severity should still dedup in same window
+                        instrument=inst,
+                        details={"dd": -0.09},
+                        risk_ns="stack_rortigoza",
+                    )
+        self.assertEqual(
+            OperationReport.objects.filter(instrument=inst).count(),
+            0,
+        )
+        self.assertEqual(
+            RiskEvent.objects.filter(
+                instrument=inst,
+                kind="daily_dd_limit",
+            ).count(),
+            1,
+        )

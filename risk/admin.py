@@ -1,6 +1,11 @@
 from django.contrib import admin
 
-from .models import RiskEvent, CircuitBreakerConfig, RegimeFilterConfig
+from .models import (
+    CircuitBreakerConfig,
+    DrawdownBaseline,
+    RegimeFilterConfig,
+    RiskEvent,
+)
 
 
 @admin.register(RiskEvent)
@@ -69,3 +74,19 @@ class RegimeFilterConfigAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(DrawdownBaseline)
+class DrawdownBaselineAdmin(admin.ModelAdmin):
+    list_display = (
+        "risk_namespace",
+        "period_type",
+        "period_key",
+        "start_equity",
+        "last_equity",
+        "last_dd",
+        "last_emitted_dd",
+        "updated_at",
+    )
+    list_filter = ("risk_namespace", "period_type")
+    search_fields = ("risk_namespace", "period_key")

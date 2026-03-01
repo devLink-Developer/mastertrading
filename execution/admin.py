@@ -164,7 +164,20 @@ class TradeFillAdmin(admin.ModelAdmin):
 
 @admin.register(OperationReport)
 class OperationReportAdmin(admin.ModelAdmin):
-    list_display = ("instrument", "side", "pnl_abs", "pnl_pct", "outcome", "opened_at", "closed_at", "reason", "signal_id")
+    list_display = (
+        "instrument",
+        "side",
+        "pnl_abs",
+        "pnl_pct",
+        "mfe_r",
+        "mae_r",
+        "mfe_capture_ratio",
+        "outcome",
+        "opened_at",
+        "closed_at",
+        "reason",
+        "signal_id",
+    )
     list_filter = ("outcome", "reason", "side")
     search_fields = ("instrument__symbol", "signal_id", "correlation_id")
 

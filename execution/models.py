@@ -125,6 +125,9 @@ class OperationReport(TimeStampedModel):
     )
     signal_id = models.CharField(max_length=64, blank=True, default="")
     correlation_id = models.CharField(max_length=64, blank=True, default="")
+    mfe_r = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
+    mae_r = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
+    mfe_capture_ratio = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
     closed_at = models.DateTimeField()
 
     class Meta:

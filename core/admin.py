@@ -2,6 +2,7 @@ from django.contrib import admin
 from django import forms
 
 from .models import (
+    AiFeedbackEvent,
     ApiContextFile,
     ApiProviderConfig,
     ApiTokenUsageLog,
@@ -158,4 +159,41 @@ class ApiTokenUsageLogAdmin(admin.ModelAdmin):
         "context_tokens",
         "estimated",
         "metadata_json",
+    )
+
+
+@admin.register(AiFeedbackEvent)
+class AiFeedbackEventAdmin(admin.ModelAdmin):
+    list_display = (
+        "created_at",
+        "event_type",
+        "level",
+        "account_alias",
+        "account_service",
+        "symbol",
+        "strategy",
+        "allow",
+        "risk_mult",
+        "reason",
+        "latency_ms",
+        "config",
+    )
+    list_filter = ("event_type", "level", "account_service", "allow", "config")
+    search_fields = ("account_alias", "symbol", "strategy", "reason", "fingerprint")
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+        "config",
+        "account_alias",
+        "account_service",
+        "symbol",
+        "strategy",
+        "event_type",
+        "level",
+        "allow",
+        "risk_mult",
+        "reason",
+        "latency_ms",
+        "fingerprint",
+        "payload_json",
     )

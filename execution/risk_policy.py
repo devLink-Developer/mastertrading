@@ -55,10 +55,19 @@ def volatility_adjusted_risk(symbol: str, atr_pct: float | None, base_risk: floa
     min_scale = max(0.0, min(1.0, float(getattr(settings, "VOL_RISK_MIN_SCALE", 0.6) or 0.6)))
 
     if atr_pct <= low_vol:
-        return effective_base
-    if atr_pct >= high_vol:
-        return effective_base * min_scale
+        scaled = effective_base
+    elif atr_pct >= high_vol:
+        scaled = effective_base * min_scale
+    else:
+        ratio = (atr_pct - low_vol) / (high_vol - low_vol)
+        scale = 1.0 - ratio * (1.0 - min_scale)
+        scaled = effective_base * scale
 
-    ratio = (atr_pct - low_vol) / (high_vol - low_vol)
-    scale = 1.0 - ratio * (1.0 - min_scale)
-    return effective_base * scale
+    if (
+        str(symbol or "").strip().upper() == "BTCUSDT"
+        and bool(getattr(settings, "BTC_VOL_RISK_HARDEN_ENABLED", True))
+        and atr_pct >= float(getattr(settings, "BTC_VOL_RISK_ATR_THRESHOLD", 0.012) or 0.012)
+    ):
+        harden_mult = max(0.0, min(1.0, float(getattr(settings, "BTC_VOL_RISK_MULT", 0.75) or 0.75)))
+        scaled *= harden_mult
+    return scaled

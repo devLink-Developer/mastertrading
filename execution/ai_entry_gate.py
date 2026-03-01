@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 import httpx
 from django.conf import settings
 
+from core.ai_feedback import load_feedback_context_tail, record_ai_feedback_event
 from core.api_runtime import (
     build_optimized_context,
     count_tokens,
@@ -172,10 +174,36 @@ def evaluate_ai_entry_gate(
     )
     fail_open = bool(getattr(settings, "AI_ENTRY_GATE_FAIL_OPEN", True))
     if not cfg:
+        record_ai_feedback_event(
+            event_type="ai_gate_missing_config",
+            level="warning",
+            account_alias=account_alias,
+            account_service=account_service,
+            symbol=symbol,
+            strategy=strategy_name,
+            allow=True if fail_open else False,
+            risk_mult=1.0 if fail_open else 0.0,
+            reason="ai_no_config",
+            payload={"fail_open": fail_open},
+        )
         return (True, 1.0, "ai_no_config_fail_open", meta) if fail_open else (False, 0.0, "ai_no_config_fail_closed", meta)
     if not str(cfg.api_key or "").strip():
+        record_ai_feedback_event(
+            event_type="ai_gate_missing_api_key",
+            level="warning",
+            config=cfg,
+            account_alias=account_alias,
+            account_service=account_service,
+            symbol=symbol,
+            strategy=strategy_name,
+            allow=True if fail_open else False,
+            risk_mult=1.0 if fail_open else 0.0,
+            reason="ai_no_api_key",
+            payload={"fail_open": fail_open, "cfg_alias": cfg.name_alias},
+        )
         return (True, 1.0, "ai_no_api_key_fail_open", meta) if fail_open else (False, 0.0, "ai_no_api_key_fail_closed", meta)
 
+    started = time.perf_counter()
     candidate = {
         "symbol": symbol,
         "strategy": strategy_name,
@@ -198,6 +226,19 @@ def evaluate_ai_entry_gate(
         user_prompt=user_prompt,
         reserve_output_tokens=reserve_out,
     )
+    feedback_budget = max(
+        0,
+        int(getattr(settings, "AI_FEEDBACK_CONTEXT_MAX_TOKENS", 800) or 800),
+    )
+    remaining_for_feedback = max(
+        0,
+        int(cfg.max_input_tokens or 0) - reserve_out - int(ctx.total_prompt_tokens),
+    )
+    feedback_budget = min(feedback_budget, remaining_for_feedback)
+    feedback_text, feedback_tokens, feedback_estimated = load_feedback_context_tail(
+        model_name=cfg.model_name,
+        max_tokens=feedback_budget,
+    )
 
     system_msg = (
         "You are a strict risk gate for an automated trading system. "
@@ -210,6 +251,8 @@ def evaluate_ai_entry_gate(
         f"{user_prompt}\n\n"
         "Project context:\n"
         f"{ctx.context_text or '(no extra context)'}\n\n"
+        "Recent execution feedback stream (JSONL):\n"
+        f"{feedback_text or '(no recent feedback)'}\n\n"
         "Return JSON only."
     )
 
@@ -259,11 +302,12 @@ def evaluate_ai_entry_gate(
 
         output_text = _collect_output_text(data)
         allow, risk_mult, reason = _parse_ai_decision(output_text)
+        latency_ms = max(0, int((time.perf_counter() - started) * 1000))
 
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         in_tok = int(usage.get("input_tokens") or prompt_tokens_est)
         out_tok = int(usage.get("output_tokens") or 0)
-        est = est_flag or not bool(usage)
+        est = est_flag or feedback_estimated or not bool(usage)
         log_token_usage(
             config=cfg,
             provider=cfg.provider,
@@ -271,13 +315,35 @@ def evaluate_ai_entry_gate(
             operation="ai_entry_gate",
             prompt_tokens=in_tok,
             completion_tokens=out_tok,
-            context_tokens=ctx.used_context_tokens,
+            context_tokens=ctx.used_context_tokens + feedback_tokens,
             estimated=est,
             metadata={
                 **metadata,
                 "reason": reason,
                 "allow": allow,
                 "risk_mult": risk_mult,
+                "cfg_alias": cfg.name_alias,
+                "latency_ms": latency_ms,
+            },
+        )
+        feedback_level = "warning" if not allow else "info"
+        record_ai_feedback_event(
+            event_type="ai_gate_decision",
+            level=feedback_level,
+            config=cfg,
+            account_alias=account_alias,
+            account_service=account_service,
+            symbol=symbol,
+            strategy=strategy_name,
+            allow=allow,
+            risk_mult=risk_mult,
+            reason=reason,
+            latency_ms=latency_ms,
+            payload={
+                "sig_score": round(_to_float(sig_score, 0.0), 6),
+                "direction": signal_direction,
+                "session": session_name,
+                "spread_bps": None if spread_bps is None else round(_to_float(spread_bps, 0.0), 3),
                 "cfg_alias": cfg.name_alias,
             },
         )
@@ -287,13 +353,16 @@ def evaluate_ai_entry_gate(
                 "cfg_id": cfg.id,
                 "model": str(data.get("model") or cfg.model_name),
                 "ctx_tokens": ctx.used_context_tokens,
+                "feedback_tokens": feedback_tokens,
                 "prompt_tokens": in_tok,
                 "completion_tokens": out_tok,
+                "latency_ms": latency_ms,
             }
         )
         return allow, risk_mult, reason, meta
     except Exception as exc:
         logger.warning("AI entry gate failed for %s (%s): %s", symbol, strategy_name, exc)
+        latency_ms = max(0, int((time.perf_counter() - started) * 1000))
         log_token_usage(
             config=cfg,
             provider=cfg.provider,
@@ -301,10 +370,35 @@ def evaluate_ai_entry_gate(
             operation="ai_entry_gate_error",
             prompt_tokens=prompt_tokens_est,
             completion_tokens=0,
-            context_tokens=ctx.used_context_tokens,
+            context_tokens=ctx.used_context_tokens + feedback_tokens,
             estimated=True,
             metadata={**metadata, "error": str(exc), "cfg_alias": cfg.name_alias},
         )
+        record_ai_feedback_event(
+            event_type="ai_gate_error",
+            level="error",
+            config=cfg,
+            account_alias=account_alias,
+            account_service=account_service,
+            symbol=symbol,
+            strategy=strategy_name,
+            allow=True if fail_open else False,
+            risk_mult=1.0 if fail_open else 0.0,
+            reason=str(exc)[:255],
+            latency_ms=latency_ms,
+            payload={
+                "cfg_alias": cfg.name_alias,
+                "error_type": type(exc).__name__,
+                "fail_open": fail_open,
+            },
+        )
+        if bool(getattr(settings, "AI_ENTRY_GATE_NOTIFY_ERRORS", True)):
+            try:
+                from risk.notifications import notify_error
+
+                notify_error("AI entry gate", str(exc))
+            except Exception:
+                pass
         if fail_open:
             return True, 1.0, "ai_error_fail_open", meta
         return False, 0.0, "ai_error_fail_closed", meta

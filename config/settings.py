@@ -44,6 +44,8 @@ SPREAD_ATR_RELAX_FACTOR = float(os.getenv("SPREAD_ATR_RELAX_FACTOR", "0.12"))
 MAX_DYNAMIC_SPREAD_BPS = float(os.getenv("MAX_DYNAMIC_SPREAD_BPS", "60"))
 MAX_EFF_LEVERAGE = float(os.getenv("MAX_EFF_LEVERAGE", "2.0"))   # was 3.0 — reduce leverage to limit loss amplitude
 ATR_MULT_TP = float(os.getenv("ATR_MULT_TP", "2.5"))           # 2.5x ATR TP (was 3x — more reachable, take profits earlier)
+ATR_MULT_TP_LONG = float(os.getenv("ATR_MULT_TP_LONG", "1.6"))
+ATR_MULT_TP_SHORT = float(os.getenv("ATR_MULT_TP_SHORT", "2.2"))
 ATR_MULT_SL = float(os.getenv("ATR_MULT_SL", "2.0"))           # 2.0x ATR SL (was 1.5x — give trades room to breathe)
 MIN_ATR_FOR_ENTRY = float(os.getenv("MIN_ATR_FOR_ENTRY", "0.003"))  # Skip entries below this ATR% (ratio)
 MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.012"))           # Absolute minimum SL of 1.2% regardless of ATR (was 0.8% — too tight for BTC)
@@ -85,6 +87,9 @@ MAX_EXPOSURE_PER_INSTRUMENT_PCT = float(os.getenv("MAX_EXPOSURE_PER_INSTRUMENT_P
 VOL_RISK_LOW_ATR_PCT = max(0.0, float(os.getenv("VOL_RISK_LOW_ATR_PCT", "0.008")))
 VOL_RISK_HIGH_ATR_PCT = max(VOL_RISK_LOW_ATR_PCT + 1e-9, float(os.getenv("VOL_RISK_HIGH_ATR_PCT", "0.015")))
 VOL_RISK_MIN_SCALE = max(0.0, min(1.0, float(os.getenv("VOL_RISK_MIN_SCALE", "0.6"))))
+BTC_VOL_RISK_HARDEN_ENABLED = os.getenv("BTC_VOL_RISK_HARDEN_ENABLED", "true").lower() == "true"
+BTC_VOL_RISK_ATR_THRESHOLD = max(0.0, float(os.getenv("BTC_VOL_RISK_ATR_THRESHOLD", "0.012")))
+BTC_VOL_RISK_MULT = max(0.0, min(1.0, float(os.getenv("BTC_VOL_RISK_MULT", "0.75"))))
 
 # -- New: Signal TTL --
 SIGNAL_TTL_SECONDS = int(os.getenv("SIGNAL_TTL_SECONDS", "300"))  # 5 min, stale signals are ignored
@@ -93,9 +98,19 @@ SIGNAL_DEDUP_SECONDS = int(os.getenv("SIGNAL_DEDUP_SECONDS", "120"))  # prevent 
 # -- New: Trailing stop / partial close --
 TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"
 TRAILING_STOP_ACTIVATION_R = float(os.getenv("TRAILING_STOP_ACTIVATION_R", "1.5"))  # activate trail after 1.5R (was 2.5 — start trailing sooner to protect gains)
+TRAILING_ADAPTIVE_ENABLED = os.getenv("TRAILING_ADAPTIVE_ENABLED", "true").lower() == "true"
+TRAILING_ACTIVATION_R_LOWVOL = float(os.getenv("TRAILING_ACTIVATION_R_LOWVOL", "2.5"))
+TRAILING_ACTIVATION_R_HIGHVOL = float(os.getenv("TRAILING_ACTIVATION_R_HIGHVOL", "1.5"))
+TRAILING_ACTIVATION_ATR_THRESHOLD = max(
+    0.0,
+    float(os.getenv("TRAILING_ACTIVATION_ATR_THRESHOLD", str(VOL_RISK_HIGH_ATR_PCT))),
+)
 # Once trailing is active, lock this fraction of the max favorable move as a dynamic SL.
 # Example: 0.5 locks half of the max profit (aggressive profit-protection).
 TRAILING_STOP_LOCK_IN_PCT = float(os.getenv("TRAILING_STOP_LOCK_IN_PCT", "0.6"))  # lock 60% of HWM (was 50% — more aggressive profit protection)
+TRAILING_LOCKIN_MIN = max(0.0, min(1.0, float(os.getenv("TRAILING_LOCKIN_MIN", "0.4"))))
+TRAILING_LOCKIN_MAX = max(TRAILING_LOCKIN_MIN, min(1.0, float(os.getenv("TRAILING_LOCKIN_MAX", "0.7"))))
+TRAILING_LOCKIN_SLOPE = max(0.0, float(os.getenv("TRAILING_LOCKIN_SLOPE", "15.0")))
 BREAKEVEN_STOP_ENABLED = os.getenv("BREAKEVEN_STOP_ENABLED", "true").lower() == "true"
 BREAKEVEN_STOP_AT_R = float(os.getenv("BREAKEVEN_STOP_AT_R", "0.75"))  # move SL to entry after 0.75R in profit (was 1.0 — protect capital earlier)
 BREAKEVEN_STOP_OFFSET_PCT = float(os.getenv("BREAKEVEN_STOP_OFFSET_PCT", "0.001"))  # 0.1% buffer above entry to cover fees/slippage (was 0 — losing on BE)
@@ -222,6 +237,21 @@ AI_ENTRY_GATE_MAX_OUTPUT_TOKENS = max(
     32,
     int(os.getenv("AI_ENTRY_GATE_MAX_OUTPUT_TOKENS", "180")),
 )
+AI_ENTRY_GATE_NOTIFY_ERRORS = os.getenv("AI_ENTRY_GATE_NOTIFY_ERRORS", "true").lower() == "true"
+AI_FEEDBACK_CONTEXT_MAX_TOKENS = max(
+    0,
+    int(os.getenv("AI_FEEDBACK_CONTEXT_MAX_TOKENS", "900")),
+)
+AI_FEEDBACK_JSONL_ENABLED = os.getenv("AI_FEEDBACK_JSONL_ENABLED", "true").lower() == "true"
+AI_FEEDBACK_JSONL_PATH = os.getenv("AI_FEEDBACK_JSONL_PATH", "tmp/ai/feedback_stream.jsonl").strip()
+AI_FEEDBACK_JSONL_MAX_BYTES = max(
+    64000,
+    int(os.getenv("AI_FEEDBACK_JSONL_MAX_BYTES", "2000000")),
+)
+AI_FEEDBACK_JSONL_TRIM_KEEP_RATIO = max(
+    0.10,
+    min(0.95, float(os.getenv("AI_FEEDBACK_JSONL_TRIM_KEEP_RATIO", "0.70"))),
+)
 
 EXECUTION_LOCK_ENABLED = os.getenv("EXECUTION_LOCK_ENABLED", "true").lower() == "true"
 EXECUTION_LOCK_KEY = os.getenv("EXECUTION_LOCK_KEY", "lock:execute_orders")
@@ -246,6 +276,10 @@ DAILY_TRADE_COUNT_TTL_SECONDS = max(60, int(os.getenv("DAILY_TRADE_COUNT_TTL_SEC
 # Block ALL new entries when BTC 1h ADX is below this threshold (choppy macro).
 # Set to 0 to disable.
 MARKET_REGIME_ADX_MIN = float(os.getenv("MARKET_REGIME_ADX_MIN", "0"))
+REGIME_DIRECTIONAL_PENALTY_ENABLED = os.getenv("REGIME_DIRECTIONAL_PENALTY_ENABLED", "true").lower() == "true"
+REGIME_BEAR_LONG_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BEAR_LONG_PENALTY", "0.15"))))
+REGIME_BULL_SHORT_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BULL_SHORT_PENALTY", "0.10"))))
+BTC_BEAR_LONG_BLOCK_ENABLED = os.getenv("BTC_BEAR_LONG_BLOCK_ENABLED", "false").lower() == "true"
 
 # -- Signal flip min age gate --
 # Prevent signal_flip close if position is younger than N minutes.

@@ -31,6 +31,7 @@ class RiskPolicyHelpersTest(SimpleTestCase):
         VOL_RISK_LOW_ATR_PCT=0.008,
         VOL_RISK_HIGH_ATR_PCT=0.015,
         VOL_RISK_MIN_SCALE=0.6,
+        BTC_VOL_RISK_HARDEN_ENABLED=False,
     )
     def test_volatility_adjusted_risk_applies_atr_scaling_after_symbol_cap(self):
         # High ATR must still scale down capped per-symbol risk (regression for early-return bug).
@@ -52,5 +53,40 @@ class RiskPolicyHelpersTest(SimpleTestCase):
         self.assertAlmostEqual(
             volatility_adjusted_risk("ETHUSDT", atr_pct=0.015, base_risk=0.01),
             0.0075,
+            places=8,
+        )
+
+    @override_settings(
+        PER_INSTRUMENT_RISK={},
+        INSTRUMENT_RISK_TIERS_ENABLED=False,
+        VOL_RISK_LOW_ATR_PCT=0.008,
+        VOL_RISK_HIGH_ATR_PCT=0.015,
+        VOL_RISK_MIN_SCALE=0.6,
+        BTC_VOL_RISK_HARDEN_ENABLED=True,
+        BTC_VOL_RISK_ATR_THRESHOLD=0.012,
+        BTC_VOL_RISK_MULT=0.75,
+    )
+    def test_volatility_adjusted_risk_applies_btc_hardening_above_threshold(self):
+        # base=0.003, ATR>=high -> *0.6 => 0.0018, then BTC harden *0.75 => 0.00135
+        self.assertAlmostEqual(
+            volatility_adjusted_risk("BTCUSDT", atr_pct=0.02, base_risk=0.003),
+            0.00135,
+            places=8,
+        )
+
+    @override_settings(
+        PER_INSTRUMENT_RISK={},
+        INSTRUMENT_RISK_TIERS_ENABLED=False,
+        VOL_RISK_LOW_ATR_PCT=0.008,
+        VOL_RISK_HIGH_ATR_PCT=0.015,
+        VOL_RISK_MIN_SCALE=0.6,
+        BTC_VOL_RISK_HARDEN_ENABLED=True,
+        BTC_VOL_RISK_ATR_THRESHOLD=0.012,
+        BTC_VOL_RISK_MULT=0.75,
+    )
+    def test_volatility_adjusted_risk_btc_hardening_not_applied_below_threshold(self):
+        self.assertAlmostEqual(
+            volatility_adjusted_risk("BTCUSDT", atr_pct=0.009, base_risk=0.003),
+            0.002828571428571429,
             places=8,
         )

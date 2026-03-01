@@ -10,10 +10,12 @@ Recommended read order
 1. `docs/ARCHITECTURE.md`
 2. `docs/TRADING_RULES.md`
 3. `docs/ENV_REFERENCE.md`
-4. `docs/OPERATIONS_RUNBOOK.md`
-5. `docs/KNOWN_ISSUES_AND_GUARDRAILS.md`
-6. `docs/API_ADMIN_CONFIG.md` (LLM API setup and token budget flow)
-7. `agents.md` (historical context and decisions log)
+4. `docs/CALIBRATION_CANONICAL.md` (P0-P2 calibrated defaults, rollout/rollback gates)
+5. `docs/OPERATIONS_RUNBOOK.md`
+6. `docs/KNOWN_ISSUES_AND_GUARDRAILS.md`
+7. `docs/API_ADMIN_CONFIG.md` (LLM API setup and token budget flow)
+8. `agents.md` (historical context and decisions log)
+9. `tmp/ai/feedback_stream.jsonl` (compact runtime feedback stream; append-only)
 
 Code map (high value files)
 - `execution/tasks.py`: live execution loop, entries, exits, sync, risk guards.
@@ -24,10 +26,12 @@ Code map (high value files)
 - `signals/modules/meanrev.py`: mean reversion module.
 - `signals/modules/carry.py`: funding carry module.
 - `config/settings.py`: env parsing and all runtime flags.
+- `core/ai_feedback.py`: structured AI feedback logging + JSONL stream tail reader.
 - `execution/models.py`: `Order`, `Position`, `OperationReport`, `BalanceSnapshot`.
+- `risk/drawdown_state.py`: drawdown baseline state machine (DB source + Redis cache).
 - `marketdata/models.py`: `Candle`, `FundingRate`, `OrderBookSnapshot`.
 - `backtest/engine.py`: walk-forward backtest engine.
-- `risk/management/commands/perf_dashboard.py`: performance summary by module/symbol.
+- `risk/management/commands/perf_dashboard.py`: performance summary by module/symbol/regime + MFE capture.
 - `risk/management/commands/monte_carlo.py`: risk of ruin and drawdown simulations.
 
 Runtime flow (one-line)

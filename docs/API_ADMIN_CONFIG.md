@@ -6,10 +6,13 @@ Last update: 2026-03-01
 - `core.ApiProviderConfig`
 - `core.ApiContextFile`
 - `core.ApiTokenUsageLog`
+- `core.AiFeedbackEvent`
 - `core.ExchangeCredential.ai_enabled` (bool per trading account)
 - `core.ExchangeCredential.ai_provider_config` (optional FK)
 - Runtime helpers: `core/api_runtime.py`
+- Runtime feedback stream: `core/ai_feedback.py`
 - Command: `python manage.py preview_api_context`
+- Command: `python manage.py rebuild_ai_feedback_stream`
 
 ## Admin tables
 
@@ -31,6 +34,11 @@ Last update: 2026-03-01
 
 `ApiTokenUsageLog`
 - Stores prompt/completion/total tokens and metadata for auditing and cost tracking.
+
+`AiFeedbackEvent`
+- Structured runtime feedback for AI decisions and execution errors.
+- Stored in PostgreSQL and mirrored to compact JSONL stream.
+- Used to improve decisions over time with real production outcomes.
 
 `ExchangeCredential` (updated)
 - `ai_enabled`: enable/disable AI gate for that account (`bingx`, `kucoin`, etc).
@@ -57,6 +65,21 @@ Last update: 2026-03-01
   4. If `allow=false`, entry is blocked.
   5. If `risk_mult<1`, position risk is reduced.
   6. Token usage is logged in `ApiTokenUsageLog`.
+  7. Decision + runtime error feedback is logged to:
+     - `AiFeedbackEvent` table
+     - `AI_FEEDBACK_JSONL_PATH` compact stream (append-only JSONL)
+
+## Efficient file for AI (always-readable stream)
+- Default path: `tmp/ai/feedback_stream.jsonl`
+- Format: compact JSONL keys (`t, ev, lv, acc, svc, sym, st, ok, rm, r, lat, fp, p`)
+- Write mode: append-only, auto-trim by max bytes.
+- Read mode: tail by token budget (used automatically by AI gate).
+
+## Rebuild feedback stream from PostgreSQL
+```bash
+python manage.py rebuild_ai_feedback_stream --hours 168 --limit 5000
+python manage.py rebuild_ai_feedback_stream --hours 72 --limit 2000 --write tmp/ai/feedback_stream.jsonl
+```
 
 ## Preview command
 Examples:
@@ -83,6 +106,12 @@ Output includes:
 - `AI_ENTRY_GATE_ONLY_ALLOCATOR=true|false`
 - `AI_ENTRY_GATE_DEFAULT_PROVIDER=openai`
 - `AI_ENTRY_GATE_MAX_OUTPUT_TOKENS=180`
+- `AI_ENTRY_GATE_NOTIFY_ERRORS=true|false`
+- `AI_FEEDBACK_CONTEXT_MAX_TOKENS=900`
+- `AI_FEEDBACK_JSONL_ENABLED=true|false`
+- `AI_FEEDBACK_JSONL_PATH=tmp/ai/feedback_stream.jsonl`
+- `AI_FEEDBACK_JSONL_MAX_BYTES=2000000`
+- `AI_FEEDBACK_JSONL_TRIM_KEEP_RATIO=0.70`
 
 Per service env sync support:
 - `BINGX_AI_ENABLED=true|false`

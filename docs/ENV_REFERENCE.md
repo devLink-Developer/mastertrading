@@ -20,15 +20,20 @@ This document lists high-impact variables only. Keep secrets out of git.
 ## 3) Risk per trade and volatility scaling
 - `RISK_PER_TRADE_PCT`: base risk budget.
 - `VOL_RISK_LOW_ATR_PCT`, `VOL_RISK_HIGH_ATR_PCT`, `VOL_RISK_MIN_SCALE`: ATR-to-risk scaling.
+- `BTC_VOL_RISK_HARDEN_ENABLED`, `BTC_VOL_RISK_ATR_THRESHOLD`, `BTC_VOL_RISK_MULT`: extra BTC-only risk reduction in high ATR.
 - `PER_INSTRUMENT_RISK`: symbol-specific overrides.
 - `INSTRUMENT_RISK_TIERS`: tiered risk profile mapping.
 
 ## 4) TP/SL and management
 - `STOP_LOSS_PCT`, `TAKE_PROFIT_PCT`: base floors.
-- `ATR_MULT_SL`, `ATR_MULT_TP`: ATR multipliers.
+- `ATR_MULT_SL`, `ATR_MULT_TP`: legacy/global ATR multipliers.
+- `ATR_MULT_TP_LONG`, `ATR_MULT_TP_SHORT`: directional TP asymmetry.
 - `MIN_SL_PCT`, `TAKE_PROFIT_MIN_PCT`: hard floors.
 - `TP_SL_FEE_ADJUST_ENABLED`: include estimated fees in TP/SL decisions.
 - `TRAILING_STOP_ENABLED`, `TRAILING_STOP_ACTIVATION_R`, `TRAILING_STOP_LOCK_IN_PCT`
+- `TRAILING_ADAPTIVE_ENABLED`
+- `TRAILING_ACTIVATION_R_LOWVOL`, `TRAILING_ACTIVATION_R_HIGHVOL`, `TRAILING_ACTIVATION_ATR_THRESHOLD`
+- `TRAILING_LOCKIN_MIN`, `TRAILING_LOCKIN_MAX`, `TRAILING_LOCKIN_SLOPE`
 - `BREAKEVEN_STOP_ENABLED`, `BREAKEVEN_STOP_AT_R`, `BREAKEVEN_STOP_OFFSET_PCT`
 - `PARTIAL_CLOSE_AT_R`, `PARTIAL_CLOSE_PCT`
 
@@ -44,6 +49,9 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `SESSION_RISK_MULTIPLIER` (json map)
 - `SESSION_DEAD_ZONE_BLOCK`
 - `MARKET_REGIME_ADX_MIN`
+- `REGIME_DIRECTIONAL_PENALTY_ENABLED`
+- `REGIME_BEAR_LONG_PENALTY`, `REGIME_BULL_SHORT_PENALTY`
+- `BTC_BEAR_LONG_BLOCK_ENABLED`
 - `MAX_DAILY_TRADES`, `MAX_DAILY_TRADES_LOW_ADX`, `MAX_DAILY_TRADES_HIGH_ADX`
 
 ## 7) Strategy composition and allocator
@@ -65,12 +73,20 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `ML_ENTRY_FILTER_MIN_PROB`
 - Per-symbol and per-strategy ML toggles
 - Auto-train/retrain flags and cadence
+- `AI_ENTRY_GATE_ENABLED`, `AI_ENTRY_GATE_FAIL_OPEN`, `AI_ENTRY_GATE_ONLY_ALLOCATOR`
+- `AI_ENTRY_GATE_DEFAULT_PROVIDER`, `AI_ENTRY_GATE_MAX_OUTPUT_TOKENS`
+- `AI_ENTRY_GATE_NOTIFY_ERRORS`
+- `AI_FEEDBACK_CONTEXT_MAX_TOKENS`
+- `AI_FEEDBACK_JSONL_ENABLED`, `AI_FEEDBACK_JSONL_PATH`
+- `AI_FEEDBACK_JSONL_MAX_BYTES`, `AI_FEEDBACK_JSONL_TRIM_KEEP_RATIO`
 
 ## 10) Operational and locks
 - `EXECUTION_LOCK_ENABLED`, `EXECUTION_LOCK_KEY`, `EXECUTION_LOCK_TTL_SECONDS`
 - Circuit-breaker and drawdown limits:
   - `DAILY_DD_LIMIT`
   - `WEEKLY_DD_LIMIT`
+- Risk event dedup:
+  - `RISK_EVENT_DEDUP_SECONDS`
 
 ## 11) JSON env examples
 `SESSION_SCORE_MIN` example:
@@ -100,4 +116,3 @@ This document lists high-impact variables only. Keep secrets out of git.
   - smoke run (services up, no crashes)
   - first-hour logs
   - next-day performance dashboard
-
