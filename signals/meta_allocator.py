@@ -29,6 +29,12 @@ class ModuleMetrics:
     loss_cluster: float = 0.0
     regime_fit: float = 1.0
     corr_penalty: float = 1.0
+    max_dd_pct: float = 0.0
+    today_pnl_pct: float = 0.0
+    dd_throttle_mult: float = 1.0
+    daily_loss_throttle_mult: float = 1.0
+    bucket_freeze: bool = False
+    sample_mult: float = 1.0
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -113,6 +119,33 @@ def _loss_cluster_score(returns: list[float]) -> float:
     return _clamp(max_streak / max(1, n), 0.0, 1.0)
 
 
+def _max_drawdown_pct(returns: list[float]) -> float:
+    if not returns:
+        return 0.0
+    equity = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    for r in returns:
+        equity *= max(1e-9, 1.0 + float(r))
+        if equity > peak:
+            peak = equity
+        dd = (equity - peak) / max(1e-9, peak)
+        if dd < max_dd:
+            max_dd = dd
+    return abs(float(max_dd))
+
+
+def _throttle_from_ratio(ratio: float, *, mult_at_50: float, mult_at_75: float) -> tuple[float, bool]:
+    x = max(0.0, float(ratio))
+    if x >= 1.0:
+        return 0.0, True
+    if x >= 0.75:
+        return _clamp(mult_at_75, 0.0, 1.0), False
+    if x >= 0.50:
+        return _clamp(mult_at_50, 0.0, 1.0), False
+    return 1.0, False
+
+
 def _compute_correlation_penalties(
     *,
     module_day_returns: dict[str, dict[str, float]],
@@ -168,6 +201,8 @@ def compute_meta_weights_from_metrics(
     pf_target: float,
     single_winner_enabled: bool,
     single_winner_min_weight: float,
+    p4_enabled: bool = False,
+    p4_min_sample: int = 50,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     base = normalize_weight_map(base_weights, base_weights)
     n_by_mod = {m: int(metrics.get(m, ModuleMetrics()).n) for m in MODULE_ORDER}
@@ -181,7 +216,7 @@ def compute_meta_weights_from_metrics(
     std_med = float(np.median(std_vals)) if std_vals else 1.0
 
     raw: dict[str, float] = {}
-    diagnostics: dict[str, dict[str, float | int]] = {}
+    diagnostics: dict[str, dict[str, float | int | bool]] = {}
 
     for module in MODULE_ORDER:
         mm = metrics.get(module, ModuleMetrics())
@@ -202,8 +237,27 @@ def compute_meta_weights_from_metrics(
         cluster_factor = _clamp(1.0 - (loss_cluster_penalty * mm.loss_cluster), 0.30, 1.0)
         regime_fit = _clamp(mm.regime_fit, 0.5, 1.5)
         corr_pen = _clamp(mm.corr_penalty, 0.4, 1.0)
+        sample_mult = _clamp(mm.sample_mult, 0.0, 1.0)
 
-        raw_w = base_w * exp_norm * vol_inverse * pf_norm * cluster_factor * regime_fit * corr_pen
+        strategy_guard = 1.0
+        if p4_enabled:
+            if mm.n < max(1, int(p4_min_sample)):
+                strategy_guard *= sample_mult
+            strategy_guard *= _clamp(mm.dd_throttle_mult, 0.0, 1.0)
+            strategy_guard *= _clamp(mm.daily_loss_throttle_mult, 0.0, 1.0)
+            if bool(mm.bucket_freeze):
+                strategy_guard = 0.0
+
+        raw_w = (
+            base_w
+            * exp_norm
+            * vol_inverse
+            * pf_norm
+            * cluster_factor
+            * regime_fit
+            * corr_pen
+            * strategy_guard
+        )
         raw_w = min(raw_w, max(0.05, weight_cap))
         raw[module] = max(0.0, raw_w)
         diagnostics[module] = {
@@ -214,10 +268,21 @@ def compute_meta_weights_from_metrics(
             "pf": round(mm.profit_factor, 6),
             "loss_cluster": round(mm.loss_cluster, 6),
             "corr_pen": round(mm.corr_penalty, 6),
+            "max_dd_pct": round(mm.max_dd_pct, 6),
+            "today_pnl_pct": round(mm.today_pnl_pct, 6),
+            "dd_throttle_mult": round(mm.dd_throttle_mult, 6),
+            "daily_loss_throttle_mult": round(mm.daily_loss_throttle_mult, 6),
+            "sample_mult": round(mm.sample_mult, 6),
+            "bucket_freeze": bool(mm.bucket_freeze),
+            "strategy_guard": round(strategy_guard, 6),
             "raw": round(raw_w, 6),
         }
 
-    normalized = _normalize_map(raw, base)
+    raw_total = sum(max(0.0, float(raw.get(m, 0.0))) for m in MODULE_ORDER)
+    if raw_total <= 0 and p4_enabled:
+        normalized = {m: 0.0 for m in MODULE_ORDER}
+    else:
+        normalized = _normalize_map(raw, base)
 
     winner = ""
     if single_winner_enabled:
@@ -240,12 +305,23 @@ def _risk_budgets_from_weights(
     weights: dict[str, float],
     fallback_budgets: dict[str, float],
     bucket_caps: dict[str, float],
+    strict_isolation: bool = False,
+    max_total_budget: float = 1.0,
 ) -> dict[str, float]:
     raw: dict[str, float] = {}
     for module in MODULE_ORDER:
         cap = _clamp(_safe_float(bucket_caps.get(module, 1.0), 1.0), 0.01, 1.0)
         raw[module] = max(0.0, float(weights.get(module, 0.0))) * cap
-    return _normalize_map(raw, fallback_budgets)
+    if not strict_isolation:
+        return _normalize_map(raw, fallback_budgets)
+
+    total = sum(max(0.0, _safe_float(v, 0.0)) for v in raw.values())
+    max_total = _clamp(_safe_float(max_total_budget, 1.0), 0.10, 1.0)
+    if total > max_total and total > 1e-12:
+        scale = max_total / total
+        raw = {k: float(v) * scale for k, v in raw.items()}
+
+    return {m: max(0.0, float(raw.get(m, 0.0))) for m in MODULE_ORDER}
 
 
 def _collect_module_metrics(
@@ -274,6 +350,8 @@ def _collect_module_metrics(
 
     module_returns: dict[str, list[float]] = {m: [] for m in MODULE_ORDER}
     module_day_returns: dict[str, dict[str, float]] = {m: defaultdict(float) for m in MODULE_ORDER}
+    today_key = dj_tz.now().date().isoformat()
+    module_today_pnl: dict[str, float] = {m: 0.0 for m in MODULE_ORDER}
     total_attrib = 0
 
     for rep in reports:
@@ -289,6 +367,8 @@ def _collect_module_metrics(
             module_returns[module].append(attrib)
             if day_key:
                 module_day_returns[module][day_key] += attrib
+                if day_key == today_key:
+                    module_today_pnl[module] = module_today_pnl.get(module, 0.0) + attrib
             total_attrib += 1
 
     strength = _clamp(float(getattr(settings, "META_ALLOCATOR_CORR_PENALTY_STRENGTH", 0.5) or 0.5), 0.0, 2.0)
@@ -300,6 +380,20 @@ def _collect_module_metrics(
         min_points=min_points,
         min_penalty=min_pen,
     )
+    p4_enabled = bool(getattr(settings, "META_ALLOCATOR_P4_ENABLED", False))
+    p4_min_sample = max(1, int(getattr(settings, "META_ALLOCATOR_P4_MIN_SAMPLE", 50) or 50))
+    p4_dd_mult_50 = _clamp(
+        float(getattr(settings, "META_ALLOCATOR_P4_DD_THROTTLE_AT_50", 0.80) or 0.80),
+        0.0,
+        1.0,
+    )
+    p4_dd_mult_75 = _clamp(
+        float(getattr(settings, "META_ALLOCATOR_P4_DD_THROTTLE_AT_75", 0.50) or 0.50),
+        0.0,
+        1.0,
+    )
+    dd_caps = dict(getattr(settings, "META_ALLOCATOR_STRATEGY_DD_CAPS", {}) or {})
+    daily_caps = dict(getattr(settings, "META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS", {}) or {})
 
     out: dict[str, ModuleMetrics] = {}
     for module in MODULE_ORDER:
@@ -312,6 +406,35 @@ def _collect_module_metrics(
         neg_sum = abs(sum(losses))
         pf = pos_sum / neg_sum if neg_sum > 1e-12 else (2.0 if pos_sum > 0 else 1.0)
         stdev = float(np.std(arr)) if len(arr) > 1 else abs(arr[0]) if arr else 0.0
+        max_dd_pct = _max_drawdown_pct(arr)
+        today_pnl_pct = float(module_today_pnl.get(module, 0.0))
+        dd_throttle_mult = 1.0
+        daily_loss_throttle_mult = 1.0
+        dd_freeze = False
+        daily_freeze = False
+        sample_mult = 1.0
+
+        if p4_enabled:
+            dd_cap = max(1e-9, _safe_float(dd_caps.get(module, 0.10), 0.10))
+            dd_ratio = max_dd_pct / dd_cap
+            dd_throttle_mult, dd_freeze = _throttle_from_ratio(
+                dd_ratio,
+                mult_at_50=p4_dd_mult_50,
+                mult_at_75=p4_dd_mult_75,
+            )
+
+            daily_cap = max(1e-9, _safe_float(daily_caps.get(module, 0.03), 0.03))
+            daily_loss_pct = abs(min(0.0, today_pnl_pct))
+            daily_ratio = daily_loss_pct / daily_cap
+            daily_loss_throttle_mult, daily_freeze = _throttle_from_ratio(
+                daily_ratio,
+                mult_at_50=p4_dd_mult_50,
+                mult_at_75=p4_dd_mult_75,
+            )
+
+            if len(arr) < p4_min_sample:
+                sample_mult = _clamp(len(arr) / max(1.0, float(p4_min_sample)), 0.20, 1.0)
+
         out[module] = ModuleMetrics(
             n=len(arr),
             win_rate=(len(wins) / len(arr)) if arr else 0.5,
@@ -321,11 +444,19 @@ def _collect_module_metrics(
             loss_cluster=_loss_cluster_score(arr),
             regime_fit=1.0,  # Reserved for next cycle when regime-fit attribution is wired.
             corr_penalty=float(corr_penalties.get(module, 1.0)),
+            max_dd_pct=max_dd_pct,
+            today_pnl_pct=today_pnl_pct,
+            dd_throttle_mult=dd_throttle_mult,
+            daily_loss_throttle_mult=daily_loss_throttle_mult,
+            bucket_freeze=bool(dd_freeze or daily_freeze),
+            sample_mult=sample_mult,
         )
 
     return out, {
         "trade_count": len(reports),
         "attributed": total_attrib,
+        "p4_enabled": p4_enabled,
+        "today_key": today_key,
     }
 
 
@@ -384,6 +515,16 @@ def compute_meta_allocator_overlay(
         0.0,
         1.0,
     )
+    p4_enabled = bool(getattr(settings, "META_ALLOCATOR_P4_ENABLED", False))
+    p4_min_sample = max(1, int(getattr(settings, "META_ALLOCATOR_P4_MIN_SAMPLE", 50) or 50))
+    p4_strict_isolation = bool(
+        getattr(settings, "META_ALLOCATOR_P4_STRICT_BUCKET_ISOLATION_ENABLED", False)
+    )
+    p4_max_total_budget = _clamp(
+        float(getattr(settings, "META_ALLOCATOR_P4_MAX_TOTAL_RISK_BUDGET", 1.0) or 1.0),
+        0.10,
+        1.0,
+    )
 
     weights, diag = compute_meta_weights_from_metrics(
         base_weights=normalize_weight_map(base_weights, base_weights),
@@ -393,6 +534,8 @@ def compute_meta_allocator_overlay(
         pf_target=pf_target,
         single_winner_enabled=single_winner_enabled,
         single_winner_min_weight=single_winner_min_weight,
+        p4_enabled=p4_enabled,
+        p4_min_sample=p4_min_sample,
     )
 
     bucket_caps = dict(getattr(settings, "META_ALLOCATOR_BUCKET_CAPS", {}) or {})
@@ -400,12 +543,17 @@ def compute_meta_allocator_overlay(
         weights=weights,
         fallback_budgets=normalize_weight_map(base_risk_budgets, base_risk_budgets),
         bucket_caps=bucket_caps,
+        strict_isolation=(p4_enabled and p4_strict_isolation),
+        max_total_budget=p4_max_total_budget,
     )
 
     diag_out = {
         "enabled": True,
         "lookback_days": lookback_days,
         "min_trades": min_trades,
+        "p4_enabled": p4_enabled,
+        "p4_strict_bucket_isolation": bool(p4_enabled and p4_strict_isolation),
+        "risk_budget_total": round(sum(float(risk_budgets.get(m, 0.0)) for m in MODULE_ORDER), 6),
         "summary": {
             "winner": str(diag.get("winner") or ""),
             "weights": diag.get("weights", {}),

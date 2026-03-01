@@ -418,12 +418,16 @@ def resolve_symbol_allocation(
             if row_sign == net_sign:
                 budget_mix += float(risk_budgets.get(row["module"], 0.0)) * float(row["confidence"])
     budget_mix = max(0.0, min(1.0, budget_mix))
+    budget_mix_min_mult = max(
+        0.0,
+        min(1.0, float(getattr(settings, "ALLOCATOR_BUDGET_MIX_MIN_MULT", 0.30))),
+    )
 
     risk_budget_pct = 0.0
     if direction in {"long", "short"}:
         risk_budget_pct = max(0.0, base_risk_pct) * allocator_confidence * max(0.0, session_risk_mult)
         if budget_mix > 0:
-            risk_budget_pct *= max(0.30, min(1.0, budget_mix))
+            risk_budget_pct *= max(budget_mix_min_mult, min(1.0, budget_mix))
 
     symbol_state = "open" if direction in {"long", "short"} else "skip"
     return {
@@ -438,14 +442,15 @@ def resolve_symbol_allocation(
             "module_contributions": module_contributions,
             "active_module_count": len(module_contributions),
             "abs_capacity": round(abs_capacity, 6),
-            "base_risk_pct": round(float(base_risk_pct), 6),
-            "session_risk_mult": round(float(session_risk_mult), 6),
-            "budget_mix": round(float(budget_mix), 6),
-            "trend_context": {
-                "is_strong": bool(trend_ctx.get("is_strong", False)),
-                "direction": str(trend_ctx.get("direction", "flat")),
-                "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
-                "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
+                "base_risk_pct": round(float(base_risk_pct), 6),
+                "session_risk_mult": round(float(session_risk_mult), 6),
+                "budget_mix": round(float(budget_mix), 6),
+                "budget_mix_min_mult": round(float(budget_mix_min_mult), 6),
+                "trend_context": {
+                    "is_strong": bool(trend_ctx.get("is_strong", False)),
+                    "direction": str(trend_ctx.get("direction", "flat")),
+                    "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
+                    "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
             },
         },
     }

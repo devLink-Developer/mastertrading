@@ -381,6 +381,14 @@ _META_ALLOCATOR_BUCKET_CAPS_RAW = os.getenv(
     "META_ALLOCATOR_BUCKET_CAPS",
     '{"trend":0.45,"meanrev":0.30,"carry":0.20,"smc":0.25}',
 )
+_META_ALLOCATOR_STRATEGY_DD_CAPS_RAW = os.getenv(
+    "META_ALLOCATOR_STRATEGY_DD_CAPS",
+    '{"trend":0.12,"meanrev":0.10,"carry":0.08,"smc":0.12}',
+)
+_META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS_RAW = os.getenv(
+    "META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS",
+    '{"trend":0.03,"meanrev":0.025,"carry":0.020,"smc":0.030}',
+)
 _MULTI_STRATEGY_UNIVERSE_RAW = os.getenv(
     "MULTI_STRATEGY_UNIVERSE",
     "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT",
@@ -608,6 +616,10 @@ ALLOCATOR_CONFLICT_POLICY = os.getenv("ALLOCATOR_CONFLICT_POLICY", "net_score").
 if ALLOCATOR_CONFLICT_POLICY not in {"net_score"}:
     ALLOCATOR_CONFLICT_POLICY = "net_score"
 ALLOCATOR_MIN_MODULES_ACTIVE = int(os.getenv("ALLOCATOR_MIN_MODULES_ACTIVE", "2"))
+ALLOCATOR_BUDGET_MIX_MIN_MULT = max(
+    0.0,
+    min(1.0, float(os.getenv("ALLOCATOR_BUDGET_MIX_MIN_MULT", "0.30"))),
+)
 ALLOCATOR_STRONG_TREND_SOLO_ENABLED = (
     os.getenv("ALLOCATOR_STRONG_TREND_SOLO_ENABLED", "true").lower() == "true"
 )
@@ -689,6 +701,23 @@ META_ALLOCATOR_SINGLE_WINNER_MIN_WEIGHT = max(
     0.0,
     min(1.0, float(os.getenv("META_ALLOCATOR_SINGLE_WINNER_MIN_WEIGHT", "0.42"))),
 )
+META_ALLOCATOR_P4_ENABLED = os.getenv("META_ALLOCATOR_P4_ENABLED", "false").lower() == "true"
+META_ALLOCATOR_P4_MIN_SAMPLE = max(1, int(os.getenv("META_ALLOCATOR_P4_MIN_SAMPLE", "50")))
+META_ALLOCATOR_P4_STRICT_BUCKET_ISOLATION_ENABLED = (
+    os.getenv("META_ALLOCATOR_P4_STRICT_BUCKET_ISOLATION_ENABLED", "false").lower() == "true"
+)
+META_ALLOCATOR_P4_MAX_TOTAL_RISK_BUDGET = max(
+    0.10,
+    min(1.0, float(os.getenv("META_ALLOCATOR_P4_MAX_TOTAL_RISK_BUDGET", "1.0"))),
+)
+META_ALLOCATOR_P4_DD_THROTTLE_AT_50 = max(
+    0.0,
+    min(1.0, float(os.getenv("META_ALLOCATOR_P4_DD_THROTTLE_AT_50", "0.80"))),
+)
+META_ALLOCATOR_P4_DD_THROTTLE_AT_75 = max(
+    0.0,
+    min(1.0, float(os.getenv("META_ALLOCATOR_P4_DD_THROTTLE_AT_75", "0.50"))),
+)
 
 # --- HMM Regime Detection ---
 HMM_REGIME_ENABLED = os.getenv("HMM_REGIME_ENABLED", "false").lower() == "true"
@@ -743,6 +772,24 @@ except Exception:
     META_ALLOCATOR_BUCKET_CAPS = {"trend": 0.45, "meanrev": 0.30, "carry": 0.20, "smc": 0.25}
 for _m in ("trend", "meanrev", "carry", "smc"):
     META_ALLOCATOR_BUCKET_CAPS.setdefault(_m, 1.0)
+try:
+    META_ALLOCATOR_STRATEGY_DD_CAPS = {
+        str(k).strip().lower(): max(0.0001, float(v))
+        for k, v in _json.loads(_META_ALLOCATOR_STRATEGY_DD_CAPS_RAW).items()
+    }
+except Exception:
+    META_ALLOCATOR_STRATEGY_DD_CAPS = {"trend": 0.12, "meanrev": 0.10, "carry": 0.08, "smc": 0.12}
+for _m in ("trend", "meanrev", "carry", "smc"):
+    META_ALLOCATOR_STRATEGY_DD_CAPS.setdefault(_m, 0.10)
+try:
+    META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS = {
+        str(k).strip().lower(): max(0.0001, float(v))
+        for k, v in _json.loads(_META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS_RAW).items()
+    }
+except Exception:
+    META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS = {"trend": 0.03, "meanrev": 0.025, "carry": 0.020, "smc": 0.030}
+for _m in ("trend", "meanrev", "carry", "smc"):
+    META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS.setdefault(_m, 0.03)
 
 MULTI_STRATEGY_UNIVERSE = _parse_symbol_list(_MULTI_STRATEGY_UNIVERSE_RAW)
 ML_ENTRY_FILTER_PER_SYMBOLS = _parse_symbol_list(_ML_ENTRY_FILTER_PER_SYMBOLS_RAW)

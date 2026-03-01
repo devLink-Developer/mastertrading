@@ -7,23 +7,24 @@ Purpose
 - Keep this file short and stable. Use it as the first read.
 
 Recommended read order
-1. `docs/ARCHITECTURE.md`
-2. `docs/TRADING_RULES.md`
-3. `docs/ENV_REFERENCE.md`
-4. `docs/CALIBRATION_CANONICAL.md` (P0-P2 calibrated defaults, rollout/rollback gates)
-5. `docs/OPERATIONS_RUNBOOK.md`
-6. `docs/KNOWN_ISSUES_AND_GUARDRAILS.md`
-7. `docs/API_ADMIN_CONFIG.md` (LLM API setup and token budget flow)
-8. `docs/TOON_FORMAT_SPECIFICATION_2026.md` (TOON format contract)
-9. `docs/AI_TOON_MASTERTRADING_CONTEXT_2026.toon.md` (token-optimized operational context)
-10. `agents.md` (historical context and decisions log)
-11. `tmp/ai/feedback_stream.jsonl` (compact runtime feedback stream; append-only)
+1. `docs/AI_AUDIT_PROJECT_MAP.md` (single-file canonical map for AI audit)
+2. `docs/ARCHITECTURE.md`
+3. `docs/TRADING_RULES.md`
+4. `docs/ENV_REFERENCE.md`
+5. `docs/CALIBRATION_CANONICAL.md` (P0-P4 calibrated defaults, rollout/rollback gates)
+6. `docs/OPERATIONS_RUNBOOK.md`
+7. `docs/KNOWN_ISSUES_AND_GUARDRAILS.md`
+8. `docs/API_ADMIN_CONFIG.md` (LLM API setup and token budget flow)
+9. `docs/TOON_FORMAT_SPECIFICATION_2026.md` (TOON format contract)
+10. `docs/AI_TOON_MASTERTRADING_CONTEXT_2026.toon.md` (token-optimized operational context)
+11. `agents.md` (historical context and decisions log)
+12. `tmp/ai/feedback_stream.jsonl` (compact runtime feedback stream; append-only)
 
 Code map (high value files)
 - `execution/tasks.py`: live execution loop, entries, exits, sync, risk guards.
 - `signals/tasks.py`: signal engine and SMC flow.
 - `signals/allocator.py`: multi-module score aggregation and dynamic weights.
-- `signals/meta_allocator.py`: bounded meta-allocator overlay (expectancy/vol/PF/correlation/loss-cluster).
+- `signals/meta_allocator.py`: bounded meta-allocator overlay + optional P4 bucket isolation (DD/daily-loss throttle, strict no-cross-subsidy budgets).
 - `signals/sessions.py`: session classification and session-based score/risk.
 - `signals/modules/trend.py`: trend module.
 - `signals/modules/meanrev.py`: mean reversion module.

@@ -540,3 +540,40 @@ docker compose logs --tail=120 chatbot
   - `signals/tests_meta_allocator.py`
   - `core/tests_toon_validator.py`
 
+
+### 2026-03-01 (P4 bucket isolation rollout)
+
+- Implemented optional P4 controls in meta allocator:
+  - Per-module max drawdown tracking from attributed returns (`max_dd_pct`).
+  - Per-module daily PnL tracking (`today_pnl_pct`).
+  - Progressive throttle at 50%/75% of bucket caps + hard freeze at 100%.
+  - Sample-size guard for low-N modules (`META_ALLOCATOR_P4_MIN_SAMPLE`).
+- Added strict no-cross-subsidy budget mode:
+  - `META_ALLOCATOR_P4_STRICT_BUCKET_ISOLATION_ENABLED=true` keeps unallocated risk unassigned.
+  - `META_ALLOCATOR_P4_MAX_TOTAL_RISK_BUDGET` caps total allocated risk budget.
+  - `ALLOCATOR_BUDGET_MIX_MIN_MULT` made configurable (set `0.0` for strict mode).
+- Runtime diagnostics expanded in allocator signals:
+  - `meta_allocator.p4_enabled`
+  - `meta_allocator.p4_strict_bucket_isolation`
+  - `meta_allocator.risk_budget_total`
+- Files touched:
+  - `signals/meta_allocator.py`
+  - `signals/allocator.py`
+  - `signals/multi_strategy.py`
+  - `config/settings.py`
+  - `.env.example`
+  - docs: `docs/ENV_REFERENCE.md`, `docs/CALIBRATION_CANONICAL.md`, `docs/LLM_INDEX.md`
+- Tests added:
+  - P4 freeze behavior and strict budget isolation in `signals/tests_meta_allocator.py`
+  - Budget floor toggle in `signals/tests.py`
+
+### 2026-03-01 (AI audit single-file map)
+
+- Added `docs/AI_AUDIT_PROJECT_MAP.md` as canonical one-file map for AI audits.
+- Includes:
+  - Full repository domain map by app and critical file paths.
+  - Runtime dataflow, model map, feature-flag surfaces, Celery/schedule map.
+  - Production deploy topology and audit checklist.
+  - Machine-readable YAML quick index for LLM parsers.
+- Updated `docs/LLM_INDEX.md` read order to start with this file.
+

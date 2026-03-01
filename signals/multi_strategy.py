@@ -326,6 +326,9 @@ def run_allocator_cycle() -> str:
                     "enabled": bool(meta_diag.get("enabled", False)),
                     "summary": meta_diag.get("summary", {}),
                     "stats": meta_diag.get("stats", {}),
+                    "p4_enabled": bool(meta_diag.get("p4_enabled", False)),
+                    "p4_strict_bucket_isolation": bool(meta_diag.get("p4_strict_bucket_isolation", False)),
+                    "risk_budget_total": meta_diag.get("risk_budget_total"),
                     "reason": meta_diag.get("reason", ""),
                 }
 

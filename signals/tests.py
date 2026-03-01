@@ -388,6 +388,37 @@ class AllocatorWeightingTest(TestCase):
         self.assertGreater(float(dampened["net_score"]), float(baseline["net_score"]))
 
 
+class AllocatorBudgetMixFloorTest(TestCase):
+    def _run_alloc(self) -> dict:
+        return resolve_symbol_allocation(
+            [{"module": "trend", "direction": "long", "confidence": 0.80}],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 0.05, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+            min_active_modules=1,
+        )
+
+    @override_settings(
+        ALLOCATOR_BUDGET_MIX_MIN_MULT=0.30,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_budget_mix_uses_floor_by_default(self):
+        out = self._run_alloc()
+        self.assertEqual(out["direction"], "long")
+        self.assertAlmostEqual(float(out["risk_budget_pct"]), 0.003, places=6)
+
+    @override_settings(
+        ALLOCATOR_BUDGET_MIX_MIN_MULT=0.0,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_budget_mix_floor_can_be_disabled(self):
+        out = self._run_alloc()
+        self.assertEqual(out["direction"], "long")
+        self.assertAlmostEqual(float(out["risk_budget_pct"]), 0.0004, places=6)
+
+
 class DirectionPolicyHelpersTest(TestCase):
     def test_normalize_helpers(self):
         self.assertEqual(normalize_direction_mode("LONG_ONLY"), "long_only")
