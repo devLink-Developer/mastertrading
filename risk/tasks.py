@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import redis
 from celery import shared_task
 from django.conf import settings
+from django.core.management import call_command
 from django.db.models import Sum
 from django.utils import timezone as dj_tz
 
@@ -188,3 +191,50 @@ def send_performance_report() -> str:
     if sent:
         _mark_sent_slot(mode, slot_id)
     return f"performance_report:sent={1 if sent else 0}:window={window_minutes}m"
+
+
+@shared_task
+def run_nightly_monte_carlo() -> str:
+    """Run nightly Monte Carlo stress report and optionally notify Telegram."""
+    if not bool(getattr(settings, "MONTE_CARLO_NIGHTLY_ENABLED", False)):
+        return "monte_carlo_nightly:disabled"
+
+    report_dir = Path(settings.BASE_DIR) / "reports" / "monte_carlo"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    stamp = dj_tz.now().strftime("%Y%m%d_%H%M%S")
+    out_path = report_dir / f"nightly_{stamp}.json"
+
+    args = {
+        "days": int(getattr(settings, "MONTE_CARLO_NIGHTLY_DAYS", 90) or 90),
+        "sims": int(getattr(settings, "MONTE_CARLO_NIGHTLY_SIMS", 10000) or 10000),
+        "ruin_threshold": float(getattr(settings, "MONTE_CARLO_NIGHTLY_RUIN_THRESHOLD", 20.0) or 20.0),
+        "json": str(out_path),
+        "regime_aware": bool(getattr(settings, "MONTE_CARLO_NIGHTLY_REGIME_AWARE", True)),
+        "stress_profile": str(getattr(settings, "MONTE_CARLO_NIGHTLY_STRESS_PROFILE", "balanced") or "balanced"),
+    }
+    call_command("monte_carlo", **args)
+
+    if bool(getattr(settings, "TELEGRAM_ENABLED", False)) and bool(
+        getattr(settings, "MONTE_CARLO_NIGHTLY_NOTIFY", True)
+    ):
+        try:
+            payload = json.loads(out_path.read_text(encoding="utf-8"))
+            mc = payload.get("monte_carlo", {}) if isinstance(payload, dict) else {}
+            stress = payload.get("stress", {}) if isinstance(payload, dict) else {}
+            ruin = _to_float(mc.get("risk_of_ruin_pct"))
+            mean_dd = _to_float(mc.get("mean_max_dd_pct"))
+            p95_dd = _to_float((mc.get("max_dd_percentiles") or {}).get("p95"))
+            mean_ret = _to_float(mc.get("mean_final_return_pct"))
+            profile = str(stress.get("profile") or "none")
+            message = (
+                "\U0001F30C <b>Monte Carlo Nightly</b>\n"
+                f"profile={profile} sims={args['sims']} days={args['days']}\n"
+                f"risk_of_ruin={ruin:.2f}% | mean_max_dd={mean_dd:.2f}% | p95_dd={p95_dd:.2f}%\n"
+                f"mean_return={mean_ret:+.2f}%\n"
+                f"file={out_path.name}"
+            )
+            send_telegram(message, parse_mode="HTML")
+        except Exception:
+            pass
+
+    return f"monte_carlo_nightly:ok:{out_path.name}"

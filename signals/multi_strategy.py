@@ -14,6 +14,7 @@ from signals.allocator import (
     dynamic_weight_map,
     resolve_symbol_allocation,
 )
+from signals.meta_allocator import compute_meta_allocator_overlay
 from signals.feature_flags import FEATURE_KEYS, resolve_runtime_flags
 from signals.models import Signal
 from signals.sessions import get_current_session, get_session_risk_mult
@@ -203,6 +204,19 @@ def run_allocator_cycle() -> str:
     else:
         weights = default_weight_map()
     risk_budgets = default_risk_budget_map()
+    meta_diag: dict = {}
+    if bool(getattr(settings, "META_ALLOCATOR_ENABLED", False)):
+        try:
+            overlay = compute_meta_allocator_overlay(
+                base_weights=weights,
+                base_risk_budgets=risk_budgets,
+            )
+            weights = dict(overlay.get("weights") or weights)
+            risk_budgets = dict(overlay.get("risk_budgets") or risk_budgets)
+            meta_diag = dict(overlay.get("diag") or {})
+        except Exception as exc:
+            logger.warning("meta allocator overlay failed: %s", exc)
+            meta_diag = {"enabled": True, "reason": f"error:{type(exc).__name__}"}
     threshold = float(getattr(settings, "ALLOCATOR_NET_THRESHOLD", 0.20))
     base_risk = float(getattr(settings, "RISK_PER_TRADE_PCT", 0.01))
     session = get_current_session(now.hour)
@@ -307,6 +321,13 @@ def run_allocator_cycle() -> str:
             alloc["reasons"]["session"] = session
             alloc["reasons"]["module_rows"] = module_rows
             alloc["reasons"]["regime_risk_mult"] = round(inst_regime_mult, 4)
+            if meta_diag:
+                alloc["reasons"]["meta_allocator"] = {
+                    "enabled": bool(meta_diag.get("enabled", False)),
+                    "summary": meta_diag.get("summary", {}),
+                    "stats": meta_diag.get("stats", {}),
+                    "reason": meta_diag.get("reason", ""),
+                }
 
         strategy = f"alloc_{alloc['direction']}"
         ok = emit_signal(

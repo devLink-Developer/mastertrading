@@ -521,3 +521,22 @@ docker compose logs --tail=120 chatbot
   - `docs/API_ADMIN_CONFIG.md` now states TOON support is active.
   - `docs/LLM_INDEX.md` now includes TOON spec/context in recommended read order.
 
+
+### 2026-03-01 (P3 bounded rollout prep)
+
+- Added `signals/meta_allocator.py` (bounded overlay):
+  - Uses recent module-attributed returns to compute expectancy/stdev/PF/loss-cluster/correlation penalties.
+  - Supports optional `single winner` mode and bucket-capped risk budgets.
+  - Integrated in `signals/multi_strategy.py` behind `META_ALLOCATOR_ENABLED`.
+- Extended Monte Carlo command (`risk/management/commands/monte_carlo.py`):
+  - Optional `--regime-aware` Markov transitions.
+  - Stress profiles `none|balanced|bear` + explicit stress overrides.
+  - JSON output now includes stress params and regime summary.
+- Added nightly automation task `risk.tasks.run_nightly_monte_carlo` and scheduler flags (`MONTE_CARLO_NIGHTLY_*`).
+- Added TOON validator:
+  - `core/toon_validator.py`
+  - `python manage.py validate_toon_context --glob "docs/*.toon.md" --strict`
+- Added tests:
+  - `signals/tests_meta_allocator.py`
+  - `core/tests_toon_validator.py`
+

@@ -377,6 +377,10 @@ _ALLOCATOR_RISK_BUDGETS_RAW = os.getenv(
     "ALLOCATOR_MODULE_RISK_BUDGETS",
     '{"trend":0.45,"meanrev":0.35,"carry":0.20}',
 )
+_META_ALLOCATOR_BUCKET_CAPS_RAW = os.getenv(
+    "META_ALLOCATOR_BUCKET_CAPS",
+    '{"trend":0.45,"meanrev":0.30,"carry":0.20,"smc":0.25}',
+)
 _MULTI_STRATEGY_UNIVERSE_RAW = os.getenv(
     "MULTI_STRATEGY_UNIVERSE",
     "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT",
@@ -658,6 +662,34 @@ ALLOCATOR_DYNAMIC_MIN_MULT = float(os.getenv("ALLOCATOR_DYNAMIC_MIN_MULT", "0.5"
 ALLOCATOR_DYNAMIC_MAX_MULT = float(os.getenv("ALLOCATOR_DYNAMIC_MAX_MULT", "2.0"))
 ALLOCATOR_DYNAMIC_MIN_TRADES = int(os.getenv("ALLOCATOR_DYNAMIC_MIN_TRADES", "10"))
 
+# --- Meta allocator overlay (P3/P4 experimental, bounded) ---
+META_ALLOCATOR_ENABLED = os.getenv("META_ALLOCATOR_ENABLED", "false").lower() == "true"
+META_ALLOCATOR_LOOKBACK_DAYS = max(3, int(os.getenv("META_ALLOCATOR_LOOKBACK_DAYS", "21")))
+META_ALLOCATOR_MIN_TRADES = max(3, int(os.getenv("META_ALLOCATOR_MIN_TRADES", "12")))
+META_ALLOCATOR_CACHE_SECONDS = max(30, int(os.getenv("META_ALLOCATOR_CACHE_SECONDS", "300")))
+META_ALLOCATOR_WEIGHT_CAP = max(0.10, min(1.0, float(os.getenv("META_ALLOCATOR_WEIGHT_CAP", "0.65"))))
+META_ALLOCATOR_LOSS_CLUSTER_PENALTY = max(
+    0.0,
+    min(1.5, float(os.getenv("META_ALLOCATOR_LOSS_CLUSTER_PENALTY", "0.50"))),
+)
+META_ALLOCATOR_PF_TARGET = max(0.2, float(os.getenv("META_ALLOCATOR_PF_TARGET", "1.20")))
+META_ALLOCATOR_CORR_PENALTY_STRENGTH = max(
+    0.0,
+    min(2.0, float(os.getenv("META_ALLOCATOR_CORR_PENALTY_STRENGTH", "0.50"))),
+)
+META_ALLOCATOR_CORR_MIN_POINTS = max(3, int(os.getenv("META_ALLOCATOR_CORR_MIN_POINTS", "8")))
+META_ALLOCATOR_CORR_MIN_PENALTY = max(
+    0.10,
+    min(1.0, float(os.getenv("META_ALLOCATOR_CORR_MIN_PENALTY", "0.60"))),
+)
+META_ALLOCATOR_SINGLE_WINNER_ENABLED = (
+    os.getenv("META_ALLOCATOR_SINGLE_WINNER_ENABLED", "false").lower() == "true"
+)
+META_ALLOCATOR_SINGLE_WINNER_MIN_WEIGHT = max(
+    0.0,
+    min(1.0, float(os.getenv("META_ALLOCATOR_SINGLE_WINNER_MIN_WEIGHT", "0.42"))),
+)
+
 # --- HMM Regime Detection ---
 HMM_REGIME_ENABLED = os.getenv("HMM_REGIME_ENABLED", "false").lower() == "true"
 HMM_REGIME_N_STATES = int(os.getenv("HMM_REGIME_N_STATES", "2"))
@@ -702,6 +734,15 @@ try:
     }
 except Exception:
     ALLOCATOR_MODULE_RISK_BUDGETS = {"trend": 0.45, "meanrev": 0.30, "carry": 0.15, "smc": 0.10}
+try:
+    META_ALLOCATOR_BUCKET_CAPS = {
+        str(k).strip().lower(): float(v)
+        for k, v in _json.loads(_META_ALLOCATOR_BUCKET_CAPS_RAW).items()
+    }
+except Exception:
+    META_ALLOCATOR_BUCKET_CAPS = {"trend": 0.45, "meanrev": 0.30, "carry": 0.20, "smc": 0.25}
+for _m in ("trend", "meanrev", "carry", "smc"):
+    META_ALLOCATOR_BUCKET_CAPS.setdefault(_m, 1.0)
 
 MULTI_STRATEGY_UNIVERSE = _parse_symbol_list(_MULTI_STRATEGY_UNIVERSE_RAW)
 ML_ENTRY_FILTER_PER_SYMBOLS = _parse_symbol_list(_ML_ENTRY_FILTER_PER_SYMBOLS_RAW)
@@ -748,6 +789,22 @@ _PERF_BEAT_HOUR_RAW = int(os.getenv("PERFORMANCE_REPORT_BEAT_HOUR", "0"))
 _PERF_BEAT_MINUTE_RAW = int(os.getenv("PERFORMANCE_REPORT_BEAT_MINUTE", "0"))
 PERFORMANCE_REPORT_BEAT_HOUR = max(0, min(23, _PERF_BEAT_HOUR_RAW))
 PERFORMANCE_REPORT_BEAT_MINUTE = max(0, min(59, _PERF_BEAT_MINUTE_RAW))
+
+# -- Monte Carlo nightly automation (optional) --
+MONTE_CARLO_NIGHTLY_ENABLED = os.getenv("MONTE_CARLO_NIGHTLY_ENABLED", "false").lower() == "true"
+MONTE_CARLO_NIGHTLY_HOUR = max(0, min(23, int(os.getenv("MONTE_CARLO_NIGHTLY_HOUR", "3"))))
+MONTE_CARLO_NIGHTLY_MINUTE = max(0, min(59, int(os.getenv("MONTE_CARLO_NIGHTLY_MINUTE", "30"))))
+MONTE_CARLO_NIGHTLY_DAYS = max(7, int(os.getenv("MONTE_CARLO_NIGHTLY_DAYS", "90")))
+MONTE_CARLO_NIGHTLY_SIMS = max(500, int(os.getenv("MONTE_CARLO_NIGHTLY_SIMS", "10000")))
+MONTE_CARLO_NIGHTLY_RUIN_THRESHOLD = max(
+    1.0,
+    min(80.0, float(os.getenv("MONTE_CARLO_NIGHTLY_RUIN_THRESHOLD", "20.0"))),
+)
+MONTE_CARLO_NIGHTLY_REGIME_AWARE = os.getenv("MONTE_CARLO_NIGHTLY_REGIME_AWARE", "true").lower() == "true"
+MONTE_CARLO_NIGHTLY_NOTIFY = os.getenv("MONTE_CARLO_NIGHTLY_NOTIFY", "true").lower() == "true"
+MONTE_CARLO_NIGHTLY_STRESS_PROFILE = os.getenv("MONTE_CARLO_NIGHTLY_STRESS_PROFILE", "balanced").strip().lower()
+if MONTE_CARLO_NIGHTLY_STRESS_PROFILE not in {"none", "balanced", "bear"}:
+    MONTE_CARLO_NIGHTLY_STRESS_PROFILE = "balanced"
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -876,6 +933,7 @@ CELERY_TASK_ROUTES = {
     "execution.tasks.retrain_entry_filter_model": {"queue": ML_TRAINING_QUEUE},
     "execution.tasks._log_operation": {"queue": "trading"},
     "risk.tasks.send_performance_report": {"queue": "trading"},
+    "risk.tasks.run_nightly_monte_carlo": {"queue": "trading"},
     "marketdata.tasks.fetch_ohlcv_and_funding": {"queue": "marketdata"},
     "marketdata.tasks.fetch_instrument_data": {"queue": "marketdata"},
 }
@@ -919,6 +977,15 @@ if PERFORMANCE_REPORT_ENABLED:
     CELERY_BEAT_SCHEDULE["send-performance-report"] = {
         "task": "risk.tasks.send_performance_report",
         "schedule": crontab(),  # every minute
+    }
+
+if MONTE_CARLO_NIGHTLY_ENABLED:
+    CELERY_BEAT_SCHEDULE["run-nightly-monte-carlo"] = {
+        "task": "risk.tasks.run_nightly_monte_carlo",
+        "schedule": crontab(
+            hour=MONTE_CARLO_NIGHTLY_HOUR,
+            minute=MONTE_CARLO_NIGHTLY_MINUTE,
+        ),
     }
 
 if ML_ENTRY_FILTER_AUTO_TRAIN_ENABLED:

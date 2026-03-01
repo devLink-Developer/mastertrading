@@ -1,10 +1,10 @@
-# Calibration Canonical (P0-P2)
+# Calibration Canonical (P0-P3)
 
 Last update: 2026-03-01
 
 Purpose
 - Canonical baseline for the 2026-03 calibration cycle.
-- Consolidates the approved incremental scope P0-P2 with rollout and rollback gates.
+- Consolidates approved scope P0-P2 plus bounded P3 add-ons (meta overlay + nightly stress MC + TOON validation).
 
 Source docs for this cycle
 - `docs/META_ALLOCATOR_PSEUDOCODE_AND_MONTECARLO_2026.md`
@@ -19,7 +19,7 @@ Included
 - P2: adaptive trailing, directional regime penalty, MFE/MAE capture metrics and dashboard support.
 
 Excluded in this cycle
-- Full meta-allocator capital rebalance and independent multi-strategy buckets (P3/P4).
+- Full portfolio-level capital rebalance across independent strategy accounts (P4).
 
 ## 2) Non-negotiable constraints
 
@@ -47,6 +47,10 @@ Execution/risk controls
 - `REGIME_BULL_SHORT_PENALTY`
 - `BTC_BEAR_LONG_BLOCK_ENABLED`
 - `RISK_EVENT_DEDUP_SECONDS` (single dedup source for temporal bucketing)
+
+P3 controls (bounded/optional)
+- `META_ALLOCATOR_ENABLED` and related `META_ALLOCATOR_*` knobs.
+- `MONTE_CARLO_NIGHTLY_ENABLED` and related `MONTE_CARLO_NIGHTLY_*` knobs.
 
 ## 4) Data model changes
 
@@ -104,6 +108,11 @@ P2
 - MFE/MAE metrics persisted in operation reports.
 - Dashboard shows capture ratio and regime-aware buckets.
 - No evidence of increased premature-stop spikes after rollout.
+
+P3
+- Meta overlay never exceeds configured caps and can be disabled with one flag.
+- Nightly MC produces deterministic JSON report artifacts.
+- TOON context validation command passes for committed `.toon.md` files.
 
 ## 7) Validation protocol
 

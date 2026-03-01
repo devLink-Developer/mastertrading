@@ -117,8 +117,20 @@ sudo -n git checkout main
 4. Inspect latest `OperationReport` close reasons.
 5. If exchange/API unstable: set `TRADING_ENABLED=false` and redeploy.
 
-## 9) Security and secrets
+## 9) Quant/LLM guardrails checks
+Validate TOON files before enabling new AI context:
+```bash
+cd /opt/trading_bot
+sudo -n docker compose exec -T web python manage.py validate_toon_context --glob "docs/*.toon.md" --strict
+```
+
+Run regime-aware Monte Carlo manually:
+```bash
+cd /opt/trading_bot
+sudo -n docker compose exec -T web python manage.py monte_carlo --days 90 --sims 10000 --regime-aware --stress-profile balanced --json reports/monte_carlo/manual_latest.json
+```
+
+## 10) Security and secrets
 - Keep API keys/passwords only in server/local `.env`.
 - Never commit credentials or dumps to remote.
 - Sanitize logs/reports before sharing externally.
-

@@ -23,6 +23,7 @@ Code map (high value files)
 - `execution/tasks.py`: live execution loop, entries, exits, sync, risk guards.
 - `signals/tasks.py`: signal engine and SMC flow.
 - `signals/allocator.py`: multi-module score aggregation and dynamic weights.
+- `signals/meta_allocator.py`: bounded meta-allocator overlay (expectancy/vol/PF/correlation/loss-cluster).
 - `signals/sessions.py`: session classification and session-based score/risk.
 - `signals/modules/trend.py`: trend module.
 - `signals/modules/meanrev.py`: mean reversion module.
@@ -35,6 +36,7 @@ Code map (high value files)
 - `backtest/engine.py`: walk-forward backtest engine.
 - `risk/management/commands/perf_dashboard.py`: performance summary by module/symbol/regime + MFE capture.
 - `risk/management/commands/monte_carlo.py`: risk of ruin and drawdown simulations.
+- `core/management/commands/validate_toon_context.py`: TOON structure validation gate.
 
 Runtime flow (one-line)
 - Marketdata -> signals -> allocator -> execution -> sync -> operation report -> notifications.
