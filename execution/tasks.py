@@ -999,31 +999,53 @@ def _should_close_stale_position(
     return -pnl_band <= pnl_pct <= pnl_band
 
 
-def _market_min_qty(market: dict | None, fallback: float = 0.0) -> float:
+def _is_tick_size_mode(precision_mode: Any) -> bool:
+    txt = str(precision_mode or "").strip().lower()
+    if txt in {"tick_size", "ticksize"}:
+        return True
+    try:
+        # CCXT uses numeric precision modes; 4 maps to TICK_SIZE.
+        return int(precision_mode) == 4
+    except Exception:
+        return False
+
+
+def _market_min_qty(
+    market: dict | None,
+    fallback: float = 0.0,
+    *,
+    precision_mode: Any = None,
+) -> float:
     if not isinstance(market, dict):
         return max(0.0, _to_float(fallback))
+    limit_min = 0.0
     try:
         limits = market.get("limits") or {}
         amount_limits = limits.get("amount") or {}
-        min_qty = _to_float(amount_limits.get("min"))
-        if min_qty > 0:
-            return min_qty
+        limit_min = _to_float(amount_limits.get("min"))
     except Exception:
-        pass
+        limit_min = 0.0
+    precision_step = 0.0
     try:
         precision = market.get("precision") or {}
-        amount_precision = _to_float(precision.get("amount"))
-        if math.isfinite(amount_precision) and amount_precision >= 0:
-            # Common CCXT case: precision.amount is decimal places (0 -> minimum 1).
-            if float(amount_precision).is_integer():
-                step = 10 ** (-int(amount_precision))
-                if step > 0:
-                    return step
-            # Some exchanges expose amount step directly.
-            if amount_precision > 0:
-                return amount_precision
+        amount_raw = precision.get("amount")
+        if amount_raw is not None:
+            amount_precision = _to_float(amount_raw)
+            if math.isfinite(amount_precision) and amount_precision >= 0:
+                if _is_tick_size_mode(precision_mode) and amount_precision > 0:
+                    # In tick-size mode, precision.amount is already the amount step.
+                    precision_step = amount_precision
+                elif float(amount_precision).is_integer():
+                    # Decimal places mode (0 -> min step 1, 1 -> 0.1, ...).
+                    precision_step = 10 ** (-int(amount_precision))
+                elif amount_precision > 0:
+                    # Some exchanges expose amount step directly.
+                    precision_step = amount_precision
     except Exception:
-        pass
+        precision_step = 0.0
+    discovered_min = max(0.0, limit_min, precision_step)
+    if discovered_min > 0:
+        return discovered_min
     return max(0.0, _to_float(fallback))
 
 
@@ -1069,11 +1091,11 @@ def _normalize_order_qty(adapter, symbol: str, qty: float) -> float:
         step = 0.0
         try:
             market = adapter.client.market(mapped)
-            step = _market_min_qty(market, fallback=0.0)
+            precision_mode = getattr(adapter.client, "precisionMode", None)
+            step = _market_min_qty(market, fallback=0.0, precision_mode=precision_mode)
         except Exception:
             step = 0.0
-        if step <= 0:
-            step = _precision_step_from_error(exc)
+        step = max(step, _precision_step_from_error(exc))
         normalized = _floor_to_step(qty, step) if step > 0 else 0.0
     if not math.isfinite(normalized) or normalized <= 0:
         return 0.0
@@ -1425,7 +1447,8 @@ def _check_trailing_stop(
                 min_qty = 0.0
                 try:
                     market = adapter.client.market(adapter._map_symbol(symbol))
-                    min_qty = _market_min_qty(market, fallback=0.0)
+                    precision_mode = getattr(adapter.client, "precisionMode", None)
+                    min_qty = _market_min_qty(market, fallback=0.0, precision_mode=precision_mode)
                 except Exception:
                     min_qty = 0.0
                 min_remaining = max(min_remaining_qty, min_qty)
@@ -3291,7 +3314,12 @@ def _attempt_entry_open(
         base_risk_pct = max(float(settings.RISK_PER_TRADE_PCT), 1e-9)
         qty *= (effective_risk_pct / base_risk_pct)
 
-    min_qty = _market_min_qty(market_info, fallback=float(inst.lot_size or 0.0))
+    precision_mode = getattr(adapter.client, "precisionMode", None)
+    min_qty = _market_min_qty(
+        market_info,
+        fallback=float(inst.lot_size or 0.0),
+        precision_mode=precision_mode,
+    )
     qty = _normalize_order_qty(adapter, symbol, qty)
     if min_qty > 0 and qty < min_qty:
         qty = _normalize_order_qty(adapter, symbol, min_qty)

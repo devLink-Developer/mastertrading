@@ -118,6 +118,28 @@ class _DummyAdapterPrecisionError:
         return symbol
 
 
+class _DummyAdapterPrecisionTickSize:
+    class _Client:
+        precisionMode = 4
+
+        @staticmethod
+        def amount_to_precision(_symbol: str, _amount: float) -> str:
+            raise Exception("amount of SOL/USDT:USDT must be greater than minimum amount precision of 1")
+
+        @staticmethod
+        def market(_symbol: str) -> dict:
+            return {
+                "limits": {"amount": {"min": 0.02}},
+                "precision": {"amount": 1.0},
+            }
+
+    client = _Client()
+
+    @staticmethod
+    def _map_symbol(symbol: str) -> str:
+        return symbol
+
+
 class TaskHelpersTest(SimpleTestCase):
     def test_extract_fee_from_fees_list(self):
         fee = _extract_fee_usdt({"fees": [{"cost": 0.11}, {"cost": "0.04"}]})
@@ -156,6 +178,13 @@ class TaskHelpersTest(SimpleTestCase):
     def test_market_min_qty_uses_precision_when_limits_missing(self):
         market = {"precision": {"amount": 0}}
         self.assertEqual(_market_min_qty(market, fallback=0.0), 1.0)
+
+    def test_market_min_qty_uses_tick_size_precision_mode(self):
+        market = {
+            "limits": {"amount": {"min": 0.02}},
+            "precision": {"amount": 1.0},
+        }
+        self.assertEqual(_market_min_qty(market, fallback=0.0, precision_mode=4), 1.0)
 
     @override_settings(
         TP_SL_FEE_ADJUST_ENABLED=True,
@@ -204,6 +233,10 @@ class TaskHelpersTest(SimpleTestCase):
     def test_normalize_order_qty_does_not_fallback_to_raw_when_precision_fails(self):
         adapter = _DummyAdapterPrecisionError()
         self.assertEqual(_normalize_order_qty(adapter, "SOL/USDT:USDT", 0.1024), 0.0)
+
+    def test_normalize_order_qty_respects_tick_size_precision_mode(self):
+        adapter = _DummyAdapterPrecisionTickSize()
+        self.assertEqual(_normalize_order_qty(adapter, "SOL/USDT:USDT", 0.3), 0.0)
 
     def test_extract_trigger_price_prefers_unified_and_info(self):
         self.assertEqual(_extract_trigger_price({"triggerPrice": "123.4"}), 123.4)
