@@ -50,13 +50,23 @@ def _collect_output_text(resp_json: dict[str, Any]) -> str:
     for msg in resp_json.get("output", []) or []:
         if not isinstance(msg, dict):
             continue
+        direct_text = str(msg.get("text") or "").strip()
+        if direct_text:
+            chunks.append(direct_text)
         for item in msg.get("content", []) or []:
             if not isinstance(item, dict):
                 continue
-            if item.get("type") == "output_text":
-                part = str(item.get("text") or "")
-                if part:
-                    chunks.append(part)
+            item_type = str(item.get("type") or "").strip().lower()
+            part = str(item.get("text") or "").strip()
+            if part and item_type in {"output_text", "text"}:
+                chunks.append(part)
+                continue
+            # Structured formats may return parsed JSON in content instead of text.
+            if "json" in item:
+                try:
+                    chunks.append(json.dumps(item.get("json"), ensure_ascii=True, separators=(",", ":")))
+                except Exception:
+                    pass
     return "\n".join(chunks).strip()
 
 
@@ -96,6 +106,30 @@ def _build_responses_body(
         ],
         "max_output_tokens": reserve_out,
     }
+    # GPT-5 models can consume output budget in hidden reasoning and return empty visible text.
+    # Force minimal reasoning effort and strict JSON shape for deterministic parsing.
+    if str(cfg.provider or "").strip().lower() == "openai":
+        body.setdefault("reasoning", {"effort": "minimal"})
+        body.setdefault(
+            "text",
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "ai_gate_decision",
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "allow": {"type": "boolean"},
+                            "risk_mult": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "reason": {"type": "string", "maxLength": 160},
+                        },
+                        "required": ["allow", "risk_mult", "reason"],
+                    },
+                    "strict": True,
+                }
+            },
+        )
     if _supports_sampling_controls(cfg.model_name):
         body["temperature"] = float(cfg.temperature)
         body["top_p"] = float(cfg.top_p)

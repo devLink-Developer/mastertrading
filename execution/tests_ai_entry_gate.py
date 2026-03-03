@@ -4,6 +4,7 @@ from core.models import ApiProviderConfig
 from execution.ai_entry_gate import (
     _build_gate_messages,
     _build_responses_body,
+    _collect_output_text,
     _compact_payload,
     _dir_code,
     _extract_json_blob,
@@ -109,6 +110,11 @@ class AiEntryGateRequestBodyTest(SimpleTestCase):
         )
         self.assertNotIn("temperature", body)
         self.assertNotIn("top_p", body)
+        self.assertEqual((body.get("reasoning") or {}).get("effort"), "minimal")
+        self.assertEqual(
+            (((body.get("text") or {}).get("format") or {}).get("type")),
+            "json_schema",
+        )
 
     def test_build_body_strips_sampling_controls_injected_via_extra_params(self):
         cfg = self._cfg(
@@ -124,6 +130,62 @@ class AiEntryGateRequestBodyTest(SimpleTestCase):
         self.assertNotIn("temperature", body)
         self.assertNotIn("top_p", body)
         self.assertEqual(body.get("foo"), "bar")
+
+    def test_build_body_allows_overriding_reasoning_or_text_from_extra_params(self):
+        cfg = self._cfg(
+            "gpt-5",
+            extra_params={
+                "reasoning": {"effort": "low"},
+                "text": {"format": {"type": "text"}},
+            },
+        )
+        body = _build_responses_body(
+            cfg=cfg,
+            system_msg="sys",
+            user_msg="usr",
+            reserve_out=100,
+        )
+        self.assertEqual((body.get("reasoning") or {}).get("effort"), "low")
+        self.assertEqual((((body.get("text") or {}).get("format") or {}).get("type")), "text")
+
+
+class AiEntryGateCollectOutputText(SimpleTestCase):
+    def test_collect_output_text_reads_message_after_reasoning(self):
+        data = {
+            "output_text": None,
+            "output": [
+                {"type": "reasoning", "summary": []},
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": '{"allow":true,"risk_mult":0.9,"reason":"ok"}',
+                        }
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(_collect_output_text(data), '{"allow":true,"risk_mult":0.9,"reason":"ok"}')
+
+    def test_collect_output_text_reads_structured_json_content(self):
+        data = {
+            "output_text": "",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_json",
+                            "json": {"allow": False, "risk_mult": 0.4, "reason": "spread"},
+                        }
+                    ],
+                }
+            ],
+        }
+        txt = _collect_output_text(data)
+        self.assertIn('"allow":false', txt)
+        self.assertIn('"risk_mult":0.4', txt)
 
 
 class AiEntryGatePromptCompactTest(SimpleTestCase):
