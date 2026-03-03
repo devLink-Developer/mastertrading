@@ -52,6 +52,7 @@ from risk.notifications import (
 )
 from execution.ml_entry_filter import load_model, predict_entry_success_probability
 from execution.ai_entry_gate import evaluate_ai_entry_gate
+from execution.ai_exit_gate import evaluate_ai_exit_gate
 from execution.risk_policy import (
     max_daily_trades_for_adx as _shared_max_daily_trades_for_adx,
     volatility_adjusted_risk as _shared_volatility_adjusted_risk,
@@ -3592,6 +3593,12 @@ def _manage_open_position(
     contract_size: float,
     leverage: float,
     equity_usdt: float,
+    current_session: str,
+    account_ai_enabled: bool,
+    account_ai_config_id: int | None,
+    account_owner_id: int | None,
+    account_alias: str,
+    account_service: str,
 ) -> tuple[bool, bool, str, int]:
     """
     Manage an already-open exchange position.
@@ -3912,6 +3919,140 @@ def _manage_open_position(
                     return True, allow_scale_entry, scale_parent_correlation, scale_add_index
         except Exception as exc:
             logger.debug("Downtrend long killer check failed for %s: %s", symbol, exc)
+
+    # AI-assisted early TP exit (conservative): only near TP, never increases risk.
+    if (
+        bool(getattr(settings, "AI_EXIT_GATE_ENABLED", True))
+        and last
+        and entry_price
+        and tp_pct_pos > 0
+        and sl_pct_pos > 0
+    ):
+        pnl_pct_live_gross = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+        pnl_pct_live_gate, _ = _tp_sl_gate_pnl_pct(pnl_pct_live_gross)
+        near_tp_ratio = float(getattr(settings, "AI_EXIT_GATE_NEAR_TP_RATIO", 0.88) or 0.88)
+        near_tp_ratio = max(0.50, min(0.99, near_tp_ratio))
+        near_tp_trigger = tp_pct_pos * near_tp_ratio
+        min_r = max(0.0, float(getattr(settings, "AI_EXIT_GATE_MIN_R", 0.8) or 0.8))
+        r_multiple_live = pnl_pct_live_gate / sl_pct_pos if sl_pct_pos > 0 else 0.0
+        if (
+            pnl_pct_live_gate > 0
+            and pnl_pct_live_gate >= near_tp_trigger
+            and pnl_pct_live_gate < tp_pct_pos
+            and r_multiple_live >= min_r
+        ):
+            eval_allowed = True
+            state_key = _position_state_key(symbol, pos_opened_at, entry_price)
+            recheck_sec = max(
+                10,
+                int(getattr(settings, "AI_EXIT_GATE_MIN_RECHECK_SECONDS", 45) or 45),
+            )
+            client = _redis_client()
+            if client is not None:
+                eval_key = f"ai_exit:last_eval:{state_key}"
+                try:
+                    eval_allowed = bool(client.set(eval_key, "1", nx=True, ex=recheck_sec))
+                except Exception:
+                    eval_allowed = True
+            if eval_allowed:
+                spread_bps_live = _spread_bps(ticker_used) if ticker_used else None
+                pos_age_min = None
+                if pos_opened_at:
+                    try:
+                        pos_age_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60.0
+                    except Exception:
+                        pos_age_min = None
+                should_close_early, ai_exit_reason, ai_exit_meta = evaluate_ai_exit_gate(
+                    account_ai_enabled=account_ai_enabled,
+                    account_ai_config_id=account_ai_config_id,
+                    account_owner_id=account_owner_id,
+                    account_alias=account_alias,
+                    account_service=account_service,
+                    symbol=inst.symbol,
+                    strategy_name=strategy_name,
+                    position_direction=pos_direction,
+                    sig_score=_to_float(getattr(sig, "score", 0.0)),
+                    atr=atr,
+                    spread_bps=spread_bps_live,
+                    tp_pct=tp_pct_pos,
+                    sl_pct=sl_pct_pos,
+                    pnl_pct_gross=pnl_pct_live_gross,
+                    pnl_pct_gate=pnl_pct_live_gate,
+                    r_multiple=r_multiple_live,
+                    remaining_tp_pct=max(0.0, tp_pct_pos - pnl_pct_live_gate),
+                    position_age_min=pos_age_min,
+                    session_name=current_session,
+                    sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+                )
+                if should_close_early:
+                    close_side = "sell" if current_qty > 0 else "buy"
+                    close_qty = abs(current_qty)
+                    try:
+                        close_resp = adapter.create_order(
+                            symbol,
+                            close_side,
+                            "market",
+                            close_qty,
+                            params={"reduceOnly": True},
+                        )
+                        close_fee = _extract_fee_usdt(close_resp)
+                        pnl_abs_exit = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+                        trade_side = "buy" if current_qty > 0 else "sell"
+                        dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+                        logger.info(
+                            "AI early TP exit %s: pnl_gate=%.4f tp=%.4f r=%.2f reason=%s cfg=%s",
+                            symbol,
+                            pnl_pct_live_gate,
+                            tp_pct_pos,
+                            r_multiple_live,
+                            ai_exit_reason,
+                            ai_exit_meta.get("cfg_alias", "n/a"),
+                        )
+                        _log_operation(
+                            inst,
+                            trade_side,
+                            close_qty,
+                            entry_price,
+                            last,
+                            reason="ai_tp_early_exit",
+                            signal_id=str(sig.id) if sig else "",
+                            correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                            leverage=leverage,
+                            equity_before=equity_usdt,
+                            equity_after=None,
+                            fee_usdt=close_fee,
+                            opened_at=pos_opened_at,
+                            contract_size=contract_size,
+                        )
+                        notify_trade_closed(
+                            inst.symbol,
+                            "ai_tp_early_exit",
+                            pnl_pct_live_gross,
+                            pnl_abs=pnl_abs_exit,
+                            entry_price=entry_price,
+                            exit_price=last,
+                            qty=close_qty,
+                            equity_before=equity_usdt,
+                            duration_min=dur_min,
+                            side=trade_side,
+                            leverage=leverage,
+                            strategy_name=strategy_name,
+                            active_modules=_signal_active_modules(sig_payload, strategy_name),
+                        )
+                        _mark_position_closed(inst)
+                        _track_consecutive_errors(symbol, success=True)
+                        return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+                    except Exception as exc:
+                        if _is_no_position_error(exc):
+                            logger.info("AI early exit skipped %s: no open position (%s)", symbol, exc)
+                            _mark_position_closed(inst)
+                            _track_consecutive_errors(symbol, success=True)
+                            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+                        logger.warning("Failed AI early exit %s: %s", symbol, exc)
+                        err_count = _track_consecutive_errors(symbol, success=False)
+                        if err_count >= settings.MAX_CONSECUTIVE_ERRORS:
+                            _create_risk_event("consecutive_errors", "critical", instrument=inst, details={"count": err_count})
+                            notify_kill_switch(f"{symbol}: {err_count} consecutive errors")
 
     # Regular TP/SL
     if last and entry_price:
@@ -4345,6 +4486,12 @@ def execute_orders():
             contract_size=contract_size,
             leverage=leverage,
             equity_usdt=equity_usdt,
+            current_session=current_session,
+            account_ai_enabled=account_ai_enabled,
+            account_ai_config_id=account_ai_config_id,
+            account_owner_id=account_owner_id,
+            account_alias=account_alias,
+            account_service=account_service,
         )
         if skip_symbol:
             continue

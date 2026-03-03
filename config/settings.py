@@ -238,6 +238,27 @@ AI_ENTRY_GATE_MAX_OUTPUT_TOKENS = max(
     int(os.getenv("AI_ENTRY_GATE_MAX_OUTPUT_TOKENS", "96")),
 )
 AI_ENTRY_GATE_NOTIFY_ERRORS = os.getenv("AI_ENTRY_GATE_NOTIFY_ERRORS", "true").lower() == "true"
+# -- AI exit gate (early TP protection) --
+AI_EXIT_GATE_ENABLED = os.getenv("AI_EXIT_GATE_ENABLED", "true").lower() == "true"
+AI_EXIT_GATE_ONLY_ALLOCATOR = os.getenv("AI_EXIT_GATE_ONLY_ALLOCATOR", "true").lower() == "true"
+AI_EXIT_GATE_DEFAULT_PROVIDER = os.getenv("AI_EXIT_GATE_DEFAULT_PROVIDER", AI_ENTRY_GATE_DEFAULT_PROVIDER).strip().lower()
+AI_EXIT_GATE_MAX_OUTPUT_TOKENS = max(
+    32,
+    int(os.getenv("AI_EXIT_GATE_MAX_OUTPUT_TOKENS", "96")),
+)
+AI_EXIT_GATE_NOTIFY_ERRORS = os.getenv("AI_EXIT_GATE_NOTIFY_ERRORS", "true").lower() == "true"
+AI_EXIT_GATE_NEAR_TP_RATIO = max(
+    0.50,
+    min(0.99, float(os.getenv("AI_EXIT_GATE_NEAR_TP_RATIO", "0.88"))),
+)
+AI_EXIT_GATE_MIN_R = max(
+    0.0,
+    float(os.getenv("AI_EXIT_GATE_MIN_R", "0.8")),
+)
+AI_EXIT_GATE_MIN_RECHECK_SECONDS = max(
+    10,
+    int(os.getenv("AI_EXIT_GATE_MIN_RECHECK_SECONDS", "45")),
+)
 AI_FEEDBACK_CONTEXT_MAX_TOKENS = max(
     0,
     int(os.getenv("AI_FEEDBACK_CONTEXT_MAX_TOKENS", "700")),
