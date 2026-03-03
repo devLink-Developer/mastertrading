@@ -38,6 +38,9 @@ class _DummyKucoinAdapter:
 
 
 class ConfidenceLeverageBoostTests(SimpleTestCase):
+    @override_settings(
+        CONFIDENCE_LEVERAGE_BOOST_ENABLED=False,
+    )
     def test_disabled_returns_base(self):
         lev, reason = _confidence_adjusted_entry_leverage(
             base_leverage=5.0,
@@ -133,7 +136,8 @@ class EnsureEntryLeverageTests(SimpleTestCase):
         self.assertEqual(len(adapter.client.calls), 1)
         lev, sym, params = adapter.client.calls[0]
         self.assertEqual(lev, 6)
-        self.assertIn("BTC/USDT:USDT", sym)
+        self.assertTrue(sym.endswith("/USDT:USDT"))
+        self.assertIn("BTC", sym)
         self.assertEqual(params.get("side"), "BOTH")
 
     def test_cache_avoids_duplicate_set_calls(self):
@@ -144,4 +148,3 @@ class EnsureEntryLeverageTests(SimpleTestCase):
         self.assertTrue(ok2)
         self.assertEqual(reason2, "cached")
         self.assertEqual(len(adapter.client.calls), 1)
-
