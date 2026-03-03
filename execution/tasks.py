@@ -904,6 +904,93 @@ def _risk_based_qty(
     return qty
 
 
+def _confidence_adjusted_entry_leverage(
+    *,
+    base_leverage: float,
+    strategy_name: str,
+    sig_score: float,
+    ml_prob: float | None,
+    ml_enabled: bool,
+) -> tuple[float, str]:
+    """
+    Optional leverage boost for high-confidence entries.
+    Returns (entry_leverage, reason).
+    """
+    base = max(1.0, float(base_leverage or 1.0))
+    if not bool(getattr(settings, "CONFIDENCE_LEVERAGE_BOOST_ENABLED", False)):
+        return base, "disabled"
+    if bool(getattr(settings, "CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR", True)):
+        if not str(strategy_name or "").strip().lower().startswith("alloc_"):
+            return base, "non_allocator"
+
+    score_threshold = float(getattr(settings, "CONFIDENCE_LEVERAGE_SCORE_THRESHOLD", 0.90) or 0.90)
+    ml_threshold = float(getattr(settings, "CONFIDENCE_LEVERAGE_ML_PROB_THRESHOLD", 0.70) or 0.70)
+    require_both = bool(getattr(settings, "CONFIDENCE_LEVERAGE_REQUIRE_BOTH", False))
+
+    score_ok = float(sig_score or 0.0) >= score_threshold
+    ml_ok = bool(ml_enabled and ml_prob is not None and float(ml_prob) >= ml_threshold)
+    qualifies = (score_ok and ml_ok) if require_both else (score_ok or ml_ok)
+    if not qualifies:
+        return base, "below_threshold"
+
+    mult = max(1.0, float(getattr(settings, "CONFIDENCE_LEVERAGE_MULT", 1.30) or 1.30))
+    max_lev = max(base, float(getattr(settings, "CONFIDENCE_LEVERAGE_MAX", base) or base))
+    boosted = max(base, min(base * mult, max_lev))
+    return boosted, ("score+ml" if (score_ok and ml_ok) else ("score" if score_ok else "ml"))
+
+
+def _ensure_entry_leverage(adapter, symbol: str, target_leverage: float) -> tuple[bool, str]:
+    """
+    Best-effort per-symbol leverage setter before opening an order.
+    Uses adapter internals for ccxt set_leverage compatibility by exchange.
+    """
+    try:
+        client = getattr(adapter, "client", None)
+        if client is None or not hasattr(client, "set_leverage"):
+            return False, "unsupported"
+
+        target = int(max(1, round(float(target_leverage or 1.0))))
+        mapped = symbol
+        try:
+            if hasattr(adapter, "_map_symbol"):
+                mapped = str(adapter._map_symbol(symbol))
+        except Exception:
+            mapped = symbol
+
+        cache = getattr(adapter, "_symbol_leverage_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            try:
+                setattr(adapter, "_symbol_leverage_cache", cache)
+            except Exception:
+                cache = {}
+
+        prev = cache.get(mapped)
+        if prev == target:
+            return True, "cached"
+
+        adapter_name = str(adapter.__class__.__name__ or "").strip().lower()
+        if "bingx" in adapter_name:
+            try:
+                client.set_leverage(target, mapped, {"side": "BOTH"})
+            except Exception:
+                client.set_leverage(target, mapped, {"side": "LONG"})
+                client.set_leverage(target, mapped, {"side": "SHORT"})
+        elif "kucoin" in adapter_name:
+            margin_mode = str(getattr(adapter, "margin_mode", "cross") or "cross")
+            client.set_leverage(target, mapped, {"marginMode": margin_mode})
+        else:
+            client.set_leverage(target, mapped)
+
+        cache[mapped] = target
+        lev_set = getattr(adapter, "_leverage_set_symbols", None)
+        if isinstance(lev_set, set):
+            lev_set.add(mapped)
+        return True, "ok"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def _volatility_adjusted_risk(symbol: str, atr_pct: float | None, base_risk: float) -> float:
     """Backward-compatible wrapper to shared risk sizing policy."""
     return _shared_volatility_adjusted_risk(symbol, atr_pct, base_risk)
@@ -3205,6 +3292,24 @@ def _attempt_entry_open(
         )
     ai_risk_mult = max(0.0, min(float(ai_risk_mult), 1.0))
 
+    entry_leverage, lev_reason = _confidence_adjusted_entry_leverage(
+        base_leverage=leverage,
+        strategy_name=strategy_name,
+        sig_score=sig_score,
+        ml_prob=ml_prob,
+        ml_enabled=ml_entry_filter_enabled,
+    )
+    if entry_leverage > float(leverage or 0):
+        logger.info(
+            "Confidence leverage boost on %s: %.2fx -> %.2fx (%s; sig=%.3f ml=%s)",
+            inst.symbol,
+            float(leverage or 0),
+            entry_leverage,
+            lev_reason,
+            sig_score,
+            f"{ml_prob:.3f}" if ml_prob is not None else "n/a",
+        )
+
     inst_notional = 0.0
     try:
         pos_obj = Position.objects.filter(instrument=inst, is_open=True).first()
@@ -3212,7 +3317,7 @@ def _attempt_entry_open(
             inst_notional = float(pos_obj.notional_usdt or 0)
     except Exception:
         pass
-    max_inst_notional = equity_usdt * settings.MAX_EXPOSURE_PER_INSTRUMENT_PCT * leverage
+    max_inst_notional = equity_usdt * settings.MAX_EXPOSURE_PER_INSTRUMENT_PCT * entry_leverage
     if inst_notional >= max_inst_notional and max_inst_notional > 0:
         logger.info("Per-instrument exposure cap reached for %s (%.2f >= %.2f)", symbol, inst_notional, max_inst_notional)
         return 0, 0.0
@@ -3290,6 +3395,19 @@ def _attempt_entry_open(
     if effective_risk_pct <= 0:
         return 0, 0.0
 
+    lev_ok, lev_set_reason = _ensure_entry_leverage(adapter, symbol, entry_leverage)
+    if not lev_ok:
+        if entry_leverage > float(leverage or 0):
+            logger.warning(
+                "Leverage boost fallback to base on %s: target=%.2fx err=%s",
+                inst.symbol,
+                entry_leverage,
+                lev_set_reason,
+            )
+        entry_leverage = max(1.0, float(leverage or 1.0))
+    elif lev_set_reason not in {"cached", "ok"}:
+        logger.info("Leverage set status on %s: %s", inst.symbol, lev_set_reason)
+
     stop_dist = float(sl_pct or 0.0) if atr is not None else 0.0
     min_atr_for_entry = float(getattr(settings, "MIN_ATR_FOR_ENTRY", 0.003) or 0.003)
     if atr is not None and atr < min_atr_for_entry:
@@ -3307,7 +3425,7 @@ def _attempt_entry_open(
             last_price,
             stop_dist,
             contract_size,
-            leverage,
+            entry_leverage,
             risk_pct=effective_risk_pct,
         )
     else:
@@ -3387,7 +3505,7 @@ def _attempt_entry_open(
     max_qty_margin = _normalize_order_qty(
         adapter,
         symbol,
-        (usable_margin * leverage if leverage else usable_margin) / (last_price * contract_size),
+        (usable_margin * entry_leverage if entry_leverage else usable_margin) / (last_price * contract_size),
     )
     if max_qty_margin < min_qty:
         logger.info(
@@ -3411,7 +3529,7 @@ def _attempt_entry_open(
         qty = max_qty_margin
         notional_order = last_price * contract_size * qty
 
-    required_margin = notional_order / leverage if leverage else notional_order
+    required_margin = notional_order / entry_leverage if entry_leverage else notional_order
     if required_margin > usable_margin:
         logger.info(
             "Margin insufficient %s: need=%.2f usable=%.2f free=%.2f",
@@ -3453,7 +3571,7 @@ def _attempt_entry_open(
             price=last_price,
             status=Order.OrderStatus.NEW,
             correlation_id=correlation_id,
-            leverage=leverage,
+            leverage=entry_leverage,
             margin_mode=getattr(adapter, "margin_mode", ""),
             notional_usdt=notional_order,
             opened_at=dj_tz.now(),
@@ -3461,7 +3579,13 @@ def _attempt_entry_open(
         )
 
     try:
-        resp = adapter.create_order(symbol, side, "market", float(order.qty))
+        order_params = None
+        if "kucoin" in str(adapter.__class__.__name__ or "").strip().lower():
+            order_params = {
+                "leverage": int(max(1, round(float(entry_leverage or 1.0)))),
+                "marginMode": str(getattr(adapter, "margin_mode", "cross") or "cross"),
+            }
+        resp = adapter.create_order(symbol, side, "market", float(order.qty), params=order_params)
         order.status = Order.OrderStatus.FILLED
         order.exchange_order_id = resp.get("id") or resp.get("orderId", "")
         order.raw_response = resp
@@ -3490,7 +3614,7 @@ def _attempt_entry_open(
 
         notify_trade_opened(
             inst.symbol, side, float(qty), last_price,
-            sl=sl_price, tp=tp_price, leverage=float(leverage or 0),
+            sl=sl_price, tp=tp_price, leverage=float(entry_leverage or 0),
             notional=notional_order, equity=equity_usdt,
             risk_pct=effective_risk_pct,
             score=float(sig.score) if sig else 0,

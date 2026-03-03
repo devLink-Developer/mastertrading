@@ -259,6 +259,26 @@ AI_EXIT_GATE_MIN_RECHECK_SECONDS = max(
     10,
     int(os.getenv("AI_EXIT_GATE_MIN_RECHECK_SECONDS", "45")),
 )
+# -- Confidence leverage boost (optional) --
+CONFIDENCE_LEVERAGE_BOOST_ENABLED = os.getenv("CONFIDENCE_LEVERAGE_BOOST_ENABLED", "false").lower() == "true"
+CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR = os.getenv("CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR", "true").lower() == "true"
+CONFIDENCE_LEVERAGE_SCORE_THRESHOLD = max(
+    0.0,
+    min(1.0, float(os.getenv("CONFIDENCE_LEVERAGE_SCORE_THRESHOLD", "0.90"))),
+)
+CONFIDENCE_LEVERAGE_ML_PROB_THRESHOLD = max(
+    0.0,
+    min(1.0, float(os.getenv("CONFIDENCE_LEVERAGE_ML_PROB_THRESHOLD", "0.70"))),
+)
+CONFIDENCE_LEVERAGE_REQUIRE_BOTH = os.getenv("CONFIDENCE_LEVERAGE_REQUIRE_BOTH", "false").lower() == "true"
+CONFIDENCE_LEVERAGE_MULT = max(
+    1.0,
+    float(os.getenv("CONFIDENCE_LEVERAGE_MULT", "1.30")),
+)
+CONFIDENCE_LEVERAGE_MAX = max(
+    1.0,
+    float(os.getenv("CONFIDENCE_LEVERAGE_MAX", "8.0")),
+)
 AI_FEEDBACK_CONTEXT_MAX_TOKENS = max(
     0,
     int(os.getenv("AI_FEEDBACK_CONTEXT_MAX_TOKENS", "700")),
