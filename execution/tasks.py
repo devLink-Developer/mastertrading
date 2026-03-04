@@ -3171,6 +3171,52 @@ def _regime_directional_risk_mult(
     return 1.0, False, "neutral"
 
 
+def _bull_short_retrace_precheck(
+    *,
+    symbol: str,
+    strategy_name: str,
+    signal_direction: str,
+    regime_bias: str,
+    sig_score: float,
+    sig_payload: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    """
+    Pre-AI deterministic guard:
+    In bull regime, only allow shorts when retracement probability is high enough
+    by score + module evidence. This reduces repeated low-quality AI calls.
+    """
+    if not bool(getattr(settings, "REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED", True)):
+        return True, "disabled"
+    direction = str(signal_direction or "").strip().lower()
+    bias = str(regime_bias or "neutral").strip().lower()
+    if direction != "short" or bias != "bull":
+        return True, "n/a"
+
+    score = _to_float(sig_score)
+    min_score = max(
+        0.0,
+        min(1.0, _to_float(getattr(settings, "REGIME_BULL_SHORT_RETRACE_MIN_SCORE", 0.88))),
+    )
+    if score < min_score:
+        return False, f"bull_short_low_retrace_score:{score:.3f}<{min_score:.3f}"
+
+    active_modules = set(_signal_active_modules(sig_payload if isinstance(sig_payload, dict) else {}, strategy_name))
+    allowed_modules = getattr(settings, "REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES", {"meanrev", "smc", "carry"})
+    if not isinstance(allowed_modules, (set, list, tuple)):
+        allowed_modules = {"meanrev", "smc", "carry"}
+    allowed_set = {str(m).strip().lower() for m in allowed_modules if str(m).strip()}
+    if not allowed_set:
+        allowed_set = {"meanrev", "smc", "carry"}
+    needed = max(
+        1,
+        int(getattr(settings, "REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES", 1) or 1),
+    )
+    matched = active_modules & allowed_set
+    if len(matched) < needed:
+        return False, f"bull_short_low_retrace_modules:{','.join(sorted(active_modules)) or 'none'}"
+    return True, "ok"
+
+
 def _resolve_signal_direction(strategy_name: str) -> tuple[str, str]:
     strategy_name = str(strategy_name or "").strip().lower()
     signal_direction = "flat"
@@ -3356,6 +3402,23 @@ def _attempt_entry_open(
             sig_score,
             exec_min_score,
             current_session if session_policy_enabled else "n/a",
+        )
+        return 0, 0.0
+
+    regime_bias = str(regime_bias_by_symbol.get(inst.symbol, "neutral") or "neutral").strip().lower()
+    retrace_ok, retrace_reason = _bull_short_retrace_precheck(
+        symbol=inst.symbol,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        regime_bias=regime_bias,
+        sig_score=sig_score,
+        sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+    )
+    if not retrace_ok:
+        logger.info(
+            "Pre-AI bull short retrace gate blocked %s: reason=%s",
+            inst.symbol,
+            retrace_reason,
         )
         return 0, 0.0
 
@@ -3561,7 +3624,6 @@ def _attempt_entry_open(
             ai_reason,
         )
     ai_risk_mult = max(0.0, min(float(ai_risk_mult), 1.0))
-    regime_bias = str(regime_bias_by_symbol.get(inst.symbol, "neutral") or "neutral").strip().lower()
     regime_mult, regime_blocked, regime_reason = _regime_directional_risk_mult(
         inst.symbol,
         signal_direction,

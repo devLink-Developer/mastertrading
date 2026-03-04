@@ -342,6 +342,21 @@ REGIME_BEAR_LONG_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BEAR_LONG_
 REGIME_BULL_SHORT_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BULL_SHORT_PENALTY", "0.10"))))
 BTC_BEAR_LONG_BLOCK_ENABLED = os.getenv("BTC_BEAR_LONG_BLOCK_ENABLED", "false").lower() == "true"
 REGIME_BULL_SHORT_BLOCK_ENABLED = os.getenv("REGIME_BULL_SHORT_BLOCK_ENABLED", "false").lower() == "true"
+REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED = (
+    os.getenv("REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED", "true").lower() == "true"
+)
+REGIME_BULL_SHORT_RETRACE_MIN_SCORE = max(
+    0.0,
+    min(1.0, float(os.getenv("REGIME_BULL_SHORT_RETRACE_MIN_SCORE", "0.88"))),
+)
+REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES = max(
+    1,
+    min(3, int(os.getenv("REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES", "1"))),
+)
+_REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES_RAW = os.getenv(
+    "REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES",
+    "meanrev,smc,carry",
+)
 
 # -- Signal flip min age gate --
 # Prevent signal_flip close if position is younger than N minutes.
@@ -715,6 +730,12 @@ def _parse_session_set(raw: str) -> set[str]:
 
 def _parse_symbol_set(raw: str) -> set[str]:
     return set(_parse_symbol_list(raw))
+
+
+_regime_bull_short_modules = set(_parse_strategy_list(_REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES_RAW))
+REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES = (
+    _regime_bull_short_modules if _regime_bull_short_modules else {"meanrev", "smc", "carry"}
+)
 
 
 # -- Multi-strategy portfolio controls --

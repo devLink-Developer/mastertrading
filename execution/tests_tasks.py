@@ -40,6 +40,7 @@ from execution.tasks import (
     _signal_entry_reason,
     _is_macro_high_impact_window,
     _regime_adx_min_for_symbol_session,
+    _bull_short_retrace_precheck,
     _regime_directional_risk_mult,
     _volume_activity_ratio,
     _volume_gate_allowed,
@@ -637,6 +638,60 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertTrue(blocked)
         self.assertEqual(mult, 0.0)
         self.assertEqual(reason, "bull_short_block")
+
+    @override_settings(
+        REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED=True,
+        REGIME_BULL_SHORT_RETRACE_MIN_SCORE=0.88,
+        REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES=1,
+        REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES={"meanrev", "smc", "carry"},
+    )
+    def test_bull_short_retrace_precheck_blocks_low_score(self):
+        ok, reason = _bull_short_retrace_precheck(
+            symbol="BTCUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            regime_bias="bull",
+            sig_score=0.72,
+            sig_payload={"reasons": {"module_rows": [{"module": "carry"}]}},
+        )
+        self.assertFalse(ok)
+        self.assertIn("bull_short_low_retrace_score", reason)
+
+    @override_settings(
+        REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED=True,
+        REGIME_BULL_SHORT_RETRACE_MIN_SCORE=0.88,
+        REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES=1,
+        REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES={"meanrev", "smc", "carry"},
+    )
+    def test_bull_short_retrace_precheck_blocks_without_retrace_modules(self):
+        ok, reason = _bull_short_retrace_precheck(
+            symbol="BTCUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            regime_bias="bull",
+            sig_score=0.93,
+            sig_payload={"reasons": {"module_rows": [{"module": "trend"}]}},
+        )
+        self.assertFalse(ok)
+        self.assertIn("bull_short_low_retrace_modules", reason)
+
+    @override_settings(
+        REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED=True,
+        REGIME_BULL_SHORT_RETRACE_MIN_SCORE=0.88,
+        REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES=1,
+        REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES={"meanrev", "smc", "carry"},
+    )
+    def test_bull_short_retrace_precheck_allows_high_score_with_retrace_module(self):
+        ok, reason = _bull_short_retrace_precheck(
+            symbol="BTCUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            regime_bias="bull",
+            sig_score=0.92,
+            sig_payload={"reasons": {"module_rows": [{"module": "carry"}, {"module": "trend"}]}},
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "ok")
 
     @override_settings(
         REGIME_DIRECTIONAL_PENALTY_ENABLED=False,
