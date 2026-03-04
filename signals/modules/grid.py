@@ -52,6 +52,11 @@ def detect(
     if df_ltf.empty or df_htf.empty or len(df_ltf) < 140 or len(df_htf) < 100:
         return None
 
+    symbol_norm = str(symbol or "").strip().upper()
+    allowed_symbols = set(getattr(settings, "MODULE_GRID_ALLOWED_SYMBOLS", set()) or set())
+    if allowed_symbols and symbol_norm not in allowed_symbols:
+        return None
+
     allowed_sessions = set(getattr(settings, "MODULE_GRID_ALLOWED_SESSIONS", set()) or set())
     if allowed_sessions and str(session).strip().lower() not in allowed_sessions:
         return None

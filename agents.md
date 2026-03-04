@@ -611,3 +611,9 @@ docker compose logs --tail=120 chatbot
 - `signals/tests_dynamic_weights.py`:
   - adaptado para `MODULE_ORDER` extendido (incluye `grid`).
 
+### 2026-03-04 update: grid solo BTC/ETH
+- Nuevo env var: `MODULE_GRID_ALLOWED_SYMBOLS`.
+- Default operativo en código y `.env.example`: `BTCUSDT,ETHUSDT`.
+- `signals/modules/grid.py` ahora bloquea emisión cuando el símbolo no está en el allowlist.
+- Cobertura agregada en `signals/tests_module_filters.py` para garantizar que `XRPUSDT` no emita grid si el allowlist es `BTCUSDT,ETHUSDT`.
+

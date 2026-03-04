@@ -610,6 +610,10 @@ def _parse_session_set(raw: str) -> set[str]:
     return {v for v in values if v in allowed}
 
 
+def _parse_symbol_set(raw: str) -> set[str]:
+    return set(_parse_symbol_list(raw))
+
+
 # -- Multi-strategy portfolio controls --
 MULTI_STRATEGY_ENABLED = os.getenv("MULTI_STRATEGY_ENABLED", "false").lower() == "true"
 MODULE_TREND_ENABLED = os.getenv("MODULE_TREND_ENABLED", "true").lower() == "true"
@@ -660,6 +664,9 @@ MODULE_GRID_IMPULSE_BLOCK_ENABLED = (
 )
 MODULE_GRID_ALLOWED_SESSIONS = _parse_session_set(
     os.getenv("MODULE_GRID_ALLOWED_SESSIONS", "asia,london,ny,overlap")
+)
+MODULE_GRID_ALLOWED_SYMBOLS = _parse_symbol_set(
+    os.getenv("MODULE_GRID_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
 )
 
 # SMC anti-chase gate (avoid entering right after displacement candles).

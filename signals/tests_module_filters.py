@@ -91,6 +91,7 @@ class ModuleImpulseFiltersTest(SimpleTestCase):
         MODULE_GRID_IMPULSE_BLOCK_ENABLED=False,
         MODULE_GRID_MIN_CONFIDENCE=0.20,
         MODULE_GRID_ALLOWED_SESSIONS={"london", "ny", "overlap", "asia"},
+        MODULE_GRID_ALLOWED_SYMBOLS={"BTCUSDT", "ETHUSDT"},
     )
     def test_grid_emits_short_on_range_upper_extreme(self):
         # Sideways/choppy structure with last candles stretched to the upper edge.
@@ -112,6 +113,7 @@ class ModuleImpulseFiltersTest(SimpleTestCase):
         MODULE_GRID_ADX_MIN=8.0,
         MODULE_GRID_ADX_MAX=22.0,
         MODULE_GRID_IMPULSE_BLOCK_ENABLED=False,
+        MODULE_GRID_ALLOWED_SYMBOLS={"BTCUSDT", "ETHUSDT"},
     )
     def test_grid_blocks_when_regime_gate_fails(self):
         vals = [100 + ((i % 8) - 4) * 0.15 for i in range(160)]
@@ -123,4 +125,31 @@ class ModuleImpulseFiltersTest(SimpleTestCase):
             patch("signals.modules.grid._regime_gate", return_value=(False, {"status": "blocked"})),
         ):
             out = grid_module.detect(df_ltf, df_htf, [], "london", symbol="BTCUSDT")
+        self.assertIsNone(out)
+
+    @override_settings(
+        MODULE_GRID_ADX_MIN=8.0,
+        MODULE_GRID_ADX_MAX=22.0,
+        MODULE_GRID_ATR_MIN_PCT=0.006,
+        MODULE_GRID_ATR_MAX_PCT=0.030,
+        MODULE_GRID_Z_ENTRY=1.0,
+        MODULE_GRID_RANGE_LOOKBACK=60,
+        MODULE_GRID_MIN_RANGE_WIDTH_PCT=0.004,
+        MODULE_GRID_EMA_GAP_MAX_PCT=0.05,
+        MODULE_GRID_IMPULSE_BLOCK_ENABLED=False,
+        MODULE_GRID_MIN_CONFIDENCE=0.20,
+        MODULE_GRID_ALLOWED_SESSIONS={"london", "ny", "overlap", "asia"},
+        MODULE_GRID_ALLOWED_SYMBOLS={"BTCUSDT", "ETHUSDT"},
+    )
+    def test_grid_blocks_symbol_outside_allowed_set(self):
+        base = [100 + ((i % 12) - 6) * 0.12 for i in range(140)]
+        vals = base + [102.0, 102.6, 103.2, 103.5]
+        df_ltf = _build_df(vals)
+        df_htf = _build_df([100 + ((i % 10) - 5) * 0.10 for i in range(140)])
+        with (
+            patch("signals.modules.grid.compute_adx", return_value=14.0),
+            patch("signals.modules.grid.compute_atr_pct", return_value=0.012),
+            patch("signals.modules.grid._regime_gate", return_value=(True, {"status": "ok"})),
+        ):
+            out = grid_module.detect(df_ltf, df_htf, [], "london", symbol="XRPUSDT")
         self.assertIsNone(out)
