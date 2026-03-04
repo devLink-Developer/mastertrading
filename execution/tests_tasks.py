@@ -35,6 +35,7 @@ from execution.tasks import (
     _signal_active_modules,
     _signal_entry_reason,
     _is_macro_high_impact_window,
+    _regime_adx_min_for_symbol_session,
     _regime_directional_risk_mult,
     _volume_activity_ratio,
     _volume_gate_allowed,
@@ -526,6 +527,33 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertFalse(blocked)
         self.assertAlmostEqual(mult, 1.0, places=6)
         self.assertEqual(reason, "disabled")
+
+    @override_settings(
+        MARKET_REGIME_ADX_MIN=17.0,
+        MARKET_REGIME_ADX_MIN_BY_CONTEXT={},
+    )
+    def test_regime_adx_min_resolver_falls_back_to_global(self):
+        out = _regime_adx_min_for_symbol_session("BTCUSDT", "asia", 17.0)
+        self.assertAlmostEqual(out, 17.0, places=6)
+
+    @override_settings(
+        MARKET_REGIME_ADX_MIN=17.0,
+        MARKET_REGIME_ADX_MIN_BY_CONTEXT={
+            "BTCUSDT:asia": 13.0,
+            "BTCUSDT:*": 14.0,
+            "*:asia": 15.0,
+            "*:*": 16.0,
+        },
+    )
+    def test_regime_adx_min_resolver_precedence(self):
+        btc_asia = _regime_adx_min_for_symbol_session("BTCUSDT", "asia", 17.0)
+        btc_london = _regime_adx_min_for_symbol_session("BTCUSDT", "london", 17.0)
+        eth_asia = _regime_adx_min_for_symbol_session("ETHUSDT", "asia", 17.0)
+        sol_ny = _regime_adx_min_for_symbol_session("SOLUSDT", "ny", 17.0)
+        self.assertAlmostEqual(btc_asia, 13.0, places=6)   # symbol+session
+        self.assertAlmostEqual(btc_london, 14.0, places=6)  # symbol wildcard session
+        self.assertAlmostEqual(eth_asia, 15.0, places=6)    # session wildcard symbol
+        self.assertAlmostEqual(sol_ny, 16.0, places=6)      # global wildcard
 
     @override_settings(
         TRAILING_STOP_ENABLED=True,

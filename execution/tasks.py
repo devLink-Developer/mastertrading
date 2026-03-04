@@ -2840,12 +2840,43 @@ def _load_enabled_instruments_and_latest_signals(
     return enabled_instruments, latest_signals, dj_tz.now()
 
 
+def _regime_adx_min_for_symbol_session(
+    symbol: str,
+    session_name: str,
+    default_min: float,
+) -> float:
+    """
+    Resolve ADX gate threshold for a symbol/session with layered fallbacks:
+      1) SYMBOL:session
+      2) SYMBOL:*
+      3) *:session
+      4) *:*
+      5) default_min
+    """
+    sym = str(symbol or "").strip().upper()
+    session = str(session_name or "").strip().lower()
+    resolved = max(0.0, float(default_min or 0.0))
+    raw_overrides = getattr(settings, "MARKET_REGIME_ADX_MIN_BY_CONTEXT", {}) or {}
+    if not isinstance(raw_overrides, dict):
+        return resolved
+    for key in (f"{sym}:{session}", f"{sym}:*", f"*:{session}", "*:*"):
+        if key not in raw_overrides:
+            continue
+        try:
+            return max(0.0, float(raw_overrides[key]))
+        except Exception:
+            continue
+    return resolved
+
+
 def _compute_regime_adx_gate(
     enabled_instruments: list[Instrument],
-) -> tuple[dict[str, float], set[str], float, float | None, dict[str, str]]:
+    current_session: str,
+) -> tuple[dict[str, float], set[str], float, float | None, dict[str, str], dict[str, float]]:
     _regime_adx_by_symbol: dict[str, float] = {}
     _regime_bias_by_symbol: dict[str, str] = {}
     _regime_adx_min = float(getattr(settings, "MARKET_REGIME_ADX_MIN", 0))
+    _regime_adx_min_by_symbol: dict[str, float] = {}
     try:
         from signals.modules.common import compute_adx as _compute_adx
         import pandas as _pd
@@ -2885,17 +2916,33 @@ def _compute_regime_adx_gate(
         )
         logger.info("Market regime ADX (1h per-instrument): %s", _adx_summary)
     _regime_blocked_symbols: set[str] = set()
-    if _regime_adx_min > 0:
+    if _regime_adx_min > 0 or bool(getattr(settings, "MARKET_REGIME_ADX_MIN_BY_CONTEXT", {})):
         for _sym, _adx_val in _regime_adx_by_symbol.items():
-            if _adx_val < _regime_adx_min:
+            _effective_min = _regime_adx_min_for_symbol_session(
+                _sym,
+                current_session,
+                _regime_adx_min,
+            )
+            _regime_adx_min_by_symbol[_sym] = _effective_min
+            if _effective_min > 0 and _adx_val < _effective_min:
                 _regime_blocked_symbols.add(_sym)
         if _regime_blocked_symbols:
             logger.warning(
-                "Market regime gate ACTIVE (per-instrument): ADX < %.1f Ã¢â‚¬â€ blocked: %s",
-                _regime_adx_min,
-                ", ".join(f"{s}({_regime_adx_by_symbol[s]:.1f})" for s in sorted(_regime_blocked_symbols)),
+                "Market regime gate ACTIVE (per-instrument/session=%s): blocked: %s",
+                current_session,
+                ", ".join(
+                    f"{s}(adx={_regime_adx_by_symbol[s]:.1f}<min={_regime_adx_min_by_symbol.get(s, _regime_adx_min):.1f})"
+                    for s in sorted(_regime_blocked_symbols)
+                ),
             )
-    return _regime_adx_by_symbol, _regime_blocked_symbols, _regime_adx_min, _market_regime_adx, _regime_bias_by_symbol
+    return (
+        _regime_adx_by_symbol,
+        _regime_blocked_symbols,
+        _regime_adx_min,
+        _market_regime_adx,
+        _regime_bias_by_symbol,
+        _regime_adx_min_by_symbol,
+    )
 
 
 def _regime_directional_risk_mult(
@@ -3011,6 +3058,7 @@ def _attempt_entry_open(
     macro_risk_mult: float,
     regime_blocked_symbols: set[str],
     regime_adx_by_symbol: dict[str, float],
+    regime_adx_min_by_symbol: dict[str, float],
     regime_bias_by_symbol: dict[str, str],
     regime_adx_min: float,
     market_regime_adx: float | None,
@@ -3066,11 +3114,12 @@ def _attempt_entry_open(
         return 0, 0.0
 
     if inst.symbol in regime_blocked_symbols and not allow_scale_entry:
+        effective_regime_adx_min = float(regime_adx_min_by_symbol.get(inst.symbol, regime_adx_min))
         logger.info(
             "Market regime gate blocked entry on %s: 1h ADX=%.1f < %.1f",
             inst.symbol,
             regime_adx_by_symbol.get(inst.symbol, 0),
-            regime_adx_min,
+            effective_regime_adx_min,
         )
         return 0, 0.0
 
@@ -4518,8 +4567,16 @@ def execute_orders():
     enabled_instruments, latest_signals, now_cycle = _load_enabled_instruments_and_latest_signals(
         use_allocator_signals,
     )
-    _regime_adx_by_symbol, _regime_blocked_symbols, _regime_adx_min, _market_regime_adx, _regime_bias_by_symbol = (
-        _compute_regime_adx_gate(enabled_instruments)
+    (
+        _regime_adx_by_symbol,
+        _regime_blocked_symbols,
+        _regime_adx_min,
+        _market_regime_adx,
+        _regime_bias_by_symbol,
+        _regime_adx_min_by_symbol,
+    ) = _compute_regime_adx_gate(
+        enabled_instruments,
+        current_session=current_session,
     )
 
     for inst in enabled_instruments:
@@ -4637,6 +4694,7 @@ def execute_orders():
             macro_risk_mult=macro_risk_mult,
             regime_blocked_symbols=_regime_blocked_symbols,
             regime_adx_by_symbol=_regime_adx_by_symbol,
+            regime_adx_min_by_symbol=_regime_adx_min_by_symbol,
             regime_bias_by_symbol=_regime_bias_by_symbol,
             regime_adx_min=_regime_adx_min,
             market_regime_adx=_market_regime_adx,

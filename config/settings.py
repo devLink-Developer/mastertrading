@@ -317,6 +317,18 @@ DAILY_TRADE_COUNT_TTL_SECONDS = max(60, int(os.getenv("DAILY_TRADE_COUNT_TTL_SEC
 # Block ALL new entries when BTC 1h ADX is below this threshold (choppy macro).
 # Set to 0 to disable.
 MARKET_REGIME_ADX_MIN = float(os.getenv("MARKET_REGIME_ADX_MIN", "0"))
+# Optional adaptive overrides by symbol/session.
+# Accepted keys:
+#   - "BTCUSDT:asia" (symbol + session)
+#   - "BTCUSDT:*" (symbol-only)
+#   - "*:asia" (session-only)
+#   - "*:*" (global fallback override)
+# Example:
+# {"BTCUSDT:asia":13.0,"ETHUSDT:asia":11.0}
+_MARKET_REGIME_ADX_MIN_BY_CONTEXT_RAW = os.getenv(
+    "MARKET_REGIME_ADX_MIN_BY_CONTEXT",
+    "{}",
+)
 REGIME_DIRECTIONAL_PENALTY_ENABLED = os.getenv("REGIME_DIRECTIONAL_PENALTY_ENABLED", "true").lower() == "true"
 REGIME_BEAR_LONG_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BEAR_LONG_PENALTY", "0.15"))))
 REGIME_BULL_SHORT_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BULL_SHORT_PENALTY", "0.10"))))
@@ -511,6 +523,34 @@ try:
     SESSION_RISK_MULTIPLIER = {k: float(v) for k, v in _json.loads(_SESSION_RISK_MULT_RAW).items()}
 except Exception:
     SESSION_RISK_MULTIPLIER = {}
+try:
+    _raw_regime_ctx = _parse_raw_mapping(_MARKET_REGIME_ADX_MIN_BY_CONTEXT_RAW)
+    _allowed_sessions = {"asia", "london", "ny", "overlap", "dead", "*"}
+    MARKET_REGIME_ADX_MIN_BY_CONTEXT = {}
+    for _k, _v in _raw_regime_ctx.items():
+        try:
+            _thr = max(0.0, float(_v))
+        except Exception:
+            continue
+        _key = str(_k).strip()
+        if not _key:
+            continue
+        if ":" in _key:
+            _sym_raw, _ses_raw = _key.split(":", 1)
+            _sym = _sym_raw.strip().upper() if _sym_raw.strip() != "*" else "*"
+            _ses = _ses_raw.strip().lower() if _ses_raw.strip() != "*" else "*"
+            if _ses not in _allowed_sessions:
+                continue
+            MARKET_REGIME_ADX_MIN_BY_CONTEXT[f"{_sym}:{_ses}"] = _thr
+            continue
+        _single = _key.strip()
+        _single_lower = _single.lower()
+        if _single_lower in _allowed_sessions:
+            MARKET_REGIME_ADX_MIN_BY_CONTEXT[f"*:{_single_lower}"] = _thr
+        else:
+            MARKET_REGIME_ADX_MIN_BY_CONTEXT[f"{_single.upper()}:*"] = _thr
+except Exception:
+    MARKET_REGIME_ADX_MIN_BY_CONTEXT = {}
 try:
     _raw_volume_by_session = _json.loads(_ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION_RAW)
     if isinstance(_raw_volume_by_session, dict):

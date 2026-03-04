@@ -49,6 +49,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `SESSION_RISK_MULTIPLIER` (json map)
 - `SESSION_DEAD_ZONE_BLOCK`
 - `MARKET_REGIME_ADX_MIN`
+- `MARKET_REGIME_ADX_MIN_BY_CONTEXT` (JSON overrides: `SYMBOL:session`, `SYMBOL:*`, `*:session`, `*:*`)
 - `REGIME_DIRECTIONAL_PENALTY_ENABLED`
 - `REGIME_BEAR_LONG_PENALTY`, `REGIME_BULL_SHORT_PENALTY`
 - `BTC_BEAR_LONG_BLOCK_ENABLED`

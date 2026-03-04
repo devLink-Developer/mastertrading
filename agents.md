@@ -617,3 +617,14 @@ docker compose logs --tail=120 chatbot
 - `signals/modules/grid.py` ahora bloquea emisión cuando el símbolo no está en el allowlist.
 - Cobertura agregada en `signals/tests_module_filters.py` para garantizar que `XRPUSDT` no emita grid si el allowlist es `BTCUSDT,ETHUSDT`.
 
+### 2026-03-04 update: ADX regime gate adaptativo por símbolo/sesión
+- Nuevo env var: `MARKET_REGIME_ADX_MIN_BY_CONTEXT` (JSON).
+- Precedencia de override:
+  1. `SYMBOL:session`
+  2. `SYMBOL:*`
+  3. `*:session`
+  4. `*:*`
+  5. fallback `MARKET_REGIME_ADX_MIN`
+- Integrado en `execution/tasks.py` para bloqueo de entradas por régimen.
+- Logging de bloqueo ahora muestra el umbral efectivo por símbolo.
+
