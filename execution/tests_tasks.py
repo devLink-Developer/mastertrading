@@ -11,6 +11,10 @@ from execution.models import OperationReport, Order
 from marketdata.models import Candle
 from risk.models import RiskEvent
 from execution.tasks import (
+    _ai_entry_market_fingerprint,
+    _ai_entry_mark_rejected,
+    _ai_entry_reject_cache_key,
+    _ai_entry_should_suppress_retry,
     _acquire_task_lock,
     _check_trailing_stop,
     _classify_exchange_close,
@@ -287,6 +291,111 @@ class TaskHelpersTest(SimpleTestCase):
                 places=8,
             )
 
+    @override_settings(AI_ENTRY_GATE_REJECT_COOLDOWN_ENABLED=True)
+    def test_ai_entry_reject_suppresses_retry_when_fingerprint_is_unchanged(self):
+        dummy = _DummyRedis()
+        fp = _ai_entry_market_fingerprint(
+            symbol="LINKUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            session_name="london",
+            sig_score=0.73456,
+            atr=0.01022,
+            spread_bps=4.38,
+            sl_pct=0.012,
+            sig_payload={
+                "reasons": {
+                    "net_score": -0.3345,
+                    "module_rows": [
+                        {
+                            "module": "trend",
+                            "direction": "short",
+                            "confidence": 0.81,
+                            "raw_score": 0.42,
+                        }
+                    ],
+                }
+            },
+        )
+        with patch("execution.tasks._redis_client", return_value=dummy):
+            _ai_entry_mark_rejected(
+                account_alias="rortigoza",
+                account_service="bingx",
+                symbol="LINKUSDT",
+                strategy_name="alloc_short",
+                signal_direction="short",
+                market_fingerprint=fp,
+                reason="short",
+            )
+            suppressed, reason = _ai_entry_should_suppress_retry(
+                account_alias="rortigoza",
+                account_service="bingx",
+                symbol="LINKUSDT",
+                strategy_name="alloc_short",
+                signal_direction="short",
+                market_fingerprint=fp,
+            )
+        self.assertTrue(suppressed)
+        self.assertEqual(reason, "short")
+
+    @override_settings(AI_ENTRY_GATE_REJECT_COOLDOWN_ENABLED=True)
+    def test_ai_entry_reject_does_not_suppress_when_market_fingerprint_changes(self):
+        dummy = _DummyRedis()
+        fp_old = _ai_entry_market_fingerprint(
+            symbol="LINKUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            session_name="london",
+            sig_score=0.70,
+            atr=0.0100,
+            spread_bps=4.0,
+            sl_pct=0.012,
+            sig_payload={},
+        )
+        fp_new = _ai_entry_market_fingerprint(
+            symbol="LINKUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            session_name="london",
+            sig_score=0.81,
+            atr=0.0112,
+            spread_bps=5.8,
+            sl_pct=0.012,
+            sig_payload={},
+        )
+        with patch("execution.tasks._redis_client", return_value=dummy):
+            _ai_entry_mark_rejected(
+                account_alias="rortigoza",
+                account_service="bingx",
+                symbol="LINKUSDT",
+                strategy_name="alloc_short",
+                signal_direction="short",
+                market_fingerprint=fp_old,
+                reason="short",
+            )
+            suppressed, _ = _ai_entry_should_suppress_retry(
+                account_alias="rortigoza",
+                account_service="bingx",
+                symbol="LINKUSDT",
+                strategy_name="alloc_short",
+                signal_direction="short",
+                market_fingerprint=fp_new,
+            )
+        self.assertFalse(suppressed)
+
+    def test_ai_entry_reject_cache_key_is_stable(self):
+        key = _ai_entry_reject_cache_key(
+            account_alias="Rortigoza",
+            account_service="BingX",
+            symbol="LINKUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+        )
+        self.assertEqual(
+            key,
+            "ai:entry:reject:rortigoza:bingx:linkusdt:alloc_short:short",
+        )
+
     def test_signal_active_modules_from_module_rows(self):
         payload = {
             "reasons": {
@@ -501,6 +610,7 @@ class TaskHelpersTest(SimpleTestCase):
         REGIME_BEAR_LONG_PENALTY=0.15,
         REGIME_BULL_SHORT_PENALTY=0.10,
         BTC_BEAR_LONG_BLOCK_ENABLED=True,
+        REGIME_BULL_SHORT_BLOCK_ENABLED=False,
     )
     def test_regime_directional_penalty_and_btc_block(self):
         mult1, blocked1, reason1 = _regime_directional_risk_mult("BTCUSDT", "long", "bear")
@@ -517,6 +627,16 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertFalse(blocked3)
         self.assertAlmostEqual(mult3, 0.90, places=6)
         self.assertEqual(reason3, "bull_short_penalty")
+
+    @override_settings(
+        REGIME_DIRECTIONAL_PENALTY_ENABLED=True,
+        REGIME_BULL_SHORT_BLOCK_ENABLED=True,
+    )
+    def test_regime_bull_short_can_be_hard_blocked(self):
+        mult, blocked, reason = _regime_directional_risk_mult("ETHUSDT", "short", "bull")
+        self.assertTrue(blocked)
+        self.assertEqual(mult, 0.0)
+        self.assertEqual(reason, "bull_short_block")
 
     @override_settings(
         REGIME_DIRECTIONAL_PENALTY_ENABLED=False,

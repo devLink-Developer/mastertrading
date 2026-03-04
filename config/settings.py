@@ -238,6 +238,14 @@ AI_ENTRY_GATE_MAX_OUTPUT_TOKENS = max(
     int(os.getenv("AI_ENTRY_GATE_MAX_OUTPUT_TOKENS", "96")),
 )
 AI_ENTRY_GATE_NOTIFY_ERRORS = os.getenv("AI_ENTRY_GATE_NOTIFY_ERRORS", "true").lower() == "true"
+AI_ENTRY_GATE_REJECT_COOLDOWN_ENABLED = os.getenv(
+    "AI_ENTRY_GATE_REJECT_COOLDOWN_ENABLED",
+    "true",
+).lower() == "true"
+AI_ENTRY_GATE_REJECT_COOLDOWN_SECONDS = max(
+    30,
+    int(os.getenv("AI_ENTRY_GATE_REJECT_COOLDOWN_SECONDS", "900")),
+)
 # -- AI exit gate (early TP protection) --
 AI_EXIT_GATE_ENABLED = os.getenv("AI_EXIT_GATE_ENABLED", "true").lower() == "true"
 AI_EXIT_GATE_ONLY_ALLOCATOR = os.getenv("AI_EXIT_GATE_ONLY_ALLOCATOR", "true").lower() == "true"
@@ -333,6 +341,7 @@ REGIME_DIRECTIONAL_PENALTY_ENABLED = os.getenv("REGIME_DIRECTIONAL_PENALTY_ENABL
 REGIME_BEAR_LONG_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BEAR_LONG_PENALTY", "0.15"))))
 REGIME_BULL_SHORT_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BULL_SHORT_PENALTY", "0.10"))))
 BTC_BEAR_LONG_BLOCK_ENABLED = os.getenv("BTC_BEAR_LONG_BLOCK_ENABLED", "false").lower() == "true"
+REGIME_BULL_SHORT_BLOCK_ENABLED = os.getenv("REGIME_BULL_SHORT_BLOCK_ENABLED", "false").lower() == "true"
 
 # -- Signal flip min age gate --
 # Prevent signal_flip close if position is younger than N minutes.

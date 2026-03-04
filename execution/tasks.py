@@ -187,6 +187,206 @@ def _safe_correlation_id(raw: str, max_len: int = 64) -> str:
     return txt[:max_len]
 
 
+def _ai_entry_reject_cooldown_enabled() -> bool:
+    return bool(getattr(settings, "AI_ENTRY_GATE_REJECT_COOLDOWN_ENABLED", True))
+
+
+def _ai_entry_reject_cooldown_seconds() -> int:
+    return max(
+        30,
+        int(getattr(settings, "AI_ENTRY_GATE_REJECT_COOLDOWN_SECONDS", 900) or 900),
+    )
+
+
+def _ai_entry_cache_token(raw: str, max_len: int = 64) -> str:
+    txt = str(raw or "").strip().lower()
+    txt = re.sub(r"[^a-z0-9_.:-]+", "_", txt)
+    txt = txt[:max_len].strip("_")
+    return txt or "na"
+
+
+def _ai_entry_reject_cache_key(
+    *,
+    account_alias: str,
+    account_service: str,
+    symbol: str,
+    strategy_name: str,
+    signal_direction: str,
+) -> str:
+    return (
+        "ai:entry:reject:"
+        f"{_ai_entry_cache_token(account_alias)}:"
+        f"{_ai_entry_cache_token(account_service)}:"
+        f"{_ai_entry_cache_token(symbol.upper())}:"
+        f"{_ai_entry_cache_token(strategy_name)}:"
+        f"{_ai_entry_cache_token(signal_direction)}"
+    )
+
+
+def _round_or_none(value: Any, ndigits: int) -> float | None:
+    if value is None:
+        return None
+    val = _to_float(value)
+    if not math.isfinite(val):
+        return None
+    return round(val, ndigits)
+
+
+def _ai_entry_market_fingerprint(
+    *,
+    symbol: str,
+    strategy_name: str,
+    signal_direction: str,
+    session_name: str,
+    sig_score: float,
+    atr: float | None,
+    spread_bps: float | None,
+    sl_pct: float,
+    sig_payload: dict[str, Any] | None,
+) -> str:
+    payload = sig_payload if isinstance(sig_payload, dict) else {}
+    reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
+    module_rows_in = reasons.get("module_rows") if isinstance(reasons, dict) else []
+    module_rows_out: list[list[Any]] = []
+    if isinstance(module_rows_in, list):
+        for row in module_rows_in[:8]:
+            if not isinstance(row, dict):
+                continue
+            module_rows_out.append(
+                [
+                    str(row.get("module") or "").strip().lower(),
+                    str(row.get("direction") or "").strip().lower()[:1],
+                    _round_or_none(row.get("confidence"), 3),
+                    _round_or_none(row.get("raw_score"), 3),
+                ]
+            )
+
+    compact = {
+        "sym": str(symbol or "").strip().upper(),
+        "st": str(strategy_name or "").strip().lower(),
+        "dir": str(signal_direction or "").strip().lower(),
+        "ses": str(session_name or "").strip().lower(),
+        "sc": _round_or_none(sig_score, 4),
+        "atr": _round_or_none(atr, 5),
+        "spr": _round_or_none(spread_bps, 2),
+        "sl": _round_or_none(sl_pct, 5),
+        "ns": _round_or_none(reasons.get("net_score"), 4) if isinstance(reasons, dict) else None,
+        "rb": _round_or_none(payload.get("risk_budget_pct"), 6),
+        "er": str(payload.get("entry_reason") or "").strip().lower()[:64] if payload else "",
+        "mr": module_rows_out,
+    }
+    raw = json.dumps(compact, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _ai_entry_should_suppress_retry(
+    *,
+    account_alias: str,
+    account_service: str,
+    symbol: str,
+    strategy_name: str,
+    signal_direction: str,
+    market_fingerprint: str,
+) -> tuple[bool, str]:
+    if not _ai_entry_reject_cooldown_enabled():
+        return False, ""
+    client = _redis_client()
+    if client is None:
+        return False, ""
+    key = _ai_entry_reject_cache_key(
+        account_alias=account_alias,
+        account_service=account_service,
+        symbol=symbol,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+    )
+    try:
+        raw = client.get(key)
+    except Exception:
+        return False, ""
+    if raw is None:
+        return False, ""
+
+    cached = _decode_redis_value(raw).strip()
+    if not cached:
+        return False, ""
+    cached_fp = cached
+    cached_reason = ""
+    if cached.startswith("{"):
+        try:
+            obj = json.loads(cached)
+            if isinstance(obj, dict):
+                cached_fp = str(obj.get("fp") or "").strip()
+                cached_reason = str(obj.get("reason") or "").strip()[:160]
+        except Exception:
+            pass
+    if cached_fp and cached_fp == market_fingerprint:
+        return True, cached_reason or "ai_reject_cached"
+    return False, ""
+
+
+def _ai_entry_mark_rejected(
+    *,
+    account_alias: str,
+    account_service: str,
+    symbol: str,
+    strategy_name: str,
+    signal_direction: str,
+    market_fingerprint: str,
+    reason: str,
+) -> None:
+    if not _ai_entry_reject_cooldown_enabled():
+        return
+    client = _redis_client()
+    if client is None:
+        return
+    key = _ai_entry_reject_cache_key(
+        account_alias=account_alias,
+        account_service=account_service,
+        symbol=symbol,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+    )
+    value = json.dumps(
+        {
+            "fp": str(market_fingerprint or "").strip(),
+            "reason": str(reason or "").strip()[:160],
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    try:
+        client.set(key, value, ex=_ai_entry_reject_cooldown_seconds())
+    except Exception:
+        return
+
+
+def _ai_entry_clear_reject_cache(
+    *,
+    account_alias: str,
+    account_service: str,
+    symbol: str,
+    strategy_name: str,
+    signal_direction: str,
+) -> None:
+    if not _ai_entry_reject_cooldown_enabled():
+        return
+    client = _redis_client()
+    if client is None:
+        return
+    key = _ai_entry_reject_cache_key(
+        account_alias=account_alias,
+        account_service=account_service,
+        symbol=symbol,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+    )
+    try:
+        client.delete(key)
+    except Exception:
+        return
+
+
 def _strategy_module_name(strategy_name: str) -> str:
     strategy_txt = str(strategy_name or "").strip().lower()
     if strategy_txt.startswith("alloc_"):
@@ -2964,6 +3164,8 @@ def _regime_directional_risk_mult(
         penalty = max(0.0, min(float(getattr(settings, "REGIME_BEAR_LONG_PENALTY", 0.15) or 0.15), 0.95))
         return (1.0 - penalty), False, "bear_long_penalty"
     if bias == "bull" and direction == "short":
+        if bool(getattr(settings, "REGIME_BULL_SHORT_BLOCK_ENABLED", False)):
+            return 0.0, True, "bull_short_block"
         penalty = max(0.0, min(float(getattr(settings, "REGIME_BULL_SHORT_PENALTY", 0.10) or 0.10), 0.95))
         return (1.0 - penalty), False, "bull_short_penalty"
     return 1.0, False, "neutral"
@@ -3283,6 +3485,33 @@ def _attempt_entry_open(
             )
         return 0, 0.0
 
+    ai_market_fp = _ai_entry_market_fingerprint(
+        symbol=inst.symbol,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        session_name=current_session,
+        sig_score=sig_score,
+        atr=atr,
+        spread_bps=spread_bps_selected,
+        sl_pct=sl_pct,
+        sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+    )
+    ai_retry_suppressed, ai_retry_reason = _ai_entry_should_suppress_retry(
+        account_alias=account_alias,
+        account_service=account_service,
+        symbol=inst.symbol,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        market_fingerprint=ai_market_fp,
+    )
+    if ai_retry_suppressed:
+        logger.info(
+            "AI gate retry suppressed on %s: unchanged market conditions (reason=%s)",
+            inst.symbol,
+            ai_retry_reason or "ai_reject_cached",
+        )
+        return 0, 0.0
+
     ai_risk_mult = 1.0
     ai_allow, ai_risk_mult, ai_reason, ai_meta = evaluate_ai_entry_gate(
         account_ai_enabled=account_ai_enabled,
@@ -3301,6 +3530,15 @@ def _attempt_entry_open(
         sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
     )
     if not ai_allow:
+        _ai_entry_mark_rejected(
+            account_alias=account_alias,
+            account_service=account_service,
+            symbol=inst.symbol,
+            strategy_name=strategy_name,
+            signal_direction=signal_direction,
+            market_fingerprint=ai_market_fp,
+            reason=ai_reason,
+        )
         logger.info(
             "AI gate blocked entry on %s: reason=%s cfg=%s",
             inst.symbol,
@@ -3308,6 +3546,13 @@ def _attempt_entry_open(
             ai_meta.get("cfg_alias", "n/a"),
         )
         return 0, 0.0
+    _ai_entry_clear_reject_cache(
+        account_alias=account_alias,
+        account_service=account_service,
+        symbol=inst.symbol,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+    )
     if ai_risk_mult < 1.0:
         logger.info(
             "AI gate risk reduction on %s: risk_mult=%.3f reason=%s",
