@@ -483,6 +483,63 @@ def _parse_raw_mapping(raw: str) -> dict:
         if key:
             out[key] = value
     return out
+
+
+def _parse_regime_context_mapping(raw: str) -> dict[str, float]:
+    """
+    Parse adaptive ADX context mapping.
+    Supports:
+      - JSON dict: {"BTCUSDT:asia": 13.0, "*:asia": 15}
+      - Relaxed map with braces: {BTCUSDT:asia:13.0,ETHUSDT:asia:11.0}
+      - Comma list: BTCUSDT:asia=13.0,ETHUSDT:asia=11.0
+    """
+    txt = (raw or "").strip()
+    if not txt:
+        return {}
+
+    out: dict[str, float] = {}
+    # Preferred: JSON object
+    try:
+        parsed = _json.loads(txt)
+        if isinstance(parsed, dict):
+            for k, v in parsed.items():
+                try:
+                    out[str(k).strip()] = max(0.0, float(v))
+                except Exception:
+                    continue
+            return out
+    except Exception:
+        pass
+
+    # Relaxed formats
+    if txt.startswith("{") and txt.endswith("}"):
+        txt = txt[1:-1]
+    for piece in txt.split(","):
+        item = piece.strip()
+        if not item:
+            continue
+        if "=" in item:
+            key, value = item.split("=", 1)
+        else:
+            parts = [p.strip() for p in item.split(":") if p.strip()]
+            if len(parts) >= 3:
+                key = f"{parts[0]}:{parts[1]}"
+                value = parts[2]
+            elif len(parts) == 2:
+                key, value = parts
+            else:
+                continue
+        key = str(key).strip().strip('"').strip("'")
+        value = str(value).strip().strip('"').strip("'")
+        if not key:
+            continue
+        try:
+            out[key] = max(0.0, float(value))
+        except Exception:
+            continue
+    return out
+
+
 try:
     PER_INSTRUMENT_RISK = {k: float(v) for k, v in _json.loads(_PER_INST_RISK_RAW).items()}
 except Exception:
@@ -524,14 +581,11 @@ try:
 except Exception:
     SESSION_RISK_MULTIPLIER = {}
 try:
-    _raw_regime_ctx = _parse_raw_mapping(_MARKET_REGIME_ADX_MIN_BY_CONTEXT_RAW)
+    _raw_regime_ctx = _parse_regime_context_mapping(_MARKET_REGIME_ADX_MIN_BY_CONTEXT_RAW)
     _allowed_sessions = {"asia", "london", "ny", "overlap", "dead", "*"}
     MARKET_REGIME_ADX_MIN_BY_CONTEXT = {}
     for _k, _v in _raw_regime_ctx.items():
-        try:
-            _thr = max(0.0, float(_v))
-        except Exception:
-            continue
+        _thr = max(0.0, float(_v))
         _key = str(_k).strip()
         if not _key:
             continue
