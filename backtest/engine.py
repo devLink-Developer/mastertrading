@@ -51,6 +51,7 @@ from signals.tasks import (
 from signals.modules.trend import detect as trend_detect
 from signals.modules.meanrev import detect as meanrev_detect
 from signals.modules.carry import detect as carry_detect
+from signals.modules.grid import detect as grid_detect
 from signals.allocator import (
     default_weight_map,
     default_risk_budget_map,
@@ -473,7 +474,7 @@ def run_backtest(
 
     for inst in instruments:
         candle_cache[inst.id] = {}
-        for tf in (ltf, htf, "1h"):  # Always load 1h for trend/meanrev modules
+        for tf in (ltf, htf, "1h"):  # Always load 1h for trend/meanrev/carry/grid modules
             if tf in candle_cache[inst.id]:
                 continue  # avoid duplicate loads if htf == "1h"
             df = load_candles(inst, tf, lookback_start, end)
@@ -576,7 +577,7 @@ def run_backtest(
                 ts_array = idx.values
             htf_idx_map[inst.id] = {"ts": ts_array, "df": df_htf_full}
 
-    # 1h index map for trend/meanrev/carry modules (mirrors live module_engine using 1h)
+    # 1h index map for trend/meanrev/carry/grid modules (mirrors live module_engine using 1h)
     htf_1h_idx_map: dict[int, dict] = {}
     for inst in instruments:
         df_1h = candle_cache[inst.id].get("1h", pd.DataFrame())
@@ -765,7 +766,7 @@ def run_backtest(
             else:
                 df_htf_slice = pd.DataFrame()
 
-            # 1h HTF slice for trend/meanrev/carry (mirrors live module_engine)
+            # 1h HTF slice for trend/meanrev/carry/grid (mirrors live module_engine)
             htf_1h_info = htf_1h_idx_map.get(inst.id)
             if htf_1h_info is not None:
                 ts_1h = htf_1h_info["ts"]
@@ -786,12 +787,19 @@ def run_backtest(
             if len(df_ltf_slice) < 30 or (len(df_htf_slice) < 30 and len(df_htf_1h_slice) < 30):
                 continue
 
-            # ── Run all 4 modules (mirrors live: each fires independently) ──
+            # ── Run module stack (mirrors live: each fires independently) ──
             session_str = session if session_policy_enabled else get_current_session(bar_ts.hour)
+            grid_enabled = bool(getattr(settings, "MODULE_GRID_ENABLED", False))
 
             # 1) Trend module (uses 1h HTF like live)
             try:
-                tr = trend_detect(df_ltf_slice, df_htf_1h_slice, funding_rates, session_str)
+                tr = trend_detect(
+                    df_ltf_slice,
+                    df_htf_1h_slice,
+                    funding_rates,
+                    session_str,
+                    symbol=inst.symbol,
+                )
                 if tr and tr.get("direction") in {"long", "short"}:
                     module_signal_cache[(inst.id, "trend")] = {"signal": {"module": "trend", **tr}, "ts": bar_ts}
             except Exception:
@@ -799,7 +807,13 @@ def run_backtest(
 
             # 2) Mean-reversion module (uses 1h HTF like live)
             try:
-                mr = meanrev_detect(df_ltf_slice, df_htf_1h_slice, funding_rates, session_str)
+                mr = meanrev_detect(
+                    df_ltf_slice,
+                    df_htf_1h_slice,
+                    funding_rates,
+                    session_str,
+                    symbol=inst.symbol,
+                )
                 if mr and mr.get("direction") in {"long", "short"}:
                     module_signal_cache[(inst.id, "meanrev")] = {"signal": {"module": "meanrev", **mr}, "ts": bar_ts}
             except Exception:
@@ -807,13 +821,37 @@ def run_backtest(
 
             # 3) Carry module (uses 1h HTF like live)
             try:
-                ca = carry_detect(df_ltf_slice, df_htf_1h_slice, funding_rates, session_str)
+                ca = carry_detect(
+                    df_ltf_slice,
+                    df_htf_1h_slice,
+                    funding_rates,
+                    session_str,
+                    symbol=inst.symbol,
+                )
                 if ca and ca.get("direction") in {"long", "short"}:
                     module_signal_cache[(inst.id, "carry")] = {"signal": {"module": "carry", **ca}, "ts": bar_ts}
             except Exception:
                 pass
 
-            # 4) SMC module (existing _detect_signal, uses 4h HTF)
+            # 4) Grid module (range-volatility mean reversion, uses 1h HTF like live module_engine)
+            if grid_enabled:
+                try:
+                    gr = grid_detect(
+                        df_ltf_slice,
+                        df_htf_1h_slice,
+                        funding_rates,
+                        session_str,
+                        symbol=inst.symbol,
+                    )
+                    if gr and gr.get("direction") in {"long", "short"}:
+                        module_signal_cache[(inst.id, "grid")] = {
+                            "signal": {"module": "grid", **gr},
+                            "ts": bar_ts,
+                        }
+                except Exception:
+                    pass
+
+            # 5) SMC module (existing _detect_signal, uses 4h HTF)
             smc_ok, smc_dir, smc_explain, smc_score = _detect_signal(
                 df_ltf_slice,
                 df_htf_slice,
@@ -839,7 +877,11 @@ def run_backtest(
 
             # ── Collect cached signals within TTL window (mirrors live DB read) ──
             module_signals: list[dict] = []
-            for mod_name in ("trend", "meanrev", "carry", "smc"):
+            module_order = ["trend", "meanrev", "carry"]
+            if grid_enabled:
+                module_order.append("grid")
+            module_order.append("smc")
+            for mod_name in module_order:
                 cached = module_signal_cache.get((inst.id, mod_name))
                 if cached is None:
                     continue
