@@ -794,6 +794,37 @@ ALLOCATOR_STRONG_TREND_SOLO_ENABLED = (
 ALLOCATOR_STRONG_TREND_ADX_MIN = max(
     0.0, float(os.getenv("ALLOCATOR_STRONG_TREND_ADX_MIN", "25.0"))
 )
+_ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT_RAW = os.getenv(
+    "ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT",
+    "{}",
+)
+try:
+    _raw_alloc_trend_ctx = _parse_regime_context_mapping(
+        _ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT_RAW
+    )
+    _allowed_sessions = {"asia", "london", "ny", "overlap", "dead", "*"}
+    ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT = {}
+    for _k, _v in _raw_alloc_trend_ctx.items():
+        _thr = max(0.0, float(_v))
+        _key = str(_k).strip()
+        if not _key:
+            continue
+        if ":" in _key:
+            _sym_raw, _ses_raw = _key.split(":", 1)
+            _sym = _sym_raw.strip().upper() if _sym_raw.strip() != "*" else "*"
+            _ses = _ses_raw.strip().lower() if _ses_raw.strip() != "*" else "*"
+            if _ses not in _allowed_sessions:
+                continue
+            ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT[f"{_sym}:{_ses}"] = _thr
+            continue
+        _single = _key.strip()
+        _single_lower = _single.lower()
+        if _single_lower in _allowed_sessions:
+            ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT[f"*:{_single_lower}"] = _thr
+        else:
+            ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT[f"{_single.upper()}:*"] = _thr
+except Exception:
+    ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT = {}
 ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN = max(
     0.0,
     min(

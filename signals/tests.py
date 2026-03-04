@@ -347,6 +347,37 @@ class AllocatorWeightingTest(TestCase):
         ALLOCATOR_MIN_MODULES_ACTIVE=2,
         ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
         ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT={"BTCUSDT:london": 13.0},
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_allows_context_override_for_strong_trend_solo(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 14.0},
+                }
+            ],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "smc": 0.0},
+            symbol="BTCUSDT",
+            session_name="london",
+        )
+        self.assertEqual(out["direction"], "long")
+        self.assertEqual(out["symbol_state"], "open")
+        trend_ctx = out.get("reasons", {}).get("trend_context", {})
+        self.assertAlmostEqual(float(trend_ctx.get("adx_min_effective", 0.0)), 13.0, places=6)
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
         ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
         ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED=True,
         ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT=0.5,

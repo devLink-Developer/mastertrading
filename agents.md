@@ -628,3 +628,8 @@ docker compose logs --tail=120 chatbot
 - Integrado en `execution/tasks.py` para bloqueo de entradas por régimen.
 - Logging de bloqueo ahora muestra el umbral efectivo por símbolo.
 
+### 2026-03-04 update: strong-trend solo adaptativo (allocator)
+- Nuevo env var: `ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT` (JSON).
+- Permite bajar solo el umbral ADX para habilitar `min_modules=1` en contexto puntual (ej. `BTCUSDT:london`) sin relajar globalmente todo el bot.
+- Integrado en `signals/allocator.py` con fallback al valor global `ALLOCATOR_STRONG_TREND_ADX_MIN`.
+

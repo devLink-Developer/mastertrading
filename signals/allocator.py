@@ -21,12 +21,39 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         return float(default)
 
 
-def _trend_context(module_signals: Iterable[dict]) -> dict[str, float | str | bool]:
+def _context_float_override(
+    raw_overrides: dict | None,
+    symbol: str,
+    session_name: str,
+    default: float,
+) -> float:
+    sym = str(symbol or "").strip().upper()
+    session = str(session_name or "").strip().lower()
+    resolved = max(0.0, float(default or 0.0))
+    if not isinstance(raw_overrides, dict):
+        return resolved
+    for key in (f"{sym}:{session}", f"{sym}:*", f"*:{session}", "*:*"):
+        if key not in raw_overrides:
+            continue
+        try:
+            return max(0.0, float(raw_overrides[key]))
+        except Exception:
+            continue
+    return resolved
+
+
+def _trend_context(
+    module_signals: Iterable[dict],
+    *,
+    symbol: str = "",
+    session_name: str = "",
+) -> dict[str, float | str | bool]:
     best: dict[str, float | str | bool] = {
         "found": False,
         "direction": "flat",
         "confidence": 0.0,
         "adx_htf": 0.0,
+        "adx_min_effective": 0.0,
         "is_strong": False,
     }
     for sig in module_signals:
@@ -60,6 +87,12 @@ def _trend_context(module_signals: Iterable[dict]) -> dict[str, float | str | bo
     adx_min = max(
         0.0, float(getattr(settings, "ALLOCATOR_STRONG_TREND_ADX_MIN", 25.0))
     )
+    adx_min = _context_float_override(
+        getattr(settings, "ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT", {}),
+        symbol=symbol,
+        session_name=session_name,
+        default=adx_min,
+    )
     conf_min = max(
         0.0,
         min(
@@ -67,6 +100,7 @@ def _trend_context(module_signals: Iterable[dict]) -> dict[str, float | str | bo
             float(getattr(settings, "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN", 0.80)),
         ),
     )
+    best["adx_min_effective"] = adx_min
     best["is_strong"] = bool(
         float(best["adx_htf"]) >= adx_min and float(best["confidence"]) >= conf_min
     )
@@ -282,8 +316,14 @@ def resolve_symbol_allocation(
     weights: dict[str, float],
     risk_budgets: dict[str, float],
     min_active_modules: int | None = None,
+    symbol: str = "",
+    session_name: str = "",
 ) -> dict:
-    trend_ctx = _trend_context(module_signals)
+    trend_ctx = _trend_context(
+        module_signals,
+        symbol=symbol,
+        session_name=session_name,
+    )
     strong_trend = bool(trend_ctx.get("is_strong", False))
     trend_sign = direction_to_sign(str(trend_ctx.get("direction", "flat")))
 
@@ -403,6 +443,10 @@ def resolve_symbol_allocation(
                     "direction": str(trend_ctx.get("direction", "flat")),
                     "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
                     "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
+                    "adx_min_effective": round(
+                        float(trend_ctx.get("adx_min_effective", 0.0)),
+                        4,
+                    ),
                 },
             },
         }
@@ -459,6 +503,10 @@ def resolve_symbol_allocation(
                     "direction": str(trend_ctx.get("direction", "flat")),
                     "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
                     "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
+                    "adx_min_effective": round(
+                        float(trend_ctx.get("adx_min_effective", 0.0)),
+                        4,
+                    ),
             },
         },
     }

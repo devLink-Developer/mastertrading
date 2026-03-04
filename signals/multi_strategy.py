@@ -323,6 +323,8 @@ def run_allocator_cycle() -> str:
                 weights=weights,
                 risk_budgets=risk_budgets,
                 min_active_modules=min_modules,
+                symbol=inst.symbol,
+                session_name=session,
             )
             alloc["reasons"]["session"] = session
             alloc["reasons"]["module_rows"] = module_rows
