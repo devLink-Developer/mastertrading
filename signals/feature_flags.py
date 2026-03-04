@@ -31,12 +31,18 @@ def feature_flag_defaults() -> dict[str, bool]:
 
 def resolve_feature_flags(defaults: Mapping[str, bool]) -> dict[str, bool]:
     """
-    Resolve runtime feature flags from StrategyConfig rows.
-    Missing rows are created with default values so they can be toggled via admin/API.
+    Resolve runtime feature flags.
+
+    Source is controlled by settings.FEATURE_FLAGS_SOURCE:
+    - "env": use environment defaults as single source of truth.
+    - "db": allow StrategyConfig rows to override runtime flags.
     """
     resolved = {str(name): bool(val) for name, val in defaults.items()}
     if not resolved:
         return {}
+
+    if str(getattr(settings, "FEATURE_FLAGS_SOURCE", "env")).strip().lower() != "db":
+        return resolved
 
     names = list(resolved.keys())
     try:

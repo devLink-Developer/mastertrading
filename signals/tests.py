@@ -582,6 +582,7 @@ class AllocatorSmcIntegrationTest(TestCase):
     MODULE_MEANREV_ENABLED=True,
     MODULE_CARRY_ENABLED=True,
     ALLOCATOR_ENABLED=True,
+    FEATURE_FLAGS_SOURCE="db",
 )
 class FeatureFlagsRuntimeTest(TestCase):
     def test_resolve_runtime_flags_uses_db_override(self):
@@ -595,6 +596,21 @@ class FeatureFlagsRuntimeTest(TestCase):
         )
         updated = resolve_runtime_flags()
         self.assertTrue(updated[FEATURE_KEYS["multi"]])
+
+
+@override_settings(
+    MULTI_STRATEGY_ENABLED=False,
+    FEATURE_FLAGS_SOURCE="env",
+)
+class FeatureFlagsEnvSourceTest(TestCase):
+    def test_env_source_ignores_db_override(self):
+        StrategyConfig.objects.update_or_create(
+            name=FEATURE_KEYS["multi"],
+            version=FEATURE_FLAGS_VERSION,
+            defaults={"enabled": True, "params_json": {"feature_flag": True}},
+        )
+        flags = resolve_runtime_flags()
+        self.assertFalse(flags[FEATURE_KEYS["multi"]])
 
 
 # -----------------------------------------------------------------------

@@ -744,6 +744,9 @@ MODULE_TREND_ENABLED = os.getenv("MODULE_TREND_ENABLED", "true").lower() == "tru
 MODULE_MEANREV_ENABLED = os.getenv("MODULE_MEANREV_ENABLED", "true").lower() == "true"
 MODULE_CARRY_ENABLED = os.getenv("MODULE_CARRY_ENABLED", "true").lower() == "true"
 MODULE_GRID_ENABLED = os.getenv("MODULE_GRID_ENABLED", "false").lower() == "true"
+FEATURE_FLAGS_SOURCE = os.getenv("FEATURE_FLAGS_SOURCE", "db").strip().lower()
+if FEATURE_FLAGS_SOURCE not in {"env", "db"}:
+    FEATURE_FLAGS_SOURCE = "db"
 MODULE_SIGNAL_TTL_SECONDS = int(os.getenv("MODULE_SIGNAL_TTL_SECONDS", "120"))
 MODULE_LOOKBACK_BARS = int(os.getenv("MODULE_LOOKBACK_BARS", "240"))
 MODULE_ADX_TREND_MIN = float(os.getenv("MODULE_ADX_TREND_MIN", "20.0"))
