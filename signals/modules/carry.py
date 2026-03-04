@@ -7,7 +7,13 @@ from django.conf import settings
 from .common import compute_atr_pct, normalize_score
 
 
-def detect(df_ltf: pd.DataFrame, _df_htf: pd.DataFrame, funding_rates: list[float], session: str) -> dict | None:
+def detect(
+    df_ltf: pd.DataFrame,
+    _df_htf: pd.DataFrame,
+    funding_rates: list[float],
+    session: str,
+    symbol: str = "",
+) -> dict | None:
     if df_ltf.empty or len(df_ltf) < 80:
         return None
     if not funding_rates or len(funding_rates) < 6:

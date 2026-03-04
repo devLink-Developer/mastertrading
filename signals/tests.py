@@ -457,6 +457,22 @@ class StrategyModuleParsingTest(TestCase):
 
 class LiveGradualModuleSelectionTest(SimpleTestCase):
     @override_settings(
+        ALLOCATOR_INCLUDE_SMC=False,
+        LIVE_GRADUAL_ENABLED=False,
+    )
+    def test_active_modules_includes_grid_when_enabled(self):
+        flags = {
+            FEATURE_KEYS["trend"]: True,
+            FEATURE_KEYS["meanrev"]: True,
+            FEATURE_KEYS["carry"]: True,
+            FEATURE_KEYS["grid"]: True,
+            FEATURE_KEYS["allocator"]: True,
+            FEATURE_KEYS["multi"]: True,
+        }
+        selected = _active_modules(flags)
+        self.assertEqual(selected, ["trend", "meanrev", "carry", "grid"])
+
+    @override_settings(
         ALLOCATOR_INCLUDE_SMC=True,
         LIVE_GRADUAL_ENABLED=True,
         LIVE_GRADUAL_MAX_MODULES=2,

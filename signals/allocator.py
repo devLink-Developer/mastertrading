@@ -9,7 +9,7 @@ from django.conf import settings
 from .modules.common import direction_to_sign, normalize_score, sign_to_direction
 
 
-MODULE_ORDER = ("trend", "meanrev", "carry", "smc")
+MODULE_ORDER = ("trend", "meanrev", "carry", "grid", "smc")
 
 logger = logging.getLogger(__name__)
 
@@ -89,21 +89,29 @@ def normalize_weight_map(raw_map: dict | None, fallback: dict[str, float]) -> di
 
 def default_weight_map() -> dict[str, float]:
     include_smc = bool(getattr(settings, "ALLOCATOR_INCLUDE_SMC", False))
-    fallback = (
-        {"trend": 0.30, "meanrev": 0.25, "carry": 0.15, "smc": 0.30}
-        if include_smc
-        else {"trend": 0.45, "meanrev": 0.35, "carry": 0.20, "smc": 0.0}
-    )
+    include_grid = bool(getattr(settings, "MODULE_GRID_ENABLED", False))
+    if include_smc and include_grid:
+        fallback = {"trend": 0.25, "meanrev": 0.20, "carry": 0.15, "grid": 0.15, "smc": 0.25}
+    elif include_smc:
+        fallback = {"trend": 0.30, "meanrev": 0.25, "carry": 0.15, "grid": 0.0, "smc": 0.30}
+    elif include_grid:
+        fallback = {"trend": 0.40, "meanrev": 0.30, "carry": 0.15, "grid": 0.15, "smc": 0.0}
+    else:
+        fallback = {"trend": 0.45, "meanrev": 0.35, "carry": 0.20, "grid": 0.0, "smc": 0.0}
     return normalize_weight_map(getattr(settings, "ALLOCATOR_MODULE_WEIGHTS", {}), fallback)
 
 
 def default_risk_budget_map() -> dict[str, float]:
     include_smc = bool(getattr(settings, "ALLOCATOR_INCLUDE_SMC", False))
-    fallback = (
-        {"trend": 0.30, "meanrev": 0.25, "carry": 0.15, "smc": 0.30}
-        if include_smc
-        else {"trend": 0.45, "meanrev": 0.35, "carry": 0.20, "smc": 0.0}
-    )
+    include_grid = bool(getattr(settings, "MODULE_GRID_ENABLED", False))
+    if include_smc and include_grid:
+        fallback = {"trend": 0.25, "meanrev": 0.20, "carry": 0.15, "grid": 0.15, "smc": 0.25}
+    elif include_smc:
+        fallback = {"trend": 0.30, "meanrev": 0.25, "carry": 0.15, "grid": 0.0, "smc": 0.30}
+    elif include_grid:
+        fallback = {"trend": 0.40, "meanrev": 0.30, "carry": 0.15, "grid": 0.15, "smc": 0.0}
+    else:
+        fallback = {"trend": 0.45, "meanrev": 0.35, "carry": 0.20, "grid": 0.0, "smc": 0.0}
     return normalize_weight_map(getattr(settings, "ALLOCATOR_MODULE_RISK_BUDGETS", {}), fallback)
 
 

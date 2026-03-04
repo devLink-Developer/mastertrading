@@ -412,23 +412,23 @@ _PER_INST_SPREAD_RAW = os.getenv("PER_INSTRUMENT_MAX_SPREAD_BPS", '{}')
 _PER_INST_DIRECTION_RAW = os.getenv("PER_INSTRUMENT_DIRECTION", '{}')
 _ALLOCATOR_WEIGHTS_RAW = os.getenv(
     "ALLOCATOR_MODULE_WEIGHTS",
-    '{"trend":0.45,"meanrev":0.35,"carry":0.20}',
+    '{"trend":0.45,"meanrev":0.35,"carry":0.20,"grid":0.00}',
 )
 _ALLOCATOR_RISK_BUDGETS_RAW = os.getenv(
     "ALLOCATOR_MODULE_RISK_BUDGETS",
-    '{"trend":0.45,"meanrev":0.35,"carry":0.20}',
+    '{"trend":0.45,"meanrev":0.35,"carry":0.20,"grid":0.00}',
 )
 _META_ALLOCATOR_BUCKET_CAPS_RAW = os.getenv(
     "META_ALLOCATOR_BUCKET_CAPS",
-    '{"trend":0.45,"meanrev":0.30,"carry":0.20,"smc":0.25}',
+    '{"trend":0.45,"meanrev":0.30,"carry":0.20,"grid":0.20,"smc":0.25}',
 )
 _META_ALLOCATOR_STRATEGY_DD_CAPS_RAW = os.getenv(
     "META_ALLOCATOR_STRATEGY_DD_CAPS",
-    '{"trend":0.12,"meanrev":0.10,"carry":0.08,"smc":0.12}',
+    '{"trend":0.12,"meanrev":0.10,"carry":0.08,"grid":0.10,"smc":0.12}',
 )
 _META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS_RAW = os.getenv(
     "META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS",
-    '{"trend":0.03,"meanrev":0.025,"carry":0.020,"smc":0.030}',
+    '{"trend":0.03,"meanrev":0.025,"carry":0.020,"grid":0.025,"smc":0.030}',
 )
 _MULTI_STRATEGY_UNIVERSE_RAW = os.getenv(
     "MULTI_STRATEGY_UNIVERSE",
@@ -615,6 +615,7 @@ MULTI_STRATEGY_ENABLED = os.getenv("MULTI_STRATEGY_ENABLED", "false").lower() ==
 MODULE_TREND_ENABLED = os.getenv("MODULE_TREND_ENABLED", "true").lower() == "true"
 MODULE_MEANREV_ENABLED = os.getenv("MODULE_MEANREV_ENABLED", "true").lower() == "true"
 MODULE_CARRY_ENABLED = os.getenv("MODULE_CARRY_ENABLED", "true").lower() == "true"
+MODULE_GRID_ENABLED = os.getenv("MODULE_GRID_ENABLED", "false").lower() == "true"
 MODULE_SIGNAL_TTL_SECONDS = int(os.getenv("MODULE_SIGNAL_TTL_SECONDS", "120"))
 MODULE_LOOKBACK_BARS = int(os.getenv("MODULE_LOOKBACK_BARS", "240"))
 MODULE_ADX_TREND_MIN = float(os.getenv("MODULE_ADX_TREND_MIN", "20.0"))
@@ -635,6 +636,31 @@ MODULE_MEANREV_IMPULSE_BLOCK_ENABLED = (
     os.getenv("MODULE_MEANREV_IMPULSE_BLOCK_ENABLED", "true").lower() == "true"
 )
 MODULE_CARRY_MAX_ATR_PCT = max(0.0, float(os.getenv("MODULE_CARRY_MAX_ATR_PCT", "0.020")))
+MODULE_GRID_ADX_MIN = max(0.0, float(os.getenv("MODULE_GRID_ADX_MIN", "8.0")))
+MODULE_GRID_ADX_MAX = max(MODULE_GRID_ADX_MIN, float(os.getenv("MODULE_GRID_ADX_MAX", "22.0")))
+MODULE_GRID_ATR_MIN_PCT = max(0.0, float(os.getenv("MODULE_GRID_ATR_MIN_PCT", "0.006")))
+MODULE_GRID_ATR_MAX_PCT = max(MODULE_GRID_ATR_MIN_PCT, float(os.getenv("MODULE_GRID_ATR_MAX_PCT", "0.030")))
+MODULE_GRID_BB_PERIOD = max(10, int(os.getenv("MODULE_GRID_BB_PERIOD", "20")))
+MODULE_GRID_BB_STD = max(0.5, float(os.getenv("MODULE_GRID_BB_STD", "2.0")))
+MODULE_GRID_Z_ENTRY = max(0.5, float(os.getenv("MODULE_GRID_Z_ENTRY", "1.2")))
+MODULE_GRID_RANGE_LOOKBACK = max(20, int(os.getenv("MODULE_GRID_RANGE_LOOKBACK", "96")))
+MODULE_GRID_RANGE_EDGE_BUFFER_PCT = max(0.0, float(os.getenv("MODULE_GRID_RANGE_EDGE_BUFFER_PCT", "0.002")))
+MODULE_GRID_MIN_RANGE_WIDTH_PCT = max(0.0, float(os.getenv("MODULE_GRID_MIN_RANGE_WIDTH_PCT", "0.012")))
+MODULE_GRID_EMA_GAP_MAX_PCT = max(0.0, float(os.getenv("MODULE_GRID_EMA_GAP_MAX_PCT", "0.012")))
+MODULE_GRID_MIN_CONFIDENCE = max(
+    0.0,
+    min(1.0, float(os.getenv("MODULE_GRID_MIN_CONFIDENCE", "0.40"))),
+)
+MODULE_GRID_REQUIRE_CHOPPY_REGIME = (
+    os.getenv("MODULE_GRID_REQUIRE_CHOPPY_REGIME", "true").lower() == "true"
+)
+MODULE_GRID_REGIME_FAIL_OPEN = os.getenv("MODULE_GRID_REGIME_FAIL_OPEN", "true").lower() == "true"
+MODULE_GRID_IMPULSE_BLOCK_ENABLED = (
+    os.getenv("MODULE_GRID_IMPULSE_BLOCK_ENABLED", "true").lower() == "true"
+)
+MODULE_GRID_ALLOWED_SESSIONS = _parse_session_set(
+    os.getenv("MODULE_GRID_ALLOWED_SESSIONS", "asia,london,ny,overlap")
+)
 
 # SMC anti-chase gate (avoid entering right after displacement candles).
 SMC_IMPULSE_CHASE_FILTER_ENABLED = (
@@ -796,22 +822,40 @@ try:
         for k, v in _json.loads(_ALLOCATOR_WEIGHTS_RAW).items()
     }
 except Exception:
-    ALLOCATOR_MODULE_WEIGHTS = {"trend": 0.45, "meanrev": 0.30, "carry": 0.15, "smc": 0.10}
+    ALLOCATOR_MODULE_WEIGHTS = {
+        "trend": 0.40,
+        "meanrev": 0.30,
+        "carry": 0.15,
+        "grid": 0.15 if MODULE_GRID_ENABLED else 0.0,
+        "smc": 0.0,
+    }
 try:
     ALLOCATOR_MODULE_RISK_BUDGETS = {
         str(k).strip().lower(): float(v)
         for k, v in _json.loads(_ALLOCATOR_RISK_BUDGETS_RAW).items()
     }
 except Exception:
-    ALLOCATOR_MODULE_RISK_BUDGETS = {"trend": 0.45, "meanrev": 0.30, "carry": 0.15, "smc": 0.10}
+    ALLOCATOR_MODULE_RISK_BUDGETS = {
+        "trend": 0.40,
+        "meanrev": 0.30,
+        "carry": 0.15,
+        "grid": 0.15 if MODULE_GRID_ENABLED else 0.0,
+        "smc": 0.0,
+    }
 try:
     META_ALLOCATOR_BUCKET_CAPS = {
         str(k).strip().lower(): float(v)
         for k, v in _json.loads(_META_ALLOCATOR_BUCKET_CAPS_RAW).items()
     }
 except Exception:
-    META_ALLOCATOR_BUCKET_CAPS = {"trend": 0.45, "meanrev": 0.30, "carry": 0.20, "smc": 0.25}
-for _m in ("trend", "meanrev", "carry", "smc"):
+    META_ALLOCATOR_BUCKET_CAPS = {
+        "trend": 0.45,
+        "meanrev": 0.30,
+        "carry": 0.20,
+        "grid": 0.20,
+        "smc": 0.25,
+    }
+for _m in ("trend", "meanrev", "carry", "grid", "smc"):
     META_ALLOCATOR_BUCKET_CAPS.setdefault(_m, 1.0)
 try:
     META_ALLOCATOR_STRATEGY_DD_CAPS = {
@@ -819,8 +863,14 @@ try:
         for k, v in _json.loads(_META_ALLOCATOR_STRATEGY_DD_CAPS_RAW).items()
     }
 except Exception:
-    META_ALLOCATOR_STRATEGY_DD_CAPS = {"trend": 0.12, "meanrev": 0.10, "carry": 0.08, "smc": 0.12}
-for _m in ("trend", "meanrev", "carry", "smc"):
+    META_ALLOCATOR_STRATEGY_DD_CAPS = {
+        "trend": 0.12,
+        "meanrev": 0.10,
+        "carry": 0.08,
+        "grid": 0.10,
+        "smc": 0.12,
+    }
+for _m in ("trend", "meanrev", "carry", "grid", "smc"):
     META_ALLOCATOR_STRATEGY_DD_CAPS.setdefault(_m, 0.10)
 try:
     META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS = {
@@ -828,8 +878,14 @@ try:
         for k, v in _json.loads(_META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS_RAW).items()
     }
 except Exception:
-    META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS = {"trend": 0.03, "meanrev": 0.025, "carry": 0.020, "smc": 0.030}
-for _m in ("trend", "meanrev", "carry", "smc"):
+    META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS = {
+        "trend": 0.03,
+        "meanrev": 0.025,
+        "carry": 0.020,
+        "grid": 0.025,
+        "smc": 0.030,
+    }
+for _m in ("trend", "meanrev", "carry", "grid", "smc"):
     META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS.setdefault(_m, 0.03)
 
 MULTI_STRATEGY_UNIVERSE = _parse_symbol_list(_MULTI_STRATEGY_UNIVERSE_RAW)
@@ -1016,6 +1072,7 @@ CELERY_TASK_ROUTES = {
     "signals.tasks.run_trend_engine": {"queue": "trading"},
     "signals.tasks.run_meanrev_engine": {"queue": "trading"},
     "signals.tasks.run_carry_engine": {"queue": "trading"},
+    "signals.tasks.run_grid_engine": {"queue": "trading"},
     "signals.tasks.run_portfolio_allocator": {"queue": "trading"},
     "execution.tasks.execute_orders": {"queue": "trading"},
     "execution.tasks.retrain_entry_filter_model": {"queue": ML_TRAINING_QUEUE},
@@ -1043,6 +1100,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "run-carry-engine": {
         "task": "signals.tasks.run_carry_engine",
+        "schedule": crontab(),  # every minute
+    },
+    "run-grid-engine": {
+        "task": "signals.tasks.run_grid_engine",
         "schedule": crontab(),  # every minute
     },
     "run-portfolio-allocator": {

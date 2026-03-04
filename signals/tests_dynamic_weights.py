@@ -60,6 +60,13 @@ def _mk_report(inst, signal, pnl: float, dt_offset_hours: int = 0):
     )
 
 
+def _with_grid(base: dict[str, float]) -> dict[str, float]:
+    out = dict(base)
+    for mod in MODULE_ORDER:
+        out.setdefault(mod, 0.0)
+    return out
+
+
 class TestModuleRollingStats(TestCase):
 
     def test_empty_returns_zero_for_all_modules(self):
@@ -107,7 +114,7 @@ class TestModuleRollingStats(TestCase):
 class TestDynamicWeightMap(TestCase):
 
     def test_no_data_returns_base_weights(self):
-        base = {"trend": 0.3, "meanrev": 0.2, "carry": 0.15, "smc": 0.35}
+        base = _with_grid({"trend": 0.3, "meanrev": 0.2, "carry": 0.15, "smc": 0.35})
         result = dynamic_weight_map(base_weights=base, days=7, min_trades=10)
         # With no data, should normalize but keep proportions
         for mod in MODULE_ORDER:
@@ -122,7 +129,7 @@ class TestDynamicWeightMap(TestCase):
             sig_m = _mk_signal(inst, modules=["meanrev"])
             _mk_report(inst, sig_m, pnl=-10.0)
 
-        base = {"trend": 0.3, "meanrev": 0.3, "carry": 0.2, "smc": 0.2}
+        base = _with_grid({"trend": 0.3, "meanrev": 0.3, "carry": 0.2, "smc": 0.2})
         result = dynamic_weight_map(
             base_weights=base, days=7,
             alpha_prior=2.0, beta_prior=2.0,
@@ -138,7 +145,7 @@ class TestDynamicWeightMap(TestCase):
             sig = _mk_signal(inst, modules=["trend"])
             _mk_report(inst, sig, pnl=10.0)
 
-        base = {"trend": 0.25, "meanrev": 0.25, "carry": 0.25, "smc": 0.25}
+        base = _with_grid({"trend": 0.25, "meanrev": 0.25, "carry": 0.25, "smc": 0.25})
         result = dynamic_weight_map(
             base_weights=base, days=7,
             min_mult=0.5, max_mult=2.0, min_trades=5,
@@ -152,7 +159,7 @@ class TestDynamicWeightMap(TestCase):
         inst = _mk_instrument("DOGEUSDT")
         sig = _mk_signal(inst, modules=["trend"])
         _mk_report(inst, sig, pnl=10.0)  # only 1 trade
-        base = {"trend": 0.3, "meanrev": 0.2, "carry": 0.15, "smc": 0.35}
+        base = _with_grid({"trend": 0.3, "meanrev": 0.2, "carry": 0.15, "smc": 0.35})
         result = dynamic_weight_map(base_weights=base, days=7, min_trades=10)
         for mod in MODULE_ORDER:
             self.assertAlmostEqual(result[mod], base[mod], places=3)
@@ -200,7 +207,7 @@ class TestDynamicWeightMap(TestCase):
         self.assertAlmostEqual(sum(result.values()), 1.0, places=4)
 
     def test_db_error_fallback(self):
-        base = {"trend": 0.3, "meanrev": 0.2, "carry": 0.15, "smc": 0.35}
+        base = _with_grid({"trend": 0.3, "meanrev": 0.2, "carry": 0.15, "smc": 0.35})
         with patch("signals.allocator._module_rolling_stats", side_effect=Exception("DB down")):
             result = dynamic_weight_map(base_weights=base)
         self.assertEqual(result, base)

@@ -115,6 +115,7 @@ def _build_performance_report(window_minutes: int) -> str:
     mod_trend = _module_count(signals_qs, "mod_trend_")
     mod_meanrev = _module_count(signals_qs, "mod_meanrev_")
     mod_carry = _module_count(signals_qs, "mod_carry_")
+    mod_grid = _module_count(signals_qs, "mod_grid_")
     smc = _module_count(signals_qs, "smc_")
 
     orders_filled = int(
@@ -151,7 +152,7 @@ def _build_performance_report(window_minutes: int) -> str:
         "",
         "<b>Senales</b>",
         (
-            f"mod trend={mod_trend} | meanrev={mod_meanrev} | carry={mod_carry} | smc={smc}\n"
+            f"mod trend={mod_trend} | meanrev={mod_meanrev} | carry={mod_carry} | grid={mod_grid} | smc={smc}\n"
             f"alloc long={alloc_long} short={alloc_short} flat={alloc_flat}"
         ),
         "",

@@ -1104,6 +1104,13 @@ def run_carry_engine():
 
 
 @shared_task
+def run_grid_engine():
+    from .multi_strategy import run_module_engine
+
+    return run_module_engine("grid")
+
+
+@shared_task
 def run_portfolio_allocator():
     from .multi_strategy import run_allocator_cycle
 

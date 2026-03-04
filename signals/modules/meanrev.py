@@ -13,7 +13,13 @@ from .common import (
 )
 
 
-def detect(df_ltf: pd.DataFrame, df_htf: pd.DataFrame, _funding_rates: list[float], session: str) -> dict | None:
+def detect(
+    df_ltf: pd.DataFrame,
+    df_htf: pd.DataFrame,
+    _funding_rates: list[float],
+    session: str,
+    symbol: str = "",
+) -> dict | None:
     if df_ltf.empty or df_htf.empty or len(df_ltf) < 120 or len(df_htf) < 80:
         return None
 

@@ -577,3 +577,37 @@ docker compose logs --tail=120 chatbot
   - Machine-readable YAML quick index for LLM parsers.
 - Updated `docs/LLM_INDEX.md` read order to start with this file.
 
+---
+
+## 13. Grid Module (2026-03-03)
+
+### Objetivo
+- Agregar un mÃ³dulo de tipo grid/reversiÃ³n para mercados de rango con volatilidad utilizable.
+
+### ImplementaciÃ³n
+- Nuevo detector: `signals/modules/grid.py`
+  - Entrada en extremos de rango con z-score/Bollinger.
+  - Gating por ADX HTF (rango), ATR% (volatilidad mÃ­n/mÃ¡x), gap EMA20/EMA50.
+  - Gate opcional por rÃ©gimen HMM (`choppy`) con fail-open configurable.
+  - Bloqueo anti-knife-catch por vela impulso (opcional).
+- IntegraciÃ³n:
+  - `signals/multi_strategy.py`: soporte `grid` en `run_module_engine`, `_active_modules` y query del allocator.
+  - `signals/tasks.py`: nueva tarea `run_grid_engine`.
+  - `signals/feature_flags.py`: nueva flag runtime `feature_mod_grid`.
+  - `config/settings.py`: nuevos env vars `MODULE_GRID_*` + scheduler/route Celery para `run_grid_engine`.
+  - `signals/allocator.py`: `MODULE_ORDER` extendido con `grid` y defaults backward-safe.
+
+### Defaults operativos
+- `MODULE_GRID_ENABLED=false` (no altera producciÃ³n hasta activarlo).
+- Cuando se activa sin pesos custom:
+  - allocator usa peso/risk-budget inicial de grid conservador (0.15) en fallback interno.
+
+### Tests
+- `signals/tests_module_filters.py`:
+  - emisiÃ³n de `grid short` en extremo superior de rango.
+  - bloqueo por gate de rÃ©gimen.
+- `signals/tests.py`:
+  - `_active_modules` incluye `grid` cuando su flag estÃ¡ activa.
+- `signals/tests_dynamic_weights.py`:
+  - adaptado para `MODULE_ORDER` extendido (incluye `grid`).
+

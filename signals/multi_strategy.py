@@ -19,6 +19,7 @@ from signals.feature_flags import FEATURE_KEYS, resolve_runtime_flags
 from signals.models import Signal
 from signals.sessions import get_current_session, get_session_risk_mult
 from signals.modules import carry as carry_module
+from signals.modules import grid as grid_module
 from signals.modules import meanrev as meanrev_module
 from signals.modules import trend as trend_module
 from signals.modules.common import (
@@ -41,6 +42,8 @@ def _module_detector(module_name: str):
         return meanrev_module.detect
     if module_name == "carry":
         return carry_module.detect
+    if module_name == "grid":
+        return grid_module.detect
     raise ValueError(f"unknown module {module_name}")
 
 
@@ -69,7 +72,7 @@ def run_module_engine(module_name: str) -> str:
             continue
         funding = latest_funding_rates(inst, lookback=80) if module_name == "carry" else []
         session = get_current_session(now.hour)
-        result = detector(df_ltf, df_htf, funding, session)
+        result = detector(df_ltf, df_htf, funding, session, symbol=inst.symbol)
         if not result:
             continue
         direction = str(result.get("direction", "")).strip().lower()
@@ -102,6 +105,8 @@ def _active_modules(flags: dict[str, bool]) -> list[str]:
         modules.append("meanrev")
     if flags.get(FEATURE_KEYS["carry"], False):
         modules.append("carry")
+    if flags.get(FEATURE_KEYS["grid"], False):
+        modules.append("grid")
     if bool(getattr(settings, "ALLOCATOR_INCLUDE_SMC", False)):
         modules.append("smc")
     if bool(getattr(settings, "LIVE_GRADUAL_ENABLED", True)):
@@ -237,6 +242,7 @@ def run_allocator_cycle() -> str:
             Q(strategy__startswith="mod_trend_")
             | Q(strategy__startswith="mod_meanrev_")
             | Q(strategy__startswith="mod_carry_")
+            | Q(strategy__startswith="mod_grid_")
             | Q(strategy__startswith="smc_")
         )
         .order_by("-ts")
