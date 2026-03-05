@@ -232,6 +232,19 @@ def _round_or_none(value: Any, ndigits: int) -> float | None:
     return round(val, ndigits)
 
 
+def _bucket_or_none(value: Any, step: float, ndigits: int) -> float | None:
+    if value is None:
+        return None
+    val = _to_float(value)
+    if not math.isfinite(val):
+        return None
+    bucket_step = _to_float(step)
+    if not math.isfinite(bucket_step) or bucket_step <= 0:
+        return round(val, ndigits)
+    bucketed = round(val / bucket_step) * bucket_step
+    return round(bucketed, ndigits)
+
+
 def _ai_entry_market_fingerprint(
     *,
     symbol: str,
@@ -243,6 +256,7 @@ def _ai_entry_market_fingerprint(
     spread_bps: float | None,
     sl_pct: float,
     sig_payload: dict[str, Any] | None,
+    coarse: bool = False,
 ) -> str:
     payload = sig_payload if isinstance(sig_payload, dict) else {}
     reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
@@ -256,8 +270,16 @@ def _ai_entry_market_fingerprint(
                 [
                     str(row.get("module") or "").strip().lower(),
                     str(row.get("direction") or "").strip().lower()[:1],
-                    _round_or_none(row.get("confidence"), 3),
-                    _round_or_none(row.get("raw_score"), 3),
+                    (
+                        _bucket_or_none(row.get("confidence"), 0.05, 2)
+                        if coarse
+                        else _round_or_none(row.get("confidence"), 3)
+                    ),
+                    (
+                        _bucket_or_none(row.get("raw_score"), 0.05, 2)
+                        if coarse
+                        else _round_or_none(row.get("raw_score"), 3)
+                    ),
                 ]
             )
 
@@ -266,12 +288,36 @@ def _ai_entry_market_fingerprint(
         "st": str(strategy_name or "").strip().lower(),
         "dir": str(signal_direction or "").strip().lower(),
         "ses": str(session_name or "").strip().lower(),
-        "sc": _round_or_none(sig_score, 4),
-        "atr": _round_or_none(atr, 5),
-        "spr": _round_or_none(spread_bps, 2),
-        "sl": _round_or_none(sl_pct, 5),
-        "ns": _round_or_none(reasons.get("net_score"), 4) if isinstance(reasons, dict) else None,
-        "rb": _round_or_none(payload.get("risk_budget_pct"), 6),
+        "sc": (
+            _bucket_or_none(sig_score, 0.02, 2)
+            if coarse
+            else _round_or_none(sig_score, 4)
+        ),
+        "atr": (
+            _bucket_or_none(atr, 0.0005, 4)
+            if coarse
+            else _round_or_none(atr, 5)
+        ),
+        "spr": (
+            _bucket_or_none(spread_bps, 0.5, 1)
+            if coarse
+            else _round_or_none(spread_bps, 2)
+        ),
+        "sl": (
+            _bucket_or_none(sl_pct, 0.0005, 4)
+            if coarse
+            else _round_or_none(sl_pct, 5)
+        ),
+        "ns": (
+            _bucket_or_none(reasons.get("net_score"), 0.02, 2)
+            if (coarse and isinstance(reasons, dict))
+            else (_round_or_none(reasons.get("net_score"), 4) if isinstance(reasons, dict) else None)
+        ),
+        "rb": (
+            _bucket_or_none(payload.get("risk_budget_pct"), 0.0005, 4)
+            if coarse
+            else _round_or_none(payload.get("risk_budget_pct"), 6)
+        ),
         "er": str(payload.get("entry_reason") or "").strip().lower()[:64] if payload else "",
         "mr": module_rows_out,
     }
@@ -287,6 +333,7 @@ def _ai_entry_should_suppress_retry(
     strategy_name: str,
     signal_direction: str,
     market_fingerprint: str,
+    market_fingerprint_coarse: str = "",
 ) -> tuple[bool, str]:
     if not _ai_entry_reject_cooldown_enabled():
         return False, ""
@@ -311,16 +358,30 @@ def _ai_entry_should_suppress_retry(
     if not cached:
         return False, ""
     cached_fp = cached
+    cached_fp_coarse = ""
     cached_reason = ""
     if cached.startswith("{"):
         try:
             obj = json.loads(cached)
             if isinstance(obj, dict):
                 cached_fp = str(obj.get("fp") or "").strip()
+                cached_fp_coarse = str(obj.get("fp_coarse") or "").strip()
                 cached_reason = str(obj.get("reason") or "").strip()[:160]
         except Exception:
             pass
-    if cached_fp and cached_fp == market_fingerprint:
+    matches_exact = bool(cached_fp and cached_fp == market_fingerprint)
+    matches_coarse = bool(
+        cached_fp_coarse
+        and market_fingerprint_coarse
+        and cached_fp_coarse == market_fingerprint_coarse
+    )
+    if matches_exact or matches_coarse:
+        # Keep cooldown alive while the same market pattern keeps firing,
+        # preventing repeated AI calls in unchanged conditions.
+        try:
+            client.expire(key, _ai_entry_reject_cooldown_seconds())
+        except Exception:
+            pass
         return True, cached_reason or "ai_reject_cached"
     return False, ""
 
@@ -333,6 +394,7 @@ def _ai_entry_mark_rejected(
     strategy_name: str,
     signal_direction: str,
     market_fingerprint: str,
+    market_fingerprint_coarse: str = "",
     reason: str,
 ) -> None:
     if not _ai_entry_reject_cooldown_enabled():
@@ -350,6 +412,7 @@ def _ai_entry_mark_rejected(
     value = json.dumps(
         {
             "fp": str(market_fingerprint or "").strip(),
+            "fp_coarse": str(market_fingerprint_coarse or "").strip(),
             "reason": str(reason or "").strip()[:160],
         },
         ensure_ascii=True,
@@ -3559,6 +3622,18 @@ def _attempt_entry_open(
         sl_pct=sl_pct,
         sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
     )
+    ai_market_fp_coarse = _ai_entry_market_fingerprint(
+        symbol=inst.symbol,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        session_name=current_session,
+        sig_score=sig_score,
+        atr=atr,
+        spread_bps=spread_bps_selected,
+        sl_pct=sl_pct,
+        sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+        coarse=True,
+    )
     ai_retry_suppressed, ai_retry_reason = _ai_entry_should_suppress_retry(
         account_alias=account_alias,
         account_service=account_service,
@@ -3566,6 +3641,7 @@ def _attempt_entry_open(
         strategy_name=strategy_name,
         signal_direction=signal_direction,
         market_fingerprint=ai_market_fp,
+        market_fingerprint_coarse=ai_market_fp_coarse,
     )
     if ai_retry_suppressed:
         logger.info(
@@ -3600,6 +3676,7 @@ def _attempt_entry_open(
             strategy_name=strategy_name,
             signal_direction=signal_direction,
             market_fingerprint=ai_market_fp,
+            market_fingerprint_coarse=ai_market_fp_coarse,
             reason=ai_reason,
         )
         logger.info(

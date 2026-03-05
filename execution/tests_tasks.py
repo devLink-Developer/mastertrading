@@ -73,6 +73,12 @@ class _DummyRedis:
         self.store.pop(key, None)
         return 1
 
+    def expire(self, key: str, seconds: int):
+        if key not in self.store:
+            return False
+        self.expiry[key] = int(seconds)
+        return True
+
 
 class _DummyAdapter:
     class _Client:
@@ -383,6 +389,128 @@ class TaskHelpersTest(SimpleTestCase):
                 market_fingerprint=fp_new,
             )
         self.assertFalse(suppressed)
+
+    @override_settings(AI_ENTRY_GATE_REJECT_COOLDOWN_ENABLED=True)
+    def test_ai_entry_reject_suppresses_retry_when_coarse_fingerprint_matches(self):
+        dummy = _DummyRedis()
+        fp_old = _ai_entry_market_fingerprint(
+            symbol="SOLUSDT",
+            strategy_name="alloc_long",
+            signal_direction="long",
+            session_name="asia",
+            sig_score=0.7121,
+            atr=0.01211,
+            spread_bps=7.21,
+            sl_pct=0.0122,
+            sig_payload={
+                "reasons": {
+                    "net_score": 0.214,
+                    "module_rows": [
+                        {
+                            "module": "carry",
+                            "direction": "long",
+                            "confidence": 0.61,
+                            "raw_score": 0.35,
+                        }
+                    ],
+                }
+            },
+        )
+        fp_old_coarse = _ai_entry_market_fingerprint(
+            symbol="SOLUSDT",
+            strategy_name="alloc_long",
+            signal_direction="long",
+            session_name="asia",
+            sig_score=0.7121,
+            atr=0.01211,
+            spread_bps=7.21,
+            sl_pct=0.0122,
+            sig_payload={
+                "reasons": {
+                    "net_score": 0.214,
+                    "module_rows": [
+                        {
+                            "module": "carry",
+                            "direction": "long",
+                            "confidence": 0.61,
+                            "raw_score": 0.35,
+                        }
+                    ],
+                }
+            },
+            coarse=True,
+        )
+        fp_new = _ai_entry_market_fingerprint(
+            symbol="SOLUSDT",
+            strategy_name="alloc_long",
+            signal_direction="long",
+            session_name="asia",
+            sig_score=0.7199,  # Drift that may change exact fp.
+            atr=0.01224,
+            spread_bps=7.24,
+            sl_pct=0.0121,
+            sig_payload={
+                "reasons": {
+                    "net_score": 0.221,
+                    "module_rows": [
+                        {
+                            "module": "carry",
+                            "direction": "long",
+                            "confidence": 0.62,
+                            "raw_score": 0.33,
+                        }
+                    ],
+                }
+            },
+        )
+        fp_new_coarse = _ai_entry_market_fingerprint(
+            symbol="SOLUSDT",
+            strategy_name="alloc_long",
+            signal_direction="long",
+            session_name="asia",
+            sig_score=0.7199,
+            atr=0.01224,
+            spread_bps=7.24,
+            sl_pct=0.0121,
+            sig_payload={
+                "reasons": {
+                    "net_score": 0.221,
+                    "module_rows": [
+                        {
+                            "module": "carry",
+                            "direction": "long",
+                            "confidence": 0.62,
+                            "raw_score": 0.33,
+                        }
+                    ],
+                }
+            },
+            coarse=True,
+        )
+        with patch("execution.tasks._redis_client", return_value=dummy):
+            _ai_entry_mark_rejected(
+                account_alias="rortigoza",
+                account_service="bingx",
+                symbol="SOLUSDT",
+                strategy_name="alloc_long",
+                signal_direction="long",
+                market_fingerprint=fp_old,
+                market_fingerprint_coarse=fp_old_coarse,
+                reason="spr_hi,sl_tight,rb_low",
+            )
+            suppressed, reason = _ai_entry_should_suppress_retry(
+                account_alias="rortigoza",
+                account_service="bingx",
+                symbol="SOLUSDT",
+                strategy_name="alloc_long",
+                signal_direction="long",
+                market_fingerprint=fp_new,
+                market_fingerprint_coarse=fp_new_coarse,
+            )
+        self.assertNotEqual(fp_old, fp_new)
+        self.assertEqual(fp_old_coarse, fp_new_coarse)
+        self.assertTrue(suppressed)
+        self.assertEqual(reason, "spr_hi,sl_tight,rb_low")
 
     def test_ai_entry_reject_cache_key_is_stable(self):
         key = _ai_entry_reject_cache_key(
