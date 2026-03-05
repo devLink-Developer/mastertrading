@@ -22,7 +22,7 @@ import redis
 
 from adapters import get_default_adapter, get_default_adapter_signature
 from core.ai_feedback import record_ai_feedback_event
-from core.models import Instrument
+from core.models import Instrument, AiFeedbackEvent
 from core.exchange_runtime import (
     extract_balance_values,
     get_runtime_exchange_context,
@@ -386,6 +386,85 @@ def _ai_entry_should_suppress_retry(
     return False, ""
 
 
+def _ai_entry_should_suppress_retry_from_feedback(
+    *,
+    account_alias: str,
+    account_service: str,
+    symbol: str,
+    strategy_name: str,
+    signal_direction: str,
+    session_name: str,
+    sig_score: float,
+    spread_bps: float | None,
+    market_fingerprint: str,
+    market_fingerprint_coarse: str,
+) -> tuple[bool, str]:
+    """
+    DB fallback dedup for AI denials.
+    Useful when Redis cache is unavailable/empty after restarts and to avoid
+    repeated token spend on effectively unchanged conditions.
+    """
+    if not _ai_entry_reject_cooldown_enabled():
+        return False, ""
+
+    cutoff = dj_tz.now() - timedelta(seconds=_ai_entry_reject_cooldown_seconds())
+    alias = str(account_alias or "").strip()
+    service = str(account_service or "").strip().lower()
+    sym = str(symbol or "").strip().upper()
+    strategy = str(strategy_name or "").strip().lower()
+    direction = str(signal_direction or "").strip().lower()
+    session = str(session_name or "").strip().lower()
+    score_now = _to_float(sig_score)
+    spread_now = _round_or_none(spread_bps, 3)
+
+    try:
+        recent = (
+            AiFeedbackEvent.objects.filter(
+                created_at__gte=cutoff,
+                event_type="ai_gate_decision",
+                allow=False,
+                account_alias=alias,
+                account_service=service,
+                symbol=sym,
+                strategy=strategy,
+            )
+            .order_by("-created_at")[:10]
+        )
+    except Exception:
+        return False, ""
+
+    for row in recent:
+        payload = row.payload_json if isinstance(row.payload_json, dict) else {}
+        prev_dir = str(payload.get("direction") or "").strip().lower()
+        if prev_dir and direction and prev_dir != direction:
+            continue
+
+        prev_fp = str(payload.get("market_fp") or "").strip()
+        prev_fp_coarse = str(payload.get("market_fp_coarse") or "").strip()
+        if prev_fp and market_fingerprint and prev_fp == market_fingerprint:
+            return True, str(row.reason or "").strip()[:160] or "ai_reject_cached"
+        if (
+            prev_fp_coarse
+            and market_fingerprint_coarse
+            and prev_fp_coarse == market_fingerprint_coarse
+        ):
+            return True, str(row.reason or "").strip()[:160] or "ai_reject_cached"
+
+        # Legacy fallback for older rows without explicit fp payload.
+        prev_session = str(payload.get("session") or "").strip().lower()
+        if prev_session and session and prev_session != session:
+            continue
+        prev_score = _to_float(payload.get("sig_score"))
+        prev_spread = _round_or_none(payload.get("spread_bps"), 3)
+        if abs(prev_score - score_now) > 0.02:
+            continue
+        if spread_now is not None and prev_spread is not None and abs(prev_spread - spread_now) > 0.50:
+            continue
+        return True, str(row.reason or "").strip()[:160] or "ai_reject_cached"
+
+    return False, ""
+
+
 def _ai_entry_mark_rejected(
     *,
     account_alias: str,
@@ -420,7 +499,8 @@ def _ai_entry_mark_rejected(
     )
     try:
         client.set(key, value, ex=_ai_entry_reject_cooldown_seconds())
-    except Exception:
+    except Exception as exc:
+        logger.warning("AI reject cache write failed key=%s err=%s", key, exc)
         return
 
 
@@ -3643,6 +3723,19 @@ def _attempt_entry_open(
         market_fingerprint=ai_market_fp,
         market_fingerprint_coarse=ai_market_fp_coarse,
     )
+    if not ai_retry_suppressed:
+        ai_retry_suppressed, ai_retry_reason = _ai_entry_should_suppress_retry_from_feedback(
+            account_alias=account_alias,
+            account_service=account_service,
+            symbol=inst.symbol,
+            strategy_name=strategy_name,
+            signal_direction=signal_direction,
+            session_name=current_session,
+            sig_score=sig_score,
+            spread_bps=spread_bps_selected,
+            market_fingerprint=ai_market_fp,
+            market_fingerprint_coarse=ai_market_fp_coarse,
+        )
     if ai_retry_suppressed:
         logger.info(
             "AI gate retry suppressed on %s: unchanged market conditions (reason=%s)",
@@ -3667,6 +3760,8 @@ def _attempt_entry_open(
         sl_pct=sl_pct,
         session_name=current_session,
         sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+        market_fingerprint=ai_market_fp,
+        market_fingerprint_coarse=ai_market_fp_coarse,
     )
     if not ai_allow:
         _ai_entry_mark_rejected(

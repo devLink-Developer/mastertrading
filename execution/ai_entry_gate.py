@@ -403,6 +403,8 @@ def evaluate_ai_entry_gate(
     sl_pct: float,
     session_name: str,
     sig_payload: dict[str, Any],
+    market_fingerprint: str = "",
+    market_fingerprint_coarse: str = "",
 ) -> tuple[bool, float, str, dict[str, Any]]:
     """
     Return (allow, risk_mult, reason, meta).
@@ -583,6 +585,8 @@ def evaluate_ai_entry_gate(
                 "direction": signal_direction,
                 "session": session_name,
                 "spread_bps": None if spread_bps is None else round(_to_float(spread_bps, 0.0), 3),
+                "market_fp": str(market_fingerprint or "").strip()[:64],
+                "market_fp_coarse": str(market_fingerprint_coarse or "").strip()[:64],
                 "cfg_alias": cfg.name_alias,
                 "ai_output_preview": _preview_text(output_text),
                 "ai_output_chars": len(str(output_text or "")),

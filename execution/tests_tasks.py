@@ -6,7 +6,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone as dj_tz
 
-from core.models import Instrument
+from core.models import Instrument, AiFeedbackEvent
 from execution.models import OperationReport, Order
 from marketdata.models import Candle
 from risk.models import RiskEvent
@@ -15,6 +15,7 @@ from execution.tasks import (
     _ai_entry_mark_rejected,
     _ai_entry_reject_cache_key,
     _ai_entry_should_suppress_retry,
+    _ai_entry_should_suppress_retry_from_feedback,
     _acquire_task_lock,
     _check_trailing_stop,
     _classify_exchange_close,
@@ -1337,6 +1338,98 @@ class PyramidingHelpersTest(TestCase):
         )
         self.assertEqual(_position_root_correlation(inst, "buy"), root)
         self.assertEqual(_count_pyramid_adds(inst, "buy", root), 1)
+
+
+class AiFeedbackRetrySuppressTest(TestCase):
+    def test_feedback_dedup_suppresses_when_coarse_fingerprint_matches(self):
+        fp = _ai_entry_market_fingerprint(
+            symbol="DOGEUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            session_name="london",
+            sig_score=0.9577,
+            atr=0.0102,
+            spread_bps=2.05,
+            sl_pct=0.0120,
+            sig_payload={},
+        )
+        fp_coarse = _ai_entry_market_fingerprint(
+            symbol="DOGEUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            session_name="london",
+            sig_score=0.9577,
+            atr=0.0102,
+            spread_bps=2.05,
+            sl_pct=0.0120,
+            sig_payload={},
+            coarse=True,
+        )
+        AiFeedbackEvent.objects.create(
+            event_type="ai_gate_decision",
+            level=AiFeedbackEvent.Level.WARNING,
+            account_alias="rortigoza",
+            account_service="bingx",
+            symbol="DOGEUSDT",
+            strategy="alloc_short",
+            allow=False,
+            risk_mult=0.35,
+            reason="spr_hi,sl_tight,rb_low,contra_sig",
+            payload_json={
+                "direction": "short",
+                "session": "london",
+                "sig_score": 0.9577,
+                "spread_bps": 2.05,
+                "market_fp": fp,
+                "market_fp_coarse": fp_coarse,
+            },
+        )
+
+        suppressed, reason = _ai_entry_should_suppress_retry_from_feedback(
+            account_alias="rortigoza",
+            account_service="bingx",
+            symbol="DOGEUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            session_name="london",
+            sig_score=0.9580,
+            spread_bps=2.10,
+            market_fingerprint=fp,
+            market_fingerprint_coarse=fp_coarse,
+        )
+        self.assertTrue(suppressed)
+        self.assertEqual(reason, "spr_hi,sl_tight,rb_low,contra_sig")
+
+    def test_feedback_dedup_does_not_suppress_for_other_direction(self):
+        AiFeedbackEvent.objects.create(
+            event_type="ai_gate_decision",
+            level=AiFeedbackEvent.Level.WARNING,
+            account_alias="rortigoza",
+            account_service="bingx",
+            symbol="DOGEUSDT",
+            strategy="alloc_short",
+            allow=False,
+            reason="contra_sig",
+            payload_json={
+                "direction": "short",
+                "session": "london",
+                "sig_score": 0.95,
+                "spread_bps": 2.0,
+            },
+        )
+        suppressed, _ = _ai_entry_should_suppress_retry_from_feedback(
+            account_alias="rortigoza",
+            account_service="bingx",
+            symbol="DOGEUSDT",
+            strategy_name="alloc_short",
+            signal_direction="long",
+            session_name="london",
+            sig_score=0.95,
+            spread_bps=2.0,
+            market_fingerprint="",
+            market_fingerprint_coarse="",
+        )
+        self.assertFalse(suppressed)
 
 
 class RiskEventDedupTest(TestCase):
