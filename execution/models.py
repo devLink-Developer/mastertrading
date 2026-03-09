@@ -128,6 +128,11 @@ class OperationReport(TimeStampedModel):
     mfe_r = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
     mae_r = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
     mfe_capture_ratio = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
+    monthly_regime = models.CharField(max_length=24, default="", blank=True)
+    weekly_regime = models.CharField(max_length=24, default="", blank=True)
+    daily_regime = models.CharField(max_length=24, default="", blank=True)
+    btc_lead_state = models.CharField(max_length=24, default="", blank=True)
+    recommended_bias = models.CharField(max_length=24, default="", blank=True)
     closed_at = models.DateTimeField()
 
     class Meta:

@@ -117,6 +117,12 @@ BREAKEVEN_STOP_OFFSET_PCT = float(os.getenv("BREAKEVEN_STOP_OFFSET_PCT", "0.001"
 BREAKEVEN_WINDOW_MINUTES = int(os.getenv("BREAKEVEN_WINDOW_MINUTES", "0"))  # 0 = disabled (no time filter)
 TRAILING_STATE_TTL_SECONDS = max(60, int(os.getenv("TRAILING_STATE_TTL_SECONDS", "172800")))
 TRAILING_SL_MIN_MOVE_PCT = max(0.0, float(os.getenv("TRAILING_SL_MIN_MOVE_PCT", "0.0002")))
+TACTICAL_EXIT_PROFILE_ENABLED = os.getenv("TACTICAL_EXIT_PROFILE_ENABLED", "true").lower() == "true"
+TACTICAL_EXIT_TP_MULT = max(0.1, min(1.0, float(os.getenv("TACTICAL_EXIT_TP_MULT", "0.75"))))
+TACTICAL_EXIT_PARTIAL_R_MULT = max(0.1, min(1.0, float(os.getenv("TACTICAL_EXIT_PARTIAL_R_MULT", "0.85"))))
+TACTICAL_EXIT_TRAIL_R_MULT = max(0.1, min(1.0, float(os.getenv("TACTICAL_EXIT_TRAIL_R_MULT", "0.75"))))
+TACTICAL_EXIT_BREAKEVEN_R_MULT = max(0.1, min(1.0, float(os.getenv("TACTICAL_EXIT_BREAKEVEN_R_MULT", "0.75"))))
+TACTICAL_EXIT_LOCKIN_MULT = max(1.0, min(2.0, float(os.getenv("TACTICAL_EXIT_LOCKIN_MULT", "1.15"))))
 VOL_FAST_EXIT_ENABLED = os.getenv("VOL_FAST_EXIT_ENABLED", "false").lower() == "true"
 VOL_FAST_EXIT_ATR_PCT = max(0.0, float(os.getenv("VOL_FAST_EXIT_ATR_PCT", "0.012")))
 VOL_FAST_EXIT_TP_MULT = max(0.1, min(1.0, float(os.getenv("VOL_FAST_EXIT_TP_MULT", "0.75"))))
@@ -342,6 +348,14 @@ REGIME_BEAR_LONG_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BEAR_LONG_
 REGIME_BULL_SHORT_PENALTY = max(0.0, min(0.95, float(os.getenv("REGIME_BULL_SHORT_PENALTY", "0.10"))))
 BTC_BEAR_LONG_BLOCK_ENABLED = os.getenv("BTC_BEAR_LONG_BLOCK_ENABLED", "false").lower() == "true"
 REGIME_BULL_SHORT_BLOCK_ENABLED = os.getenv("REGIME_BULL_SHORT_BLOCK_ENABLED", "false").lower() == "true"
+MTF_REGIME_ENABLED = os.getenv("MTF_REGIME_ENABLED", "true").lower() == "true"
+MTF_REGIME_D1_LOOKBACK = max(120, int(os.getenv("MTF_REGIME_D1_LOOKBACK", "400")))
+MTF_REGIME_MONTHLY_STRONG_ADX = max(5.0, float(os.getenv("MTF_REGIME_MONTHLY_STRONG_ADX", "18.0")))
+MTF_REGIME_WEEKLY_STRONG_ADX = max(5.0, float(os.getenv("MTF_REGIME_WEEKLY_STRONG_ADX", "20.0")))
+MTF_REGIME_DAILY_STRONG_ADX = max(5.0, float(os.getenv("MTF_REGIME_DAILY_STRONG_ADX", "22.0")))
+BTC_LEAD_FILTER_ENABLED = os.getenv("BTC_LEAD_FILTER_ENABLED", "false").lower() == "true"
+BTC_LEAD_HARD_BLOCK_ENABLED = os.getenv("BTC_LEAD_HARD_BLOCK_ENABLED", "false").lower() == "true"
+BTC_LEAD_ALT_RISK_PENALTY = max(0.0, min(0.95, float(os.getenv("BTC_LEAD_ALT_RISK_PENALTY", "0.15"))))
 REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED = (
     os.getenv("REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED", "true").lower() == "true"
 )

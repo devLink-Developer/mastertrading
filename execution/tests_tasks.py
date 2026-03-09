@@ -42,6 +42,7 @@ from execution.tasks import (
     _is_macro_high_impact_window,
     _regime_adx_min_for_symbol_session,
     _bull_short_retrace_precheck,
+    _btc_lead_directional_risk_mult,
     _regime_directional_risk_mult,
     _volume_activity_ratio,
     _volume_gate_allowed,
@@ -736,6 +737,25 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertAlmostEqual(sl_long, sl_short, places=6)
 
     @override_settings(
+        TAKE_PROFIT_PCT=0.01,
+        STOP_LOSS_PCT=0.007,
+        ATR_MULT_TP=2.0,
+        ATR_MULT_TP_LONG=1.6,
+        ATR_MULT_TP_SHORT=2.2,
+        ATR_MULT_SL=1.5,
+        TAKE_PROFIT_DYNAMIC_MULT=1.0,
+        TAKE_PROFIT_MIN_PCT=0.0,
+        VOL_FAST_EXIT_ENABLED=False,
+        TACTICAL_EXIT_PROFILE_ENABLED=True,
+        TACTICAL_EXIT_TP_MULT=0.75,
+    )
+    def test_compute_tp_sl_prices_compresses_tp_for_tactical_countertrend(self):
+        _, _, tp_long, _ = _compute_tp_sl_prices("buy", 100.0, atr_pct=0.02, recommended_bias="tactical_long")
+        _, _, tp_short, _ = _compute_tp_sl_prices("sell", 100.0, atr_pct=0.02, recommended_bias="tactical_short")
+        self.assertAlmostEqual(tp_long, 0.024, places=6)   # 0.032 * 0.75
+        self.assertAlmostEqual(tp_short, 0.033, places=6)  # 0.044 * 0.75
+
+    @override_settings(
         REGIME_DIRECTIONAL_PENALTY_ENABLED=True,
         REGIME_BEAR_LONG_PENALTY=0.15,
         REGIME_BULL_SHORT_PENALTY=0.10,
@@ -767,6 +787,38 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertTrue(blocked)
         self.assertEqual(mult, 0.0)
         self.assertEqual(reason, "bull_short_block")
+
+    @override_settings(
+        BTC_LEAD_FILTER_ENABLED=True,
+        BTC_LEAD_HARD_BLOCK_ENABLED=True,
+        BTC_LEAD_ALT_RISK_PENALTY=0.20,
+    )
+    def test_btc_lead_filter_blocks_alt_long_in_confirmed_bear_without_tactical_override(self):
+        mult, blocked, reason = _btc_lead_directional_risk_mult(
+            "ETHUSDT",
+            "long",
+            "bear_confirmed",
+            "short_bias",
+        )
+        self.assertTrue(blocked)
+        self.assertEqual(mult, 0.0)
+        self.assertEqual(reason, "btc_lead_bear_alt_long_block")
+
+    @override_settings(
+        BTC_LEAD_FILTER_ENABLED=True,
+        BTC_LEAD_HARD_BLOCK_ENABLED=True,
+        BTC_LEAD_ALT_RISK_PENALTY=0.20,
+    )
+    def test_btc_lead_filter_reduces_penalty_for_tactical_countertrend(self):
+        mult, blocked, reason = _btc_lead_directional_risk_mult(
+            "ETHUSDT",
+            "long",
+            "bear_confirmed",
+            "tactical_long",
+        )
+        self.assertFalse(blocked)
+        self.assertAlmostEqual(mult, 0.90, places=6)
+        self.assertEqual(reason, "btc_lead_bear_alt_long_penalty")
 
     @override_settings(
         REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED=True,
@@ -933,6 +985,37 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertTrue(any(k.startswith("trail:max_adv:") for k in client.expiry))
         self.assertTrue(any(k.startswith("trail:sl_pct:") for k in client.expiry))
         self.assertTrue(all(v == 111 for v in client.expiry.values()))
+
+    @override_settings(
+        TRAILING_STOP_ENABLED=True,
+        BREAKEVEN_STOP_ENABLED=False,
+        PARTIAL_CLOSE_AT_R=5.0,
+        TRAILING_ADAPTIVE_ENABLED=True,
+        TRAILING_ACTIVATION_R_LOWVOL=2.5,
+        TRAILING_ACTIVATION_R_HIGHVOL=1.5,
+        TRAILING_ACTIVATION_ATR_THRESHOLD=0.015,
+        TACTICAL_EXIT_PROFILE_ENABLED=True,
+        TACTICAL_EXIT_TRAIL_R_MULT=0.6,
+        TACTICAL_EXIT_PARTIAL_R_MULT=1.0,
+    )
+    def test_tactical_exit_profile_activates_trailing_earlier(self):
+        adapter = _DummyAdapter()
+        client = _DummyRedis()
+        with patch("execution.tasks._redis_client", return_value=client):
+            with patch("execution.tasks._has_sl_stop_order", return_value=(False, 0.0, [])):
+                with patch("execution.tasks._place_sl_order") as place_mock:
+                    _check_trailing_stop(
+                        adapter=adapter,
+                        symbol="BTCUSDT",
+                        side="buy",
+                        current_qty=1.0,
+                        entry_price=100.0,
+                        last_price=103.0,  # 3% pnl, with 2% sl = 1.5R
+                        sl_pct=0.02,
+                        atr_pct=0.01,  # low-vol => normal activation 2.5R
+                        recommended_bias="tactical_long",
+                    )
+                    place_mock.assert_called_once()
 
     @override_settings(
         EXCHANGE_CLOSE_CLASSIFY_STOP_SCALE=0.35,
@@ -1147,6 +1230,46 @@ class OperationReportFeeNetTest(TestCase):
         self.assertIsNone(redis_stub.get(f"trail:max_adv:{state_key}"))
         self.assertIsNone(redis_stub.get(f"trail:sl_pct:{state_key}"))
         self.assertIsNone(redis_stub.get(f"trail:partial_done:{state_key}"))
+
+    @override_settings(ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False)
+    def test_log_operation_persists_regime_snapshot_fields(self):
+        inst = Instrument.objects.create(
+            symbol="ETHUSDT",
+            exchange="bingx",
+            base="ETH",
+            quote="USDT",
+        )
+        with patch(
+            "execution.tasks._operation_regime_snapshot",
+            return_value={
+                "monthly_regime": "bear_confirmed",
+                "weekly_regime": "bear_weak",
+                "daily_regime": "bull_weak",
+                "btc_lead_state": "bear_confirmed",
+                "recommended_bias": "tactical_long",
+            },
+        ):
+            _log_operation(
+                inst=inst,
+                side="buy",
+                qty=1.0,
+                entry_price=100.0,
+                exit_price=101.0,
+                reason="tp",
+                signal_id="5",
+                correlation_id="5-ETHUSDT",
+                leverage=5.0,
+                fee_usdt=0.0,
+                opened_at=None,
+                contract_size=1.0,
+            )
+
+        op = OperationReport.objects.get(instrument=inst)
+        self.assertEqual(op.monthly_regime, "bear_confirmed")
+        self.assertEqual(op.weekly_regime, "bear_weak")
+        self.assertEqual(op.daily_regime, "bull_weak")
+        self.assertEqual(op.btc_lead_state, "bear_confirmed")
+        self.assertEqual(op.recommended_bias, "tactical_long")
 
 
 class OperationReportMlRetrainTriggerTest(TestCase):

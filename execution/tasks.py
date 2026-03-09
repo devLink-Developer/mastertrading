@@ -38,6 +38,11 @@ from signals.direction_policy import (
     is_direction_allowed,
 )
 from signals.feature_flags import FEATURE_KEYS, resolve_runtime_flags
+from signals.regime_mtf import (
+    build_symbol_regime_snapshot,
+    consolidate_lead_state,
+    recommended_bias as _mtf_recommended_bias,
+)
 from signals.models import Signal
 from marketdata.models import Candle
 from risk.models import RiskEvent
@@ -1567,7 +1572,32 @@ def _is_macro_high_impact_window(
     }
 
 
-def _compute_tp_sl_prices(side: str, entry_price: float, atr_pct: float | None):
+def _tactical_exit_profile(side: str, recommended_bias: str | None) -> dict[str, float | bool | str]:
+    bias = str(recommended_bias or "").strip().lower()
+    side_txt = str(side or "").strip().lower()
+    active = (
+        (side_txt == "buy" and bias == "tactical_long")
+        or (side_txt == "sell" and bias == "tactical_short")
+    )
+    if not bool(getattr(settings, "TACTICAL_EXIT_PROFILE_ENABLED", True)):
+        active = False
+    return {
+        "active": active,
+        "bias": bias,
+        "tp_mult": float(getattr(settings, "TACTICAL_EXIT_TP_MULT", 0.75) or 0.75),
+        "partial_r_mult": float(getattr(settings, "TACTICAL_EXIT_PARTIAL_R_MULT", 0.85) or 0.85),
+        "trail_r_mult": float(getattr(settings, "TACTICAL_EXIT_TRAIL_R_MULT", 0.75) or 0.75),
+        "breakeven_r_mult": float(getattr(settings, "TACTICAL_EXIT_BREAKEVEN_R_MULT", 0.75) or 0.75),
+        "lockin_mult": float(getattr(settings, "TACTICAL_EXIT_LOCKIN_MULT", 1.15) or 1.15),
+    }
+
+
+def _compute_tp_sl_prices(
+    side: str,
+    entry_price: float,
+    atr_pct: float | None,
+    recommended_bias: str | None = "",
+):
     """
     Compute TP and SL prices based on ATR or defaults.
     Returns (tp_price, sl_price, tp_pct, sl_pct).
@@ -1600,6 +1630,13 @@ def _compute_tp_sl_prices(side: str, entry_price: float, atr_pct: float | None):
         tp_mult = float(getattr(settings, "VOL_FAST_EXIT_TP_MULT", 0.75) or 0.75)
         min_tp = float(getattr(settings, "VOL_FAST_EXIT_MIN_TP_PCT", 0.006) or 0.006)
         tp_pct = max(min_tp, tp_pct * max(0.1, min(tp_mult, 1.0)))
+
+    tactical_profile = _tactical_exit_profile(side, recommended_bias)
+    if bool(tactical_profile.get("active")):
+        tp_pct = max(
+            tp_floor,
+            tp_pct * max(0.1, min(float(tactical_profile.get("tp_mult", 0.75) or 0.75), 1.0)),
+        )
 
     # Enforce absolute minimum SL to prevent noise-driven stop-outs
     sl_pct = max(sl_pct, min_sl)
@@ -1812,6 +1849,7 @@ def _check_trailing_stop(
     opened_at=None,
     contract_size: float = 1.0,
     atr_pct: float | None = None,
+    recommended_bias: str | None = "",
 ) -> tuple[bool, float]:
     """
     Profit protection:
@@ -1839,6 +1877,7 @@ def _check_trailing_stop(
         0.0,
         float(getattr(settings, "TRAILING_SL_MIN_MOVE_PCT", 0.0002) or 0.0002),
     )
+    tactical_profile = _tactical_exit_profile(side, recommended_bias)
 
     partial_r_trigger = float(getattr(settings, "PARTIAL_CLOSE_AT_R", 1.0) or 1.0)
     trail_activation_r = float(getattr(settings, "TRAILING_STOP_ACTIVATION_R", 2.5) or 2.5)
@@ -1859,6 +1898,9 @@ def _check_trailing_stop(
         trail_mult = float(getattr(settings, "VOL_FAST_EXIT_TRAIL_R_MULT", 0.75) or 0.75)
         partial_r_trigger *= max(0.1, min(partial_mult, 1.0))
         trail_activation_r *= max(0.1, min(trail_mult, 1.0))
+    if bool(tactical_profile.get("active")):
+        partial_r_trigger *= max(0.1, min(float(tactical_profile.get("partial_r_mult", 0.85) or 0.85), 1.0))
+        trail_activation_r *= max(0.1, min(float(tactical_profile.get("trail_r_mult", 0.75) or 0.75), 1.0))
 
     # Partial close at PARTIAL_CLOSE_AT_R (supports fractional positions/contracts).
     if r_multiple >= partial_r_trigger:
@@ -1957,6 +1999,8 @@ def _check_trailing_stop(
 
         if be_allowed:
             be_at_r = float(getattr(settings, "BREAKEVEN_STOP_AT_R", 1.0) or 0.0)
+            if bool(tactical_profile.get("active")):
+                be_at_r *= max(0.1, min(float(tactical_profile.get("breakeven_r_mult", 0.75) or 0.75), 1.0))
             if be_at_r > 0 and max_r >= be_at_r:
                 be_offset = float(getattr(settings, "BREAKEVEN_STOP_OFFSET_PCT", 0.0) or 0.0)
                 be_offset = max(0.0, be_offset)
@@ -2011,6 +2055,8 @@ def _check_trailing_stop(
         lock_slope = float(getattr(settings, "TRAILING_LOCKIN_SLOPE", 15.0) or 15.0)
         dyn_lock = lock_min + (atr_pct * lock_slope)
         lock_in = max(lock_min, min(lock_max, dyn_lock))
+    if bool(tactical_profile.get("active")):
+        lock_in = max(0.0, min(1.0, lock_in * float(tactical_profile.get("lockin_mult", 1.15) or 1.15)))
     trail_sl = _trail_sl_from_hwm(entry_price, max_fav, lock_in, is_long)
 
     # If trailing already violated, force-close as fallback (exchange SL should also trigger).
@@ -2157,6 +2203,8 @@ def _log_operation(
         mae_r = None
         mfe_capture_ratio = None
 
+    regime_snapshot = _operation_regime_snapshot(inst)
+
     OperationReport.objects.create(
         instrument=inst,
         side=side,
@@ -2181,6 +2229,11 @@ def _log_operation(
         mfe_r=mfe_r,
         mae_r=mae_r,
         mfe_capture_ratio=mfe_capture_ratio,
+        monthly_regime=str(regime_snapshot.get("monthly_regime", "") or ""),
+        weekly_regime=str(regime_snapshot.get("weekly_regime", "") or ""),
+        daily_regime=str(regime_snapshot.get("daily_regime", "") or ""),
+        btc_lead_state=str(regime_snapshot.get("btc_lead_state", "") or ""),
+        recommended_bias=str(regime_snapshot.get("recommended_bias", "") or ""),
         closed_at=dj_tz.now(),
     )
     try:
@@ -3288,6 +3341,56 @@ def _compute_regime_adx_gate(
     )
 
 
+def _compute_mtf_regime_context(
+    enabled_instruments: list[Instrument],
+) -> tuple[dict[str, dict[str, Any]], str, str]:
+    snapshots: dict[str, dict[str, Any]] = {}
+    if not bool(getattr(settings, "MTF_REGIME_ENABLED", True)):
+        return snapshots, "transition", "balanced"
+
+    for inst in enabled_instruments:
+        try:
+            snapshots[inst.symbol] = build_symbol_regime_snapshot(inst)
+        except Exception as exc:
+            logger.debug("MTF regime snapshot failed for %s: %s", inst.symbol, exc)
+
+    btc_snapshot = snapshots.get("BTCUSDT")
+    if btc_snapshot is None:
+        try:
+            btc_inst = next((x for x in enabled_instruments if x.symbol == "BTCUSDT"), None)
+            if btc_inst is None:
+                btc_inst = Instrument.objects.filter(symbol="BTCUSDT").first()
+            if btc_inst is not None:
+                btc_snapshot = build_symbol_regime_snapshot(btc_inst)
+                snapshots["BTCUSDT"] = btc_snapshot
+        except Exception:
+            btc_snapshot = None
+
+    if not isinstance(btc_snapshot, dict):
+        return snapshots, "transition", "balanced"
+
+    btc_lead_state = consolidate_lead_state(
+        btc_snapshot.get("monthly_regime", "transition"),
+        btc_snapshot.get("weekly_regime", "transition"),
+        btc_snapshot.get("daily_regime", "transition"),
+    )
+    btc_recommended_bias = _mtf_recommended_bias(
+        btc_snapshot.get("monthly_regime", "transition"),
+        btc_snapshot.get("weekly_regime", "transition"),
+        btc_snapshot.get("daily_regime", "transition"),
+        lead_state=btc_lead_state,
+    )
+    logger.info(
+        "MTF regime BTC context: monthly=%s weekly=%s daily=%s lead=%s bias=%s",
+        btc_snapshot.get("monthly_regime", "transition"),
+        btc_snapshot.get("weekly_regime", "transition"),
+        btc_snapshot.get("daily_regime", "transition"),
+        btc_lead_state,
+        btc_recommended_bias,
+    )
+    return snapshots, btc_lead_state, btc_recommended_bias
+
+
 def _regime_directional_risk_mult(
     symbol: str,
     signal_direction: str,
@@ -3312,6 +3415,80 @@ def _regime_directional_risk_mult(
         penalty = max(0.0, min(float(getattr(settings, "REGIME_BULL_SHORT_PENALTY", 0.10) or 0.10), 0.95))
         return (1.0 - penalty), False, "bull_short_penalty"
     return 1.0, False, "neutral"
+
+
+def _btc_lead_directional_risk_mult(
+    symbol: str,
+    signal_direction: str,
+    btc_lead_state: str,
+    btc_recommended_bias: str,
+) -> tuple[float, bool, str]:
+    if not bool(getattr(settings, "BTC_LEAD_FILTER_ENABLED", False)):
+        return 1.0, False, "disabled"
+    sym = str(symbol or "").strip().upper()
+    if not sym or sym == "BTCUSDT":
+        return 1.0, False, "self"
+
+    direction = str(signal_direction or "").strip().lower()
+    lead_state = str(btc_lead_state or "transition").strip().lower()
+    rec_bias = str(btc_recommended_bias or "balanced").strip().lower()
+    penalty = max(0.0, min(float(getattr(settings, "BTC_LEAD_ALT_RISK_PENALTY", 0.15) or 0.15), 0.95))
+    hard_block = bool(getattr(settings, "BTC_LEAD_HARD_BLOCK_ENABLED", False))
+
+    if direction == "long" and lead_state in {"bear_confirmed", "bear_weak"}:
+        tactical_ok = rec_bias == "tactical_long"
+        if hard_block and lead_state == "bear_confirmed" and not tactical_ok:
+            return 0.0, True, "btc_lead_bear_alt_long_block"
+        scale = 0.5 if tactical_ok or lead_state == "bear_weak" else 1.0
+        return max(0.0, 1.0 - penalty * scale), False, "btc_lead_bear_alt_long_penalty"
+
+    if direction == "short" and lead_state in {"bull_confirmed", "bull_weak"}:
+        tactical_ok = rec_bias == "tactical_short"
+        if hard_block and lead_state == "bull_confirmed" and not tactical_ok:
+            return 0.0, True, "btc_lead_bull_alt_short_block"
+        scale = 0.5 if tactical_ok or lead_state == "bull_weak" else 1.0
+        return max(0.0, 1.0 - penalty * scale), False, "btc_lead_bull_alt_short_penalty"
+
+    return 1.0, False, "neutral"
+
+
+def _operation_regime_snapshot(inst: Instrument) -> dict[str, str]:
+    snapshot = {
+        "monthly_regime": "",
+        "weekly_regime": "",
+        "daily_regime": "",
+        "btc_lead_state": "",
+        "recommended_bias": "",
+    }
+    if not bool(getattr(settings, "MTF_REGIME_ENABLED", True)):
+        return snapshot
+
+    try:
+        symbol_snapshot = build_symbol_regime_snapshot(inst)
+        snapshot["monthly_regime"] = str(symbol_snapshot.get("monthly_regime", "") or "")
+        snapshot["weekly_regime"] = str(symbol_snapshot.get("weekly_regime", "") or "")
+        snapshot["daily_regime"] = str(symbol_snapshot.get("daily_regime", "") or "")
+        if inst.symbol == "BTCUSDT":
+            btc_snapshot = symbol_snapshot
+        else:
+            btc_inst = Instrument.objects.filter(symbol="BTCUSDT").first()
+            btc_snapshot = build_symbol_regime_snapshot(btc_inst) if btc_inst is not None else None
+        if isinstance(btc_snapshot, dict):
+            lead_state = consolidate_lead_state(
+                btc_snapshot.get("monthly_regime", "transition"),
+                btc_snapshot.get("weekly_regime", "transition"),
+                btc_snapshot.get("daily_regime", "transition"),
+            )
+            snapshot["btc_lead_state"] = lead_state
+            snapshot["recommended_bias"] = _mtf_recommended_bias(
+                btc_snapshot.get("monthly_regime", "transition"),
+                btc_snapshot.get("weekly_regime", "transition"),
+                btc_snapshot.get("daily_regime", "transition"),
+                lead_state=lead_state,
+            )
+    except Exception as exc:
+        logger.debug("Operation regime snapshot failed for %s: %s", getattr(inst, "symbol", "n/a"), exc)
+    return snapshot
 
 
 def _bull_short_retrace_precheck(
@@ -3453,6 +3630,8 @@ def _attempt_entry_open(
     regime_bias_by_symbol: dict[str, str],
     regime_adx_min: float,
     market_regime_adx: float | None,
+    btc_lead_state: str,
+    btc_recommended_bias: str,
     allow_scale_entry: bool,
     scale_parent_correlation: str,
     scale_add_index: int,
@@ -3562,6 +3741,22 @@ def _attempt_entry_open(
             "Pre-AI bull short retrace gate blocked %s: reason=%s",
             inst.symbol,
             retrace_reason,
+        )
+        return 0, 0.0
+
+    btc_lead_mult, btc_lead_blocked, btc_lead_reason = _btc_lead_directional_risk_mult(
+        inst.symbol,
+        signal_direction,
+        btc_lead_state,
+        btc_recommended_bias,
+    )
+    if btc_lead_blocked:
+        logger.info(
+            "BTC lead context blocked entry on %s: lead=%s bias=%s reason=%s",
+            inst.symbol,
+            btc_lead_state,
+            btc_recommended_bias,
+            btc_lead_reason,
         )
         return 0, 0.0
 
@@ -3817,6 +4012,16 @@ def _attempt_entry_open(
             regime_bias,
             regime_mult,
             regime_reason,
+        )
+    if btc_lead_mult < 1.0:
+        ai_risk_mult *= btc_lead_mult
+        logger.info(
+            "BTC lead penalty on %s: lead=%s bias=%s mult=%.3f reason=%s",
+            inst.symbol,
+            btc_lead_state,
+            btc_recommended_bias,
+            btc_lead_mult,
+            btc_lead_reason,
         )
     ai_risk_mult = max(0.0, min(float(ai_risk_mult), 1.0))
 
@@ -4078,7 +4283,12 @@ def _attempt_entry_open(
         )
         return 0, 0.0
 
-    tp_price, sl_price, _, _ = _compute_tp_sl_prices(side, last_price, atr)
+    tp_price, sl_price, _, _ = _compute_tp_sl_prices(
+        side,
+        last_price,
+        atr,
+        recommended_bias=btc_recommended_bias,
+    )
     base_correlation_id = _safe_correlation_id(f"{sig.id}-{inst.symbol}")
     correlation_id = base_correlation_id
     parent_correlation_id = base_correlation_id
@@ -4128,7 +4338,12 @@ def _attempt_entry_open(
 
         fill_price = _to_float(resp.get("average") or resp.get("price") or last_price)
         if fill_price and fill_price > 0:
-            tp_price, sl_price, _, _ = _compute_tp_sl_prices(side, fill_price, atr)
+            tp_price, sl_price, _, _ = _compute_tp_sl_prices(
+                side,
+                fill_price,
+                atr,
+                recommended_bias=btc_recommended_bias,
+            )
             logger.info(
                 "SL/TP recalculated with fill_price=%.4f (last=%.4f slippage=%.4f%%)",
                 fill_price,
@@ -4246,6 +4461,7 @@ def _manage_open_position(
     leverage: float,
     equity_usdt: float,
     current_session: str,
+    btc_recommended_bias: str,
     account_ai_enabled: bool,
     account_ai_config_id: int | None,
     account_owner_id: int | None,
@@ -4314,6 +4530,7 @@ def _manage_open_position(
         pos_side,
         entry_price or last,
         atr,
+        recommended_bias=btc_recommended_bias,
     )
 
     if entry_price and abs(current_qty) > 0:
@@ -4332,6 +4549,7 @@ def _manage_open_position(
             pos_opened_at,
             contract_size,
             atr_pct=atr,
+            recommended_bias=btc_recommended_bias,
         )
         if was_trailed:
             pnl_trail = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
@@ -5057,6 +5275,9 @@ def execute_orders():
         enabled_instruments,
         current_session=current_session,
     )
+    _mtf_snapshot_by_symbol, _btc_lead_state, _btc_recommended_bias = _compute_mtf_regime_context(
+        enabled_instruments,
+    )
 
     for inst in enabled_instruments:
 
@@ -5147,6 +5368,7 @@ def execute_orders():
             leverage=leverage,
             equity_usdt=equity_usdt,
             current_session=current_session,
+            btc_recommended_bias=_btc_recommended_bias,
             account_ai_enabled=account_ai_enabled,
             account_ai_config_id=account_ai_config_id,
             account_owner_id=account_owner_id,
@@ -5177,6 +5399,8 @@ def execute_orders():
             regime_bias_by_symbol=_regime_bias_by_symbol,
             regime_adx_min=_regime_adx_min,
             market_regime_adx=_market_regime_adx,
+            btc_lead_state=_btc_lead_state,
+            btc_recommended_bias=_btc_recommended_bias,
             allow_scale_entry=allow_scale_entry,
             scale_parent_correlation=scale_parent_correlation,
             scale_add_index=scale_add_index,
