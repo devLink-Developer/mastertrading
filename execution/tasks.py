@@ -1109,15 +1109,111 @@ def _create_risk_event(
             severity=severity,
             details_json=details_obj,
         )
+        notify_details = _format_risk_event_notification_details(
+            instrument=instrument,
+            details=details_obj,
+        )
         # Throttle Telegram: only notify once per kind+instrument every 30 min
         throttle_key = f"risk:notified:{risk_ns}:{kind}:{symbol}"
         if client and client.set(throttle_key, "1", nx=True, ex=1800):
-            notify_risk_event(kind, severity, str(details_obj) if details_obj else "")
+            notify_risk_event(kind, severity, notify_details)
         elif client is None:
-            notify_risk_event(kind, severity, str(details_obj) if details_obj else "")
+            notify_risk_event(kind, severity, notify_details)
         # else: throttled - skip Telegram
     except Exception as exc:
         logger.warning("Failed to create risk event: %s", exc)
+
+
+def _format_risk_event_notification_details(instrument=None, details: dict | None = None) -> str:
+    details_obj = details or {}
+    lines: list[str] = []
+    symbol = ""
+    try:
+        symbol = str(getattr(instrument, "symbol", "") or details_obj.get("symbol") or "").strip()
+    except Exception:
+        symbol = ""
+    if symbol and symbol.lower() != "global":
+        lines.append(f"Symbol: {symbol}")
+
+    if isinstance(details_obj, dict):
+        latest_ts = details_obj.get("latest_ts")
+        age_seconds = details_obj.get("age_seconds")
+        if latest_ts:
+            lines.append(f"Latest 1m: {latest_ts}")
+        if age_seconds is not None:
+            try:
+                lines.append(f"Age: {int(float(age_seconds))}s")
+            except Exception:
+                lines.append(f"Age: {age_seconds}")
+        for key in sorted(details_obj):
+            if key in {"symbol", "latest_ts", "age_seconds"}:
+                continue
+            value = details_obj.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=True, sort_keys=True)
+            lines.append(f"{key}: {value}")
+    elif details_obj:
+        lines.append(str(details_obj))
+    return "\n".join(lines)
+
+
+def _track_data_staleness_transition(
+    instrument: Instrument,
+    latest_ts,
+    *,
+    now_ts=None,
+    risk_ns: str = "global",
+) -> tuple[bool, bool, dict]:
+    """
+    Track stale-data transitions per symbol/stack.
+
+    Returns:
+      (is_stale, should_emit_event, details)
+    """
+    now_ts = now_ts or dj_tz.now()
+    age_seconds = None
+    if latest_ts is not None:
+        try:
+            age_seconds = max(0, int((now_ts - latest_ts).total_seconds()))
+        except Exception:
+            age_seconds = None
+    is_stale = latest_ts is None or (age_seconds is not None and age_seconds > settings.DATA_STALE_SECONDS)
+    symbol = str(getattr(instrument, "symbol", "") or "global").strip() or "global"
+    state_key = f"risk:data_stale:state:{risk_ns}:{symbol}"
+    state_ttl = max(int(getattr(settings, "DATA_STALE_SECONDS", 300) or 300) * 12, 3600)
+
+    if not is_stale:
+        client = _redis_client()
+        if client is not None and client.delete(state_key):
+            logger.info("Market data recovered for %s", symbol)
+        return False, False, {}
+
+    details = {
+        "symbol": symbol,
+        "latest_ts": latest_ts.isoformat() if latest_ts is not None else None,
+        "age_seconds": age_seconds,
+    }
+    client = _redis_client()
+    if client is not None:
+        should_emit = bool(client.set(state_key, "1", nx=True, ex=state_ttl))
+        if not should_emit:
+            client.expire(state_key, state_ttl)
+        return True, should_emit, details
+
+    recent_window_seconds = max(
+        int(getattr(settings, "DATA_STALE_SECONDS", 300) or 300),
+        int(getattr(settings, "RISK_EVENT_DEDUP_SECONDS", 300) or 300),
+        300,
+    ) * 2
+    recent_cutoff = now_ts - timedelta(seconds=recent_window_seconds)
+    recent_exists = RiskEvent.objects.filter(
+        instrument=instrument,
+        kind="data_stale",
+        ts__gte=recent_cutoff,
+    ).exists()
+    return True, not recent_exists, details
 
 def _atr_pct(instrument: Instrument, period: int = 14, tf: str = "5m"):
     qs = (
@@ -5427,9 +5523,23 @@ def execute_orders():
 
         # 3a. Data staleness check
         latest_ts = getattr(inst, "latest_1m_ts", None)
-        if latest_ts is None or (now_cycle - latest_ts).total_seconds() > settings.DATA_STALE_SECONDS:
-            logger.warning("Market data stale for %s, skipping", inst.symbol)
-            _create_risk_event("data_stale", "medium", instrument=inst)
+        is_stale, emit_stale_event, stale_details = _track_data_staleness_transition(
+            inst,
+            latest_ts,
+            now_ts=now_cycle,
+            risk_ns=risk_ns,
+        )
+        if is_stale:
+            log_fn = logger.warning if emit_stale_event else logger.debug
+            log_fn("Market data stale for %s, skipping", inst.symbol)
+            if emit_stale_event:
+                _create_risk_event(
+                    "data_stale",
+                    "medium",
+                    instrument=inst,
+                    details=stale_details,
+                    risk_ns=risk_ns,
+                )
             continue
 
         # 3b. Latest signal

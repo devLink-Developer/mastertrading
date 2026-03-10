@@ -671,3 +671,13 @@ docker compose logs --tail=120 chatbot
 - Regla practica:
   - para cambios de `eudy`, siempre usar solo `docker-compose.eudy.yml`
   - para cambios del stack principal, usar solo `docker-compose.yml`
+
+### 2026-03-10 update: data_stale por transicion
+- `execution/tasks.py` ya no debe emitir `RiskEvent(data_stale)` en cada ventana fija mientras un simbolo siga stale.
+- Politica correcta:
+  - emitir solo en transicion `fresh -> stale`
+  - limpiar el estado cuando el simbolo vuelve a estar fresco
+  - incluir en Telegram `Symbol`, `Latest 1m` y `Age`
+- Motivo:
+  - evita spam operativo cuando un simbolo queda atrasado varios minutos
+  - mantiene la senal de incidente real sin ocultar el problema de ingestion

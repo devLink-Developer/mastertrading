@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -45,6 +46,35 @@ def _tf_to_seconds(tf: str) -> int:
     if tf.endswith("d"):
         return int(tf[:-1]) * 86400
     return 60
+
+
+def _ohlcv_fetch_params(
+    latest_ts: datetime | None,
+    timeframe: str,
+    now_utc: datetime,
+    *,
+    incremental_limit: int = 20,
+    full_limit: int = 200,
+) -> tuple[int | None, int, bool]:
+    """
+    Choose incremental vs catch-up fetch params.
+
+    If a symbol is many candles behind, asking for `since=old_ts` with a tiny limit can
+    trap the worker fetching the same stale chunk forever. In that case switch to a
+    tail fetch (`since=None`) so the DB snaps back to the latest market window.
+    """
+    if latest_ts is None:
+        return None, full_limit, False
+
+    tf_seconds = _tf_to_seconds(timeframe)
+    lag_seconds = max(0.0, (now_utc - latest_ts).total_seconds())
+    lag_candles = int(math.ceil(lag_seconds / max(tf_seconds, 1)))
+    if lag_candles > max(3, incremental_limit - 4):
+        catchup_limit = min(full_limit, max(incremental_limit, lag_candles + 5))
+        return None, catchup_limit, True
+
+    since_dt = latest_ts - timedelta(seconds=tf_seconds * 3)
+    return int(since_dt.timestamp() * 1000), incremental_limit, False
 
 
 # ---------------------------------------------------------------------------
@@ -96,14 +126,20 @@ def fetch_instrument_data(instrument_id: int):
     for tf in tf_list:
         try:
             latest_ts = latest_by_tf.get(tf)
-            if latest_ts:
-                tf_seconds = _tf_to_seconds(tf)
-                since_dt = latest_ts - timedelta(seconds=tf_seconds * 3)
-                since_ms = int(since_dt.timestamp() * 1000)
-                limit = 20
-            else:
-                since_ms = None
-                limit = 200
+            since_ms, limit, catchup_mode = _ohlcv_fetch_params(
+                latest_ts,
+                tf,
+                now_utc,
+            )
+            if catchup_mode:
+                lag_seconds = max(0.0, (now_utc - latest_ts).total_seconds()) if latest_ts else 0.0
+                logger.info(
+                    "fetch_ohlcv catch-up mode %s %s lag=%.0fs limit=%d",
+                    symbol,
+                    tf,
+                    lag_seconds,
+                    limit,
+                )
             ohlcvs = adapter.fetch_ohlcv(symbol, timeframe=tf, since=since_ms, limit=limit)
             candles = [
                 Candle(

@@ -50,6 +50,7 @@ from execution.tasks import (
     _volume_gate_allowed,
     _volume_gate_min_ratio,
     _tp_sl_gate_pnl_pct,
+    _track_data_staleness_transition,
     _volatility_adjusted_risk,
 )
 
@@ -1649,3 +1650,89 @@ class RiskEventDedupTest(TestCase):
             ).count(),
             1,
         )
+
+    def test_create_risk_event_formats_stale_details_for_notification(self):
+        inst = Instrument.objects.create(
+            symbol="ETHUSDT",
+            exchange="bingx",
+            base="ETH",
+            quote="USDT",
+        )
+        redis_stub = _DummyRedis()
+
+        with patch("execution.tasks._redis_client", return_value=redis_stub):
+            with patch("execution.tasks.notify_risk_event") as notify_mock:
+                _create_risk_event(
+                    "data_stale",
+                    "medium",
+                    instrument=inst,
+                    details={
+                        "symbol": "ETHUSDT",
+                        "latest_ts": "2026-03-10T02:06:00+00:00",
+                        "age_seconds": 40556,
+                    },
+                    risk_ns="stack_rortigoza",
+                )
+
+        self.assertEqual(notify_mock.call_count, 1)
+        args = notify_mock.call_args[0]
+        self.assertEqual(args[0], "data_stale")
+        self.assertEqual(args[1], "medium")
+        self.assertIn("Symbol: ETHUSDT", args[2])
+        self.assertIn("Latest 1m: 2026-03-10T02:06:00+00:00", args[2])
+        self.assertIn("Age: 40556s", args[2])
+
+
+class DataStalenessTransitionTest(TestCase):
+    @override_settings(DATA_STALE_SECONDS=300)
+    def test_track_data_staleness_emits_only_on_state_transition(self):
+        inst = Instrument.objects.create(
+            symbol="ETHUSDT",
+            exchange="bingx",
+            base="ETH",
+            quote="USDT",
+        )
+        redis_stub = _DummyRedis()
+        initial_now = datetime(2026, 3, 10, 13, 0, tzinfo=timezone.utc)
+        stale_latest = initial_now - timedelta(minutes=10)
+
+        with patch("execution.tasks._redis_client", return_value=redis_stub):
+            is_stale, should_emit, details = _track_data_staleness_transition(
+                inst,
+                stale_latest,
+                now_ts=initial_now,
+                risk_ns="stack_rortigoza",
+            )
+            self.assertTrue(is_stale)
+            self.assertTrue(should_emit)
+            self.assertEqual(details["symbol"], "ETHUSDT")
+
+            is_stale, should_emit, _ = _track_data_staleness_transition(
+                inst,
+                stale_latest,
+                now_ts=initial_now + timedelta(minutes=1),
+                risk_ns="stack_rortigoza",
+            )
+            self.assertTrue(is_stale)
+            self.assertFalse(should_emit)
+
+            recovery_now = initial_now + timedelta(minutes=2)
+            fresh_latest = recovery_now - timedelta(seconds=60)
+            is_stale, should_emit, details = _track_data_staleness_transition(
+                inst,
+                fresh_latest,
+                now_ts=recovery_now,
+                risk_ns="stack_rortigoza",
+            )
+            self.assertFalse(is_stale)
+            self.assertFalse(should_emit)
+            self.assertEqual(details, {})
+
+            is_stale, should_emit, _ = _track_data_staleness_transition(
+                inst,
+                recovery_now - timedelta(minutes=9),
+                now_ts=recovery_now + timedelta(minutes=1),
+                risk_ns="stack_rortigoza",
+            )
+            self.assertTrue(is_stale)
+            self.assertTrue(should_emit)
