@@ -28,6 +28,8 @@ from execution.tasks import (
     _is_insufficient_margin_error,
     _ml_entry_filter_model_path,
     _ml_entry_filter_min_prob,
+    _align_min_order_qty,
+    _minimum_order_amount_from_error,
     _market_min_qty,
     _is_no_position_error,
     _log_operation,
@@ -154,6 +156,21 @@ class _DummyAdapterPrecisionTickSize:
         return symbol
 
 
+class _DummyAdapterAlignUp:
+    class _Client:
+        precisionMode = 4
+
+        @staticmethod
+        def amount_to_precision(_symbol: str, amount: float) -> str:
+            return f"{int(amount):d}"
+
+    client = _Client()
+
+    @staticmethod
+    def _map_symbol(symbol: str) -> str:
+        return symbol
+
+
 class TaskHelpersTest(SimpleTestCase):
     def test_extract_fee_from_fees_list(self):
         fee = _extract_fee_usdt({"fees": [{"cost": 0.11}, {"cost": "0.04"}]})
@@ -199,6 +216,43 @@ class TaskHelpersTest(SimpleTestCase):
             "precision": {"amount": 1.0},
         }
         self.assertEqual(_market_min_qty(market, fallback=0.0, precision_mode=4), 1.0)
+
+    def test_market_min_qty_uses_cost_floor_when_higher(self):
+        market = {
+            "limits": {"amount": {"min": 6.0}, "cost": {"min": 2.0}},
+            "precision": {"amount": 1.0},
+        }
+        self.assertEqual(
+            _market_min_qty(
+                market,
+                fallback=0.0,
+                precision_mode=4,
+                last_price=0.25,
+                contract_size=1.0,
+            ),
+            8.0,
+        )
+
+    def test_align_min_order_qty_rounds_up_to_step(self):
+        adapter = _DummyAdapterAlignUp()
+        market = {
+            "limits": {"amount": {"min": 19.0}, "cost": {"min": 2.0}},
+            "precision": {"amount": 1.0},
+        }
+        aligned = _align_min_order_qty(
+            adapter,
+            "DOGE/USDT:USDT",
+            21.98,
+            market=market,
+            precision_mode=4,
+        )
+        self.assertEqual(aligned, 22.0)
+
+    def test_minimum_order_amount_from_error_parses_exchange_message(self):
+        qty = _minimum_order_amount_from_error(
+            Exception('bingx {"code":101400,"msg":"The minimum order amount is 7 ADA.","data":{}}')
+        )
+        self.assertEqual(qty, 7.0)
 
     @override_settings(
         TP_SL_FEE_ADJUST_ENABLED=True,

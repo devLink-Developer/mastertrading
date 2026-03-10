@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 from io import StringIO
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from datetime import datetime, timezone, timedelta
 from statistics import median
 from typing import Any
@@ -1451,16 +1451,42 @@ def _market_min_qty(
     fallback: float = 0.0,
     *,
     precision_mode: Any = None,
+    last_price: float | None = None,
+    contract_size: float = 1.0,
 ) -> float:
     if not isinstance(market, dict):
         return max(0.0, _to_float(fallback))
+    limits = {}
     limit_min = 0.0
+    cost_min = 0.0
     try:
         limits = market.get("limits") or {}
         amount_limits = limits.get("amount") or {}
         limit_min = _to_float(amount_limits.get("min"))
+        cost_limits = limits.get("cost") or {}
+        cost_min = _to_float(cost_limits.get("min"))
     except Exception:
         limit_min = 0.0
+        cost_min = 0.0
+    precision_step = _market_amount_step(market, precision_mode=precision_mode)
+    cost_based_min = 0.0
+    price_val = _to_float(last_price)
+    contract_val = max(_to_float(contract_size), 1e-12)
+    if cost_min > 0 and price_val > 0 and contract_val > 0:
+        cost_based_min = cost_min / (price_val * contract_val)
+    discovered_min = max(0.0, limit_min, precision_step, cost_based_min)
+    if discovered_min > 0:
+        return discovered_min
+    return max(0.0, _to_float(fallback))
+
+
+def _market_amount_step(
+    market: dict | None,
+    *,
+    precision_mode: Any = None,
+) -> float:
+    if not isinstance(market, dict):
+        return 0.0
     precision_step = 0.0
     try:
         precision = market.get("precision") or {}
@@ -1479,10 +1505,7 @@ def _market_min_qty(
                     precision_step = amount_precision
     except Exception:
         precision_step = 0.0
-    discovered_min = max(0.0, limit_min, precision_step)
-    if discovered_min > 0:
-        return discovered_min
-    return max(0.0, _to_float(fallback))
+    return max(0.0, precision_step)
 
 
 def _floor_to_step(value: float, step: float) -> float:
@@ -1499,12 +1522,68 @@ def _floor_to_step(value: float, step: float) -> float:
         return 0.0
 
 
+def _ceil_to_step(value: float, step: float) -> float:
+    if step <= 0 or not math.isfinite(value) or value <= 0:
+        return 0.0
+    try:
+        d_value = Decimal(str(value))
+        d_step = Decimal(str(step))
+        if d_step <= 0:
+            return 0.0
+        units = (d_value / d_step).to_integral_value(rounding=ROUND_CEILING)
+        return _to_float(units * d_step)
+    except Exception:
+        return 0.0
+
+
 def _precision_step_from_error(exc: Exception) -> float:
     msg = str(exc or "")
     match = re.search(r"minimum amount precision of\s*([0-9]*\.?[0-9]+)", msg, re.IGNORECASE)
     if not match:
         return 0.0
     return max(0.0, _to_float(match.group(1)))
+
+
+def _minimum_order_amount_from_error(exc: Exception) -> float:
+    msg = str(exc or "")
+    patterns = (
+        r"minimum order amount is\s*([0-9]*\.?[0-9]+)",
+        r"minimum amount is\s*([0-9]*\.?[0-9]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, msg, re.IGNORECASE)
+        if match:
+            return max(0.0, _to_float(match.group(1)))
+    return 0.0
+
+
+def _align_min_order_qty(
+    adapter,
+    symbol: str,
+    min_qty: float,
+    *,
+    market: dict | None = None,
+    precision_mode: Any = None,
+) -> float:
+    min_val = _to_float(min_qty)
+    if min_val <= 0:
+        return 0.0
+    step = _market_amount_step(market, precision_mode=precision_mode)
+    aligned = _ceil_to_step(min_val, step) if step > 0 else min_val
+    if not math.isfinite(aligned) or aligned <= 0:
+        return 0.0
+    mapped = symbol
+    try:
+        mapped = adapter._map_symbol(symbol)
+    except Exception:
+        mapped = symbol
+    try:
+        normalized = _to_float(adapter.client.amount_to_precision(mapped, aligned))
+        if math.isfinite(normalized) and normalized > 0 and normalized + 1e-12 >= min_val:
+            return normalized
+    except Exception:
+        pass
+    return aligned
 
 
 def _normalize_order_qty(adapter, symbol: str, qty: float) -> float:
@@ -1921,7 +2000,20 @@ def _check_trailing_stop(
                 try:
                     market = adapter.client.market(adapter._map_symbol(symbol))
                     precision_mode = getattr(adapter.client, "precisionMode", None)
-                    min_qty = _market_min_qty(market, fallback=0.0, precision_mode=precision_mode)
+                    min_qty = _market_min_qty(
+                        market,
+                        fallback=0.0,
+                        precision_mode=precision_mode,
+                        last_price=last_price,
+                        contract_size=contract_size,
+                    )
+                    min_qty = _align_min_order_qty(
+                        adapter,
+                        symbol,
+                        min_qty,
+                        market=market,
+                        precision_mode=precision_mode,
+                    )
                 except Exception:
                     min_qty = 0.0
                 min_remaining = max(min_remaining_qty, min_qty)
@@ -4171,10 +4263,19 @@ def _attempt_entry_open(
         market_info,
         fallback=float(inst.lot_size or 0.0),
         precision_mode=precision_mode,
+        last_price=last_price,
+        contract_size=contract_size,
+    )
+    min_qty = _align_min_order_qty(
+        adapter,
+        symbol,
+        min_qty,
+        market=market_info,
+        precision_mode=precision_mode,
     )
     qty = _normalize_order_qty(adapter, symbol, qty)
     if min_qty > 0 and qty < min_qty:
-        qty = _normalize_order_qty(adapter, symbol, min_qty)
+        qty = min_qty
 
     if qty <= 0 or (min_qty > 0 and qty < min_qty):
         logger.warning(
@@ -4381,6 +4482,29 @@ def _attempt_entry_open(
         return 1, notional_order
     except Exception as exc:
         is_margin_error = _is_insufficient_margin_error(exc)
+        discovered_min_qty = _minimum_order_amount_from_error(exc)
+        if discovered_min_qty > 0:
+            try:
+                aligned_min_qty = _align_min_order_qty(
+                    adapter,
+                    symbol,
+                    discovered_min_qty,
+                    market=market_info,
+                    precision_mode=getattr(adapter.client, "precisionMode", None),
+                )
+                if aligned_min_qty > 0:
+                    discovered_min_qty = aligned_min_qty
+                current_lot = _to_float(inst.lot_size or 0.0)
+                if discovered_min_qty > current_lot:
+                    inst.lot_size = Decimal(str(discovered_min_qty))
+                    inst.save(update_fields=["lot_size"])
+                    logger.warning(
+                        "Updated lot_size from exchange reject for %s: %.10f",
+                        inst.symbol,
+                        discovered_min_qty,
+                    )
+            except Exception as min_exc:
+                logger.warning("Failed to persist min qty for %s: %s", inst.symbol, min_exc)
         if is_margin_error:
             logger.info("Order rejected by exchange (margin) %s: %s", inst.symbol, exc)
         else:
@@ -4405,6 +4529,7 @@ def _attempt_entry_open(
                 payload={
                     "side": side,
                     "qty": qty,
+                    "min_qty_discovered": discovered_min_qty,
                     "is_margin_error": True,
                     "err_count": 0,
                 },
@@ -4425,6 +4550,7 @@ def _attempt_entry_open(
             payload={
                 "side": side,
                 "qty": qty,
+                "min_qty_discovered": discovered_min_qty,
                 "is_margin_error": False,
                 "err_count": err_count,
             },
