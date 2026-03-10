@@ -57,8 +57,8 @@ Last update: 2026-03-01
 - Eudy stack:
   - Repo path: `/opt/trading_bot` (same git checkout)
   - Compose project: `trading_bot_eudy`
-  - Files: `docker-compose.eudy.yml` + `docker-compose.eudy.override.yml`
-  - Web port: `8010`
+  - File: `docker-compose.eudy.yml`
+  - Web host port: not exposed
 
 ## 8) Feature-flag-first pattern
 - New behavior should be behind env flags in `config/settings.py`.
@@ -71,4 +71,3 @@ Last update: 2026-03-01
 - `signals/sessions.py`
 - `config/settings.py`
 - Existing audits under `docs/auditoria-codigo-*.md`
-

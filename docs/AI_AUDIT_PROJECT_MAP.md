@@ -431,15 +431,15 @@ sudo -n docker compose ps
 3. Deploy eudy:
 ```bash
 cd /opt/trading_bot
-sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml -f docker-compose.eudy.override.yml up -d --build web worker beat
-sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml -f docker-compose.eudy.override.yml ps
+sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml up -d --build web worker beat
+sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml ps
 ```
 
 4. Quick health logs:
 ```bash
 cd /opt/trading_bot
 sudo -n docker compose logs --tail=120 worker
-sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml -f docker-compose.eudy.override.yml logs --tail=120 worker
+sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml logs --tail=120 worker
 ```
 
 Deployment invariants
@@ -535,7 +535,7 @@ deploy:
   user: rortigoza
   path: /opt/trading_bot
   main_port: 8008
-  eudy_port: 8010
+  eudy_port: null
 ```
 
 ---

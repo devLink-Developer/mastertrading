@@ -44,7 +44,7 @@ Runtime flow (one-line)
 
 Current production topology
 - Main stack: `/opt/trading_bot` (port `8008`).
-- Eudy stack: same repo path, compose project `trading_bot_eudy` (port `8010`).
+- Eudy stack: same repo path, compose project `trading_bot_eudy` (no host web port exposed).
 - Camping chatbot is a separate project in `/opt/chatbot` (port `8006`), not part of this trading runtime.
 
 Safety notes for AI-generated patches

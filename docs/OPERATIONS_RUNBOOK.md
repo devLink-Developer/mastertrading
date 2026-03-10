@@ -49,12 +49,10 @@ sudo -n docker compose ps
 cd /opt/trading_bot
 sudo -n docker compose -p trading_bot_eudy \
   -f docker-compose.eudy.yml \
-  -f docker-compose.eudy.override.yml \
   up -d --build
 
 sudo -n docker compose -p trading_bot_eudy \
   -f docker-compose.eudy.yml \
-  -f docker-compose.eudy.override.yml \
   ps
 ```
 
@@ -72,7 +70,6 @@ Eudy:
 cd /opt/trading_bot
 sudo -n docker compose -p trading_bot_eudy \
   -f docker-compose.eudy.yml \
-  -f docker-compose.eudy.override.yml \
   logs --tail=150 worker
 ```
 
@@ -89,7 +86,7 @@ print('reports=', OperationReport.objects.count())"
 Eudy:
 ```bash
 cd /opt/trading_bot
-sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml -f docker-compose.eudy.override.yml exec -T web python manage.py shell -c "
+sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml exec -T web python manage.py shell -c "
 from execution.models import Position, OperationReport;
 print('open_positions=', Position.objects.filter(is_open=True).count());
 print('reports=', OperationReport.objects.count())"
@@ -101,7 +98,7 @@ cd /opt/trading_bot
 sudo -n git log --oneline -n 5
 sudo -n git checkout <previous_commit_sha>
 sudo -n docker compose up -d --build
-sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml -f docker-compose.eudy.override.yml up -d --build
+sudo -n docker compose -p trading_bot_eudy -f docker-compose.eudy.yml up -d --build
 ```
 
 Then pin/restore branch state:
