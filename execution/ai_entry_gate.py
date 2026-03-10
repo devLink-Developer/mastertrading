@@ -18,6 +18,7 @@ from core.api_runtime import (
     log_token_usage,
 )
 from core.models import ApiProviderConfig
+from signals.runtime_overrides import get_runtime_bool
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +418,10 @@ def evaluate_ai_entry_gate(
         "symbol": symbol,
         "strategy": strategy_name,
     }
-    if not bool(getattr(settings, "AI_ENTRY_GATE_ENABLED", True)):
+    if not get_runtime_bool(
+        "AI_ENTRY_GATE_ENABLED",
+        bool(getattr(settings, "AI_ENTRY_GATE_ENABLED", True)),
+    ):
         return True, 1.0, "ai_gate_disabled_global", meta
     if not account_ai_enabled:
         return True, 1.0, "ai_gate_disabled_account", meta

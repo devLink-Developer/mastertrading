@@ -29,6 +29,7 @@ from execution.ai_entry_gate import (
     _supports_sampling_controls,
     _to_float,
 )
+from signals.runtime_overrides import get_runtime_bool
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,10 @@ def evaluate_ai_exit_gate(
         "symbol": symbol,
         "strategy": strategy_name,
     }
-    if not bool(getattr(settings, "AI_EXIT_GATE_ENABLED", True)):
+    if not get_runtime_bool(
+        "AI_EXIT_GATE_ENABLED",
+        bool(getattr(settings, "AI_EXIT_GATE_ENABLED", True)),
+    ):
         return False, "ai_exit_disabled_global", meta
     if not account_ai_enabled:
         return False, "ai_exit_disabled_account", meta

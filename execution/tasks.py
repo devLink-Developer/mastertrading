@@ -44,6 +44,11 @@ from signals.regime_mtf import (
     recommended_bias as _mtf_recommended_bias,
 )
 from signals.models import Signal
+from signals.runtime_overrides import (
+    get_runtime_bool,
+    get_runtime_int,
+    get_runtime_str_list,
+)
 from marketdata.models import Candle
 from risk.models import RiskEvent
 from risk.drawdown_state import (
@@ -3502,7 +3507,10 @@ def _regime_directional_risk_mult(
         penalty = max(0.0, min(float(getattr(settings, "REGIME_BEAR_LONG_PENALTY", 0.15) or 0.15), 0.95))
         return (1.0 - penalty), False, "bear_long_penalty"
     if bias == "bull" and direction == "short":
-        if bool(getattr(settings, "REGIME_BULL_SHORT_BLOCK_ENABLED", False)):
+        if get_runtime_bool(
+            "REGIME_BULL_SHORT_BLOCK_ENABLED",
+            bool(getattr(settings, "REGIME_BULL_SHORT_BLOCK_ENABLED", False)),
+        ):
             return 0.0, True, "bull_short_block"
         penalty = max(0.0, min(float(getattr(settings, "REGIME_BULL_SHORT_PENALTY", 0.10) or 0.10), 0.95))
         return (1.0 - penalty), False, "bull_short_penalty"
@@ -3515,7 +3523,10 @@ def _btc_lead_directional_risk_mult(
     btc_lead_state: str,
     btc_recommended_bias: str,
 ) -> tuple[float, bool, str]:
-    if not bool(getattr(settings, "BTC_LEAD_FILTER_ENABLED", False)):
+    if not get_runtime_bool(
+        "BTC_LEAD_FILTER_ENABLED",
+        bool(getattr(settings, "BTC_LEAD_FILTER_ENABLED", False)),
+    ):
         return 1.0, False, "disabled"
     sym = str(symbol or "").strip().upper()
     if not sym or sym == "BTCUSDT":
@@ -3597,7 +3608,10 @@ def _bull_short_retrace_precheck(
     In bull regime, only allow shorts when retracement probability is high enough
     by score + module evidence. This reduces repeated low-quality AI calls.
     """
-    if not bool(getattr(settings, "REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED", True)):
+    if not get_runtime_bool(
+        "REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED",
+        bool(getattr(settings, "REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED", True)),
+    ):
         return True, "disabled"
     direction = str(signal_direction or "").strip().lower()
     bias = str(regime_bias or "neutral").strip().lower()
@@ -3613,15 +3627,16 @@ def _bull_short_retrace_precheck(
         return False, f"bull_short_low_retrace_score:{score:.3f}<{min_score:.3f}"
 
     active_modules = set(_signal_active_modules(sig_payload if isinstance(sig_payload, dict) else {}, strategy_name))
-    allowed_modules = getattr(settings, "REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES", {"meanrev", "smc", "carry"})
-    if not isinstance(allowed_modules, (set, list, tuple)):
-        allowed_modules = {"meanrev", "smc", "carry"}
-    allowed_set = {str(m).strip().lower() for m in allowed_modules if str(m).strip()}
+    allowed_set = get_runtime_str_list(
+        "REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES",
+        getattr(settings, "REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES", {"meanrev", "smc", "carry"}),
+    )
     if not allowed_set:
         allowed_set = {"meanrev", "smc", "carry"}
-    needed = max(
-        1,
+    needed = get_runtime_int(
+        "REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES",
         int(getattr(settings, "REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES", 1) or 1),
+        minimum=1,
     )
     matched = active_modules & allowed_set
     if len(matched) < needed:
@@ -4918,7 +4933,10 @@ def _manage_open_position(
 
     # AI-assisted early TP exit (conservative): only near TP, never increases risk.
     if (
-        bool(getattr(settings, "AI_EXIT_GATE_ENABLED", True))
+        get_runtime_bool(
+            "AI_EXIT_GATE_ENABLED",
+            bool(getattr(settings, "AI_EXIT_GATE_ENABLED", True)),
+        )
         and last
         and entry_price
         and tp_pct_pos > 0

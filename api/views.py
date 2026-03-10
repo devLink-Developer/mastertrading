@@ -12,6 +12,11 @@ from signals.feature_flags import (
     resolve_runtime_flags,
 )
 from signals.models import Signal, StrategyConfig
+from signals.runtime_overrides import (
+    RUNTIME_OVERRIDES_VERSION,
+    get_runtime_overrides,
+    invalidate_runtime_overrides_cache,
+)
 from .serializers import (
     InstrumentSerializer,
     OrderSerializer,
@@ -81,6 +86,24 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
     queryset = StrategyConfig.objects.all().order_by("name", "version")
     serializer_class = StrategyConfigSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+
+    def _maybe_invalidate_runtime_cache(self, row: StrategyConfig) -> None:
+        if str(getattr(row, "version", "") or "").strip() == RUNTIME_OVERRIDES_VERSION:
+            invalidate_runtime_overrides_cache()
+
+    def perform_create(self, serializer):
+        row = serializer.save()
+        self._maybe_invalidate_runtime_cache(row)
+
+    def perform_update(self, serializer):
+        row = serializer.save()
+        self._maybe_invalidate_runtime_cache(row)
+
+    def perform_destroy(self, instance):
+        version = str(getattr(instance, "version", "") or "").strip()
+        instance.delete()
+        if version == RUNTIME_OVERRIDES_VERSION:
+            invalidate_runtime_overrides_cache()
 
     @action(detail=True, methods=["post"])
     def toggle(self, request, pk=None):
@@ -165,6 +188,58 @@ class StrategyConfigViewSet(viewsets.ModelViewSet):
                 "name": row.name,
                 "version": row.version,
                 "enabled": row.enabled,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["get"])
+    def runtime(self, request):
+        rows = (
+            StrategyConfig.objects.filter(version=RUNTIME_OVERRIDES_VERSION)
+            .order_by("name")
+            .values("id", "name", "enabled", "version", "params_json", "created_at")
+        )
+        return Response(
+            {
+                "version": RUNTIME_OVERRIDES_VERSION,
+                "resolved": get_runtime_overrides(),
+                "rows": list(rows),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["post"])
+    def set_runtime(self, request):
+        name = str(request.data.get("name", "")).strip()
+        if not name:
+            return Response(
+                {"detail": "name is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        enabled = request.data.get("enabled", True)
+        try:
+            enabled = _parse_enabled_value(enabled)
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        row, _ = StrategyConfig.objects.update_or_create(
+            name=name,
+            version=RUNTIME_OVERRIDES_VERSION,
+            defaults={
+                "enabled": enabled,
+                "params_json": {"value": request.data.get("value")},
+            },
+        )
+        invalidate_runtime_overrides_cache()
+        return Response(
+            {
+                "id": row.id,
+                "name": row.name,
+                "version": row.version,
+                "enabled": row.enabled,
+                "params_json": row.params_json,
             },
             status=status.HTTP_200_OK,
         )

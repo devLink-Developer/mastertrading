@@ -111,13 +111,13 @@ Output includes:
 - Keep API secrets out of git and `.md` docs.
 
 ## Optional env flags
-- `AI_ENTRY_GATE_ENABLED=true|false`
+- `AI_ENTRY_GATE_ENABLED=true|false` (legacy fallback; prefer DB row in `StrategyConfig` with `version=runtime_cfg_v1`)
 - `AI_ENTRY_GATE_FAIL_OPEN=true|false`
 - `AI_ENTRY_GATE_ONLY_ALLOCATOR=true|false`
 - `AI_ENTRY_GATE_DEFAULT_PROVIDER=openai`
 - `AI_ENTRY_GATE_MAX_OUTPUT_TOKENS=96`
 - `AI_ENTRY_GATE_NOTIFY_ERRORS=true|false`
-- `AI_EXIT_GATE_ENABLED=true|false`
+- `AI_EXIT_GATE_ENABLED=true|false` (legacy fallback; prefer DB row in `StrategyConfig` with `version=runtime_cfg_v1`)
 - `AI_EXIT_GATE_ONLY_ALLOCATOR=true|false`
 - `AI_EXIT_GATE_DEFAULT_PROVIDER=openai`
 - `AI_EXIT_GATE_MAX_OUTPUT_TOKENS=96`
@@ -130,6 +130,19 @@ Output includes:
 - `CONFIDENCE_LEVERAGE_SCORE_THRESHOLD=0.90`
 - `CONFIDENCE_LEVERAGE_ML_PROB_THRESHOLD=0.70`
 - `CONFIDENCE_LEVERAGE_REQUIRE_BOTH=false`
+
+## DB-first runtime overrides
+- Table: `StrategyConfig`
+- `version=runtime_cfg_v1`
+- `name=<SETTING_KEY>`
+- `enabled=true` means the override row is active
+- `params_json={"value": ...}` stores the actual value
+
+Examples:
+- `name=AI_ENTRY_GATE_ENABLED`, `params_json={"value": false}`
+- `name=BTC_LEAD_FILTER_ENABLED`, `params_json={"value": true}`
+- `name=REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES`, `params_json={"value": 2}`
+- `name=REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES`, `params_json={"value": ["meanrev","smc"]}`
 - `CONFIDENCE_LEVERAGE_MULT=1.30`
 - `CONFIDENCE_LEVERAGE_MAX=8.0`
 - `AI_FEEDBACK_CONTEXT_MAX_TOKENS=700`
