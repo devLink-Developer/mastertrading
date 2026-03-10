@@ -2089,6 +2089,124 @@ def _trail_sl_from_hwm(entry_price: float, max_fav_pct: float, lock_in_pct: floa
     return entry_price * (1 - max_fav_pct * lock)
 
 
+def _tp_progress_exit_reason_against_position(side: str, recommended_bias: str | None) -> bool:
+    side_txt = str(side or "").strip().lower()
+    bias = str(recommended_bias or "").strip().lower()
+    if side_txt == "buy":
+        return bias in {"short_bias", "tactical_short"}
+    if side_txt == "sell":
+        return bias in {"long_bias", "tactical_long"}
+    return False
+
+
+def _evaluate_tp_progress_exit(
+    *,
+    symbol: str,
+    side: str,
+    entry_price: float,
+    last_price: float,
+    tp_pct: float,
+    sl_pct: float,
+    opened_at=None,
+    signal_direction: str = "",
+    recommended_bias: str | None = "",
+    strategy_name: str = "",
+) -> tuple[bool, str, dict[str, float | str | int | bool | None]]:
+    meta: dict[str, float | str | int | bool | None] = {
+        "symbol": symbol,
+        "progress": 0.0,
+        "max_fav": 0.0,
+        "giveback_ratio": 0.0,
+        "r_multiple": 0.0,
+        "score": 0,
+        "signal_direction": str(signal_direction or "").strip().lower(),
+        "bias": str(recommended_bias or "").strip().lower(),
+        "age_min": None,
+    }
+    if not bool(getattr(settings, "TP_PROGRESS_EARLY_EXIT_ENABLED", True)):
+        return False, "tp_progress_exit_disabled", meta
+    if entry_price <= 0 or last_price <= 0 or tp_pct <= 0 or sl_pct <= 0:
+        return False, "tp_progress_exit_invalid", meta
+
+    side_txt = str(side or "").strip().lower()
+    if side_txt not in {"buy", "sell"}:
+        return False, "tp_progress_exit_invalid_side", meta
+
+    pos_direction = "long" if side_txt == "buy" else "short"
+    pnl_pct_gross = ((last_price - entry_price) / entry_price) * (1 if side_txt == "buy" else -1)
+    pnl_pct_gate, _ = _tp_sl_gate_pnl_pct(pnl_pct_gross)
+    if pnl_pct_gate <= 0:
+        return False, "tp_progress_exit_non_positive", meta
+
+    progress = max(0.0, pnl_pct_gate / tp_pct) if tp_pct > 0 else 0.0
+    r_multiple = pnl_pct_gate / sl_pct if sl_pct > 0 else 0.0
+    meta["progress"] = progress
+    meta["r_multiple"] = r_multiple
+
+    min_progress = max(0.50, min(0.95, float(getattr(settings, "TP_PROGRESS_EARLY_EXIT_MIN_PROGRESS", 0.70) or 0.70)))
+    min_r = max(0.0, float(getattr(settings, "TP_PROGRESS_EARLY_EXIT_MIN_R", 0.8) or 0.8))
+    if progress < min_progress or r_multiple < min_r:
+        return False, "tp_progress_exit_not_ready", meta
+
+    state_key = _position_state_key(symbol, opened_at, entry_price)
+    max_fav = max(pnl_pct_gate, 0.0)
+    client = _redis_client()
+    if client is not None:
+        try:
+            raw_fav = client.get(f"trail:max_fav:{state_key}")
+            max_fav = max(max_fav, max(0.0, _to_float(raw_fav)))
+        except Exception:
+            pass
+    giveback = max(0.0, max_fav - pnl_pct_gate)
+    giveback_ratio = (giveback / max_fav) if max_fav > 0 else 0.0
+    meta["max_fav"] = max_fav
+    meta["giveback_ratio"] = giveback_ratio
+
+    age_min = None
+    if opened_at:
+        try:
+            age_min = max(0.0, (dj_tz.now() - opened_at).total_seconds() / 60.0)
+        except Exception:
+            age_min = None
+    meta["age_min"] = age_min
+
+    force_progress = max(min_progress, min(0.99, float(getattr(settings, "TP_PROGRESS_EARLY_EXIT_FORCE_PROGRESS", 0.90) or 0.90)))
+    force_giveback = max(0.05, min(0.95, float(getattr(settings, "TP_PROGRESS_EARLY_EXIT_FORCE_GIVEBACK_RATIO", 0.18) or 0.18)))
+    if progress >= force_progress and giveback_ratio >= force_giveback:
+        meta["score"] = 99
+        return True, "force_giveback", meta
+
+    close_score = 0
+    reasons: list[str] = []
+
+    max_giveback_ratio = max(0.05, min(0.95, float(getattr(settings, "TP_PROGRESS_EARLY_EXIT_MAX_GIVEBACK_RATIO", 0.25) or 0.25)))
+    if giveback_ratio >= max_giveback_ratio:
+        close_score += 1
+        reasons.append("giveback")
+
+    sig_dir = str(signal_direction or "").strip().lower()
+    if sig_dir in {"long", "short", "flat"} and sig_dir != pos_direction:
+        close_score += 2
+        reasons.append("signal_mismatch")
+
+    if _tp_progress_exit_reason_against_position(side_txt, recommended_bias):
+        close_score += 1
+        reasons.append("bias_opposed")
+
+    if _strategy_is_microvol(strategy_name) and age_min is not None:
+        max_hold_min = max(1, int(getattr(settings, "MODULE_MICROVOL_MAX_HOLD_MINUTES", 18) or 18))
+        age_ratio = max(0.10, min(1.0, float(getattr(settings, "TP_PROGRESS_EARLY_EXIT_MICROVOL_AGE_RATIO", 0.50) or 0.50)))
+        microvol_age_trigger = max_hold_min * age_ratio
+        if age_min >= microvol_age_trigger and giveback_ratio >= max(0.05, max_giveback_ratio * 0.5):
+            close_score += 1
+            reasons.append("microvol_age")
+
+    meta["score"] = close_score
+    if close_score >= max(1, int(getattr(settings, "TP_PROGRESS_EARLY_EXIT_CLOSE_SCORE", 2) or 2)):
+        return True, ",".join(reasons)[:160] or "tp_progress_exit", meta
+    return False, "tp_progress_exit_hold", meta
+
+
 def _check_trailing_stop(
     adapter, symbol: str, side: str, current_qty: float,
     entry_price: float, last_price: float, sl_pct: float,
@@ -5177,6 +5295,90 @@ def _manage_open_position(
                     return True, allow_scale_entry, scale_parent_correlation, scale_add_index
         except Exception as exc:
             logger.debug("Downtrend long killer check failed for %s: %s", symbol, exc)
+
+    if last and entry_price and tp_pct_pos > 0 and sl_pct_pos > 0:
+        should_close_progress, progress_reason, progress_meta = _evaluate_tp_progress_exit(
+            symbol=symbol,
+            side=pos_side,
+            entry_price=entry_price,
+            last_price=last,
+            tp_pct=tp_pct_pos,
+            sl_pct=sl_pct_pos,
+            opened_at=pos_opened_at,
+            signal_direction=signal_direction,
+            recommended_bias=btc_recommended_bias,
+            strategy_name=position_strategy_name,
+        )
+        if should_close_progress:
+            close_side = "sell" if current_qty > 0 else "buy"
+            close_qty = abs(current_qty)
+            try:
+                close_resp = adapter.create_order(
+                    symbol,
+                    close_side,
+                    "market",
+                    close_qty,
+                    params={"reduceOnly": True},
+                )
+                close_fee = _extract_fee_usdt(close_resp)
+                pnl_pct_exit = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+                pnl_abs_exit = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+                trade_side = "buy" if current_qty > 0 else "sell"
+                dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+                logger.info(
+                    "TP progress exit %s: progress=%.3f giveback=%.3f score=%s reason=%s",
+                    symbol,
+                    float(progress_meta.get("progress", 0.0) or 0.0),
+                    float(progress_meta.get("giveback_ratio", 0.0) or 0.0),
+                    progress_meta.get("score", 0),
+                    progress_reason,
+                )
+                _log_operation(
+                    inst,
+                    trade_side,
+                    close_qty,
+                    entry_price,
+                    last,
+                    reason="tp_progress_exit",
+                    signal_id=str(getattr(origin_signal, "id", "") or (str(sig.id) if sig else "")),
+                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    leverage=leverage,
+                    equity_before=equity_usdt,
+                    equity_after=None,
+                    fee_usdt=close_fee,
+                    opened_at=pos_opened_at,
+                    contract_size=contract_size,
+                    close_sub_reason=progress_reason,
+                )
+                notify_trade_closed(
+                    inst.symbol,
+                    "tp_progress_exit",
+                    pnl_pct_exit,
+                    pnl_abs=pnl_abs_exit,
+                    entry_price=entry_price,
+                    exit_price=last,
+                    qty=close_qty,
+                    equity_before=equity_usdt,
+                    duration_min=dur_min,
+                    side=trade_side,
+                    leverage=leverage,
+                    strategy_name=position_strategy_name,
+                    active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
+                )
+                _mark_position_closed(inst)
+                _track_consecutive_errors(symbol, success=True)
+                return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+            except Exception as exc:
+                if _is_no_position_error(exc):
+                    logger.info("TP progress exit skipped %s: no open position (%s)", symbol, exc)
+                    _mark_position_closed(inst)
+                    _track_consecutive_errors(symbol, success=True)
+                    return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+                logger.warning("Failed TP progress exit %s: %s", symbol, exc)
+                err_count = _track_consecutive_errors(symbol, success=False)
+                if err_count >= settings.MAX_CONSECUTIVE_ERRORS:
+                    _create_risk_event("consecutive_errors", "critical", instrument=inst, details={"count": err_count})
+                    notify_kill_switch(f"{symbol}: {err_count} consecutive errors")
 
     # AI-assisted early TP exit (conservative): only near TP, never increases risk.
     if (

@@ -53,6 +53,7 @@ from execution.tasks import (
     _volume_gate_min_ratio,
     _tp_sl_gate_pnl_pct,
     _track_data_staleness_transition,
+    _evaluate_tp_progress_exit,
     _volatility_adjusted_risk,
 )
 
@@ -219,6 +220,101 @@ class TaskHelpersTest(SimpleTestCase):
             "precision": {"amount": 1.0},
         }
         self.assertEqual(_market_min_qty(market, fallback=0.0, precision_mode=4), 1.0)
+
+    @override_settings(
+        TP_PROGRESS_EARLY_EXIT_ENABLED=True,
+        TP_PROGRESS_EARLY_EXIT_MIN_PROGRESS=0.70,
+        TP_PROGRESS_EARLY_EXIT_MIN_R=0.8,
+        TP_PROGRESS_EARLY_EXIT_MAX_GIVEBACK_RATIO=0.25,
+        TP_PROGRESS_EARLY_EXIT_FORCE_PROGRESS=0.90,
+        TP_PROGRESS_EARLY_EXIT_FORCE_GIVEBACK_RATIO=0.18,
+        TP_PROGRESS_EARLY_EXIT_CLOSE_SCORE=2,
+    )
+    def test_tp_progress_exit_closes_on_signal_mismatch(self):
+        opened_at = dj_tz.now().replace(microsecond=0)
+        state_key = f"BTCUSDT:{int(opened_at.timestamp())}"
+        redis_stub = _DummyRedis()
+        redis_stub.set(f"trail:max_fav:{state_key}", "0.016")
+        with patch("execution.tasks._redis_client", return_value=redis_stub):
+            should_close, reason, meta = _evaluate_tp_progress_exit(
+                symbol="BTCUSDT",
+                side="buy",
+                entry_price=100.0,
+                last_price=101.60,   # 1.60% gross => 75% net of a 2% TP after fee adjustment
+                tp_pct=0.02,
+                sl_pct=0.01,
+                opened_at=opened_at,
+                signal_direction="short",
+                recommended_bias="balanced",
+                strategy_name="alloc_long",
+            )
+        self.assertTrue(should_close)
+        self.assertIn("signal_mismatch", reason)
+        self.assertGreaterEqual(float(meta["progress"] or 0.0), 0.70)
+
+    @override_settings(
+        TP_PROGRESS_EARLY_EXIT_ENABLED=True,
+        TP_PROGRESS_EARLY_EXIT_MIN_PROGRESS=0.70,
+        TP_PROGRESS_EARLY_EXIT_MIN_R=0.8,
+        TP_PROGRESS_EARLY_EXIT_MAX_GIVEBACK_RATIO=0.25,
+        TP_PROGRESS_EARLY_EXIT_FORCE_PROGRESS=0.90,
+        TP_PROGRESS_EARLY_EXIT_FORCE_GIVEBACK_RATIO=0.18,
+        TP_PROGRESS_EARLY_EXIT_CLOSE_SCORE=2,
+    )
+    def test_tp_progress_exit_holds_when_trade_is_still_clean(self):
+        opened_at = dj_tz.now().replace(microsecond=0)
+        state_key = f"BTCUSDT:{int(opened_at.timestamp())}"
+        redis_stub = _DummyRedis()
+        redis_stub.set(f"trail:max_fav:{state_key}", "0.0148")
+        with patch("execution.tasks._redis_client", return_value=redis_stub):
+            should_close, reason, meta = _evaluate_tp_progress_exit(
+                symbol="BTCUSDT",
+                side="buy",
+                entry_price=100.0,
+                last_price=101.60,
+                tp_pct=0.02,
+                sl_pct=0.01,
+                opened_at=opened_at,
+                signal_direction="long",
+                recommended_bias="long_bias",
+                strategy_name="alloc_long",
+            )
+        self.assertFalse(should_close)
+        self.assertEqual(reason, "tp_progress_exit_hold")
+        self.assertLess(float(meta["giveback_ratio"] or 0.0), 0.25)
+
+    @override_settings(
+        TP_PROGRESS_EARLY_EXIT_ENABLED=True,
+        TP_PROGRESS_EARLY_EXIT_MIN_PROGRESS=0.70,
+        TP_PROGRESS_EARLY_EXIT_MIN_R=0.8,
+        TP_PROGRESS_EARLY_EXIT_MAX_GIVEBACK_RATIO=0.25,
+        TP_PROGRESS_EARLY_EXIT_FORCE_PROGRESS=0.90,
+        TP_PROGRESS_EARLY_EXIT_FORCE_GIVEBACK_RATIO=0.18,
+        TP_PROGRESS_EARLY_EXIT_CLOSE_SCORE=2,
+        TP_PROGRESS_EARLY_EXIT_MICROVOL_AGE_RATIO=0.50,
+        MODULE_MICROVOL_MAX_HOLD_MINUTES=18,
+    )
+    def test_tp_progress_exit_closes_microvol_on_age_plus_giveback(self):
+        opened_at = (dj_tz.now() - timedelta(minutes=10)).replace(microsecond=0)
+        state_key = f"ETHUSDT:{int(opened_at.timestamp())}"
+        redis_stub = _DummyRedis()
+        redis_stub.set(f"trail:max_fav:{state_key}", "0.020")
+        with patch("execution.tasks._redis_client", return_value=redis_stub):
+            should_close, reason, meta = _evaluate_tp_progress_exit(
+                symbol="ETHUSDT",
+                side="buy",
+                entry_price=100.0,
+                last_price=101.50,   # 1.5% => 75% of a 2% TP
+                tp_pct=0.02,
+                sl_pct=0.01,
+                opened_at=opened_at,
+                signal_direction="long",
+                recommended_bias="balanced",
+                strategy_name="mod_microvol_long",
+            )
+        self.assertTrue(should_close)
+        self.assertIn("microvol_age", reason)
+        self.assertGreaterEqual(int(meta["score"] or 0), 2)
 
     def test_market_min_qty_uses_cost_floor_when_higher(self):
         market = {
