@@ -713,3 +713,18 @@ docker compose logs --tail=120 chatbot
 - Politica:
   - usarlo como prior suave por sesion/dia
   - no como regla dura tipo "lunes siempre long"
+
+### 2026-03-10 update: motor microvolatilidad separado
+- Se agrego un motor directo `microvol` para capturar expansiones rapidas en `1m`, separado del allocator principal.
+- Alcance actual:
+  - solo `BTCUSDT` y `ETHUSDT`
+  - sesiones por default: `london`, `overlap`, `ny_open`, `ny`
+  - entrada por breakout + impulso + volumen + sesgo HTF
+- Principios operativos:
+  - no se mezcla como peso dentro del allocator
+  - usa riesgo reducido (`MODULE_MICROVOL_RISK_MULT`)
+  - usa cooldown corto propio y timeout maximo de hold (`MODULE_MICROVOL_MAX_HOLD_MINUTES`)
+  - perfil de salida mas agresivo: TP mas corto, breakeven y trailing antes
+- Rollout recomendado:
+  - activar primero solo en `demo`
+  - no activar en `live` sin observar algunos dias de ejecucion y rechazos

@@ -26,6 +26,7 @@ from signals.sessions import (
 from signals.modules import carry as carry_module
 from signals.modules import grid as grid_module
 from signals.modules import meanrev as meanrev_module
+from signals.modules import microvol as microvol_module
 from signals.modules import trend as trend_module
 from signals.modules.common import (
     acquire_task_lock,
@@ -49,7 +50,27 @@ def _module_detector(module_name: str):
         return carry_module.detect
     if module_name == "grid":
         return grid_module.detect
+    if module_name == "microvol":
+        return microvol_module.detect
     raise ValueError(f"unknown module {module_name}")
+
+
+def _module_timeframes(module_name: str) -> tuple[str, str]:
+    if module_name == "microvol":
+        return "1m", "5m"
+    return "5m", "1h"
+
+
+def _module_signal_ttl(module_name: str) -> int:
+    if module_name == "microvol":
+        return max(30, int(getattr(settings, "MODULE_MICROVOL_SIGNAL_TTL_SECONDS", 75)))
+    return max(30, int(getattr(settings, "MODULE_SIGNAL_TTL_SECONDS", 120)))
+
+
+def _module_min_bars(module_name: str, default_warmup: int) -> tuple[int, int]:
+    if module_name == "microvol":
+        return 120, 60
+    return default_warmup, max(80, default_warmup // 2)
 
 
 def run_module_engine(module_name: str) -> str:
@@ -68,12 +89,20 @@ def run_module_engine(module_name: str) -> str:
     lookback = int(getattr(settings, "MODULE_LOOKBACK_BARS", 240))
     warmup = int(getattr(settings, "MODULE_SYMBOL_WARMUP_BARS", 300))
     detector = _module_detector(module_name)
+    ltf_tf, htf_tf = _module_timeframes(module_name)
+    signal_ttl = _module_signal_ttl(module_name)
+    min_ltf_bars, min_htf_bars = _module_min_bars(module_name, warmup)
 
     instruments = get_multi_universe_instruments()
     for inst in instruments:
-        df_ltf = latest_candles(inst, "5m", lookback=lookback)
-        df_htf = latest_candles(inst, "1h", lookback=lookback)
-        if len(df_ltf) < warmup or len(df_htf) < max(80, warmup // 2):
+        if module_name == "microvol":
+            from execution.models import Position
+
+            if Position.objects.filter(instrument=inst, is_open=True).exists():
+                continue
+        df_ltf = latest_candles(inst, ltf_tf, lookback=lookback)
+        df_htf = latest_candles(inst, htf_tf, lookback=lookback)
+        if len(df_ltf) < min_ltf_bars or len(df_htf) < min_htf_bars:
             continue
         funding = latest_funding_rates(inst, lookback=80) if module_name == "carry" else []
         session = get_current_session(now)
@@ -93,7 +122,7 @@ def run_module_engine(module_name: str) -> str:
             confidence=float(result.get("confidence", 0.0)),
             reasons=dict(result.get("reasons", {})),
             symbol_state="open",
-            dedup_seconds=int(getattr(settings, "MODULE_SIGNAL_TTL_SECONDS", 120)),
+            dedup_seconds=signal_ttl,
             ts=now,
         )
         if ok:

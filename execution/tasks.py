@@ -13,7 +13,7 @@ from typing import Any
 
 from celery import shared_task
 from django.db import transaction
-from django.db.models import OuterRef, Subquery
+from django.db.models import OuterRef, Subquery, Q
 from django.conf import settings
 from django.core.management import call_command
 from django.utils import timezone as dj_tz
@@ -554,6 +554,24 @@ def _strategy_module_name(strategy_name: str) -> str:
         if len(parts) >= 3:
             return parts[1]
     return ""
+
+
+def _strategy_is_microvol(strategy_name: str) -> bool:
+    return _strategy_module_name(strategy_name) == "microvol"
+
+
+def _microvol_exit_profile(strategy_name: str) -> dict[str, float | bool | str]:
+    if not _strategy_is_microvol(strategy_name):
+        return {"active": False, "profile": ""}
+    return {
+        "active": True,
+        "profile": "microvol",
+        "tp_mult": float(getattr(settings, "MODULE_MICROVOL_TP_MULT", 0.55) or 0.55),
+        "partial_r_mult": float(getattr(settings, "MODULE_MICROVOL_PARTIAL_R_MULT", 0.60) or 0.60),
+        "trail_r_mult": float(getattr(settings, "MODULE_MICROVOL_TRAIL_R_MULT", 0.45) or 0.45),
+        "breakeven_r_mult": float(getattr(settings, "MODULE_MICROVOL_BREAKEVEN_R_MULT", 0.50) or 0.50),
+        "lockin_mult": float(getattr(settings, "MODULE_MICROVOL_LOCKIN_MULT", 1.25) or 1.25),
+    }
 
 
 def _signal_active_modules(payload: dict[str, Any] | None, strategy_name: str = "") -> list[str]:
@@ -1780,6 +1798,7 @@ def _compute_tp_sl_prices(
     entry_price: float,
     atr_pct: float | None,
     recommended_bias: str | None = "",
+    strategy_name: str = "",
 ):
     """
     Compute TP and SL prices based on ATR or defaults.
@@ -1815,10 +1834,16 @@ def _compute_tp_sl_prices(
         tp_pct = max(min_tp, tp_pct * max(0.1, min(tp_mult, 1.0)))
 
     tactical_profile = _tactical_exit_profile(side, recommended_bias)
+    microvol_profile = _microvol_exit_profile(strategy_name)
     if bool(tactical_profile.get("active")):
         tp_pct = max(
             tp_floor,
             tp_pct * max(0.1, min(float(tactical_profile.get("tp_mult", 0.75) or 0.75), 1.0)),
+        )
+    if bool(microvol_profile.get("active")):
+        tp_pct = max(
+            tp_floor,
+            tp_pct * max(0.1, min(float(microvol_profile.get("tp_mult", 0.55) or 0.55), 1.0)),
         )
 
     # Enforce absolute minimum SL to prevent noise-driven stop-outs
@@ -2011,6 +2036,44 @@ def _position_state_key(symbol: str, opened_at, entry_price: float) -> str:
     return f"{safe_symbol}:{round(float(entry_price or 0.0), 6)}"
 
 
+def _origin_signal_id_from_correlation(correlation_id: str) -> int | None:
+    text = str(correlation_id or "").strip()
+    if not text:
+        return None
+    base = text.split(":", 1)[0]
+    match = re.match(r"^(\d+)-", base)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _position_origin_signal(inst: Instrument, pos_side: str) -> Signal | None:
+    order = (
+        Order.objects.filter(
+            instrument=inst,
+            side=pos_side,
+            status=Order.OrderStatus.FILLED,
+            reduce_only=False,
+            opened_at__isnull=False,
+        )
+        .order_by("-opened_at", "-id")
+        .first()
+    )
+    if not order:
+        return None
+    for token in (getattr(order, "correlation_id", ""), getattr(order, "parent_correlation_id", "")):
+        sig_id = _origin_signal_id_from_correlation(token)
+        if not sig_id:
+            continue
+        sig = Signal.objects.filter(id=sig_id).first()
+        if sig:
+            return sig
+    return None
+
+
 def _trail_sl_from_hwm(entry_price: float, max_fav_pct: float, lock_in_pct: float, is_long: bool) -> float:
     """
     Trailing SL derived from the max favorable move (HWM).
@@ -2033,6 +2096,7 @@ def _check_trailing_stop(
     contract_size: float = 1.0,
     atr_pct: float | None = None,
     recommended_bias: str | None = "",
+    strategy_name: str = "",
 ) -> tuple[bool, float]:
     """
     Profit protection:
@@ -2061,6 +2125,7 @@ def _check_trailing_stop(
         float(getattr(settings, "TRAILING_SL_MIN_MOVE_PCT", 0.0002) or 0.0002),
     )
     tactical_profile = _tactical_exit_profile(side, recommended_bias)
+    microvol_profile = _microvol_exit_profile(strategy_name)
 
     partial_r_trigger = float(getattr(settings, "PARTIAL_CLOSE_AT_R", 1.0) or 1.0)
     trail_activation_r = float(getattr(settings, "TRAILING_STOP_ACTIVATION_R", 2.5) or 2.5)
@@ -2084,6 +2149,9 @@ def _check_trailing_stop(
     if bool(tactical_profile.get("active")):
         partial_r_trigger *= max(0.1, min(float(tactical_profile.get("partial_r_mult", 0.85) or 0.85), 1.0))
         trail_activation_r *= max(0.1, min(float(tactical_profile.get("trail_r_mult", 0.75) or 0.75), 1.0))
+    if bool(microvol_profile.get("active")):
+        partial_r_trigger *= max(0.1, min(float(microvol_profile.get("partial_r_mult", 0.60) or 0.60), 1.0))
+        trail_activation_r *= max(0.1, min(float(microvol_profile.get("trail_r_mult", 0.45) or 0.45), 1.0))
 
     # Partial close at PARTIAL_CLOSE_AT_R (supports fractional positions/contracts).
     if r_multiple >= partial_r_trigger:
@@ -2197,6 +2265,8 @@ def _check_trailing_stop(
             be_at_r = float(getattr(settings, "BREAKEVEN_STOP_AT_R", 1.0) or 0.0)
             if bool(tactical_profile.get("active")):
                 be_at_r *= max(0.1, min(float(tactical_profile.get("breakeven_r_mult", 0.75) or 0.75), 1.0))
+            if bool(microvol_profile.get("active")):
+                be_at_r *= max(0.1, min(float(microvol_profile.get("breakeven_r_mult", 0.50) or 0.50), 1.0))
             if be_at_r > 0 and max_r >= be_at_r:
                 be_offset = float(getattr(settings, "BREAKEVEN_STOP_OFFSET_PCT", 0.0) or 0.0)
                 be_offset = max(0.0, be_offset)
@@ -2253,6 +2323,8 @@ def _check_trailing_stop(
         lock_in = max(lock_min, min(lock_max, dyn_lock))
     if bool(tactical_profile.get("active")):
         lock_in = max(0.0, min(1.0, lock_in * float(tactical_profile.get("lockin_mult", 1.15) or 1.15)))
+    if bool(microvol_profile.get("active")):
+        lock_in = max(0.0, min(1.0, lock_in * float(microvol_profile.get("lockin_mult", 1.25) or 1.25)))
     trail_sl = _trail_sl_from_hwm(entry_price, max_fav, lock_in, is_long)
 
     # If trailing already violated, force-close as fallback (exchange SL should also trigger).
@@ -3405,7 +3477,9 @@ def _load_enabled_instruments_and_latest_signals(
 ) -> tuple[list[Instrument], dict[int, Signal], datetime]:
     latest_signal_qs = Signal.objects.filter(instrument_id=OuterRef("pk"))
     if use_allocator_signals:
-        latest_signal_qs = latest_signal_qs.filter(strategy__startswith="alloc_")
+        latest_signal_qs = latest_signal_qs.filter(
+            Q(strategy__startswith="alloc_") | Q(strategy__startswith="mod_microvol_")
+        )
     enabled_instruments = list(
         Instrument.objects.filter(enabled=True).annotate(
             latest_1m_ts=Subquery(
@@ -4010,6 +4084,11 @@ def _attempt_entry_open(
         inst.symbol,
         settings.SIGNAL_COOLDOWN_MINUTES,
     )
+    if _strategy_is_microvol(strategy_name):
+        base_cooldown_min = max(
+            0,
+            int(getattr(settings, "MODULE_MICROVOL_COOLDOWN_MINUTES", base_cooldown_min) or base_cooldown_min),
+        )
     sl_cooldown_min = int(getattr(settings, "SIGNAL_COOLDOWN_AFTER_SL_MINUTES", base_cooldown_min))
     if base_cooldown_min > 0 and not allow_scale_entry:
         last_order = (
@@ -4277,6 +4356,8 @@ def _attempt_entry_open(
             inst_risk_pct *= macro_risk_mult
     else:
         effective_risk_mult = (session_risk_mult if session_policy_enabled else 1.0) * ai_risk_mult
+        if _strategy_is_microvol(strategy_name):
+            effective_risk_mult *= float(getattr(settings, "MODULE_MICROVOL_RISK_MULT", 0.35) or 0.35)
         if macro_active and not macro_block_entries:
             effective_risk_mult *= macro_risk_mult
         if effective_risk_mult <= 0:
@@ -4503,6 +4584,7 @@ def _attempt_entry_open(
         last_price,
         atr,
         recommended_bias=btc_recommended_bias,
+        strategy_name=strategy_name,
     )
     base_correlation_id = _safe_correlation_id(f"{sig.id}-{inst.symbol}")
     correlation_id = base_correlation_id
@@ -4558,6 +4640,7 @@ def _attempt_entry_open(
                 fill_price,
                 atr,
                 recommended_bias=btc_recommended_bias,
+                strategy_name=strategy_name,
             )
             logger.info(
                 "SL/TP recalculated with fill_price=%.4f (last=%.4f slippage=%.4f%%)",
@@ -4742,6 +4825,11 @@ def _manage_open_position(
     last = float(ticker_used.get("last")) if ticker_used else last_price
     pos_side = "buy" if current_qty > 0 else "sell"
     pos_direction = "long" if current_qty > 0 else "short"
+    origin_signal = _position_origin_signal(inst, pos_side)
+    position_strategy_name = str(getattr(origin_signal, "strategy", "") or strategy_name).strip().lower()
+    position_sig_payload = (
+        getattr(origin_signal, "payload_json", {}) if getattr(origin_signal, "payload_json", None) else sig_payload
+    )
 
     if not pos_opened_at:
         try:
@@ -4771,6 +4859,7 @@ def _manage_open_position(
         entry_price or last,
         atr,
         recommended_bias=btc_recommended_bias,
+        strategy_name=position_strategy_name,
     )
 
     if entry_price and abs(current_qty) > 0:
@@ -4790,6 +4879,7 @@ def _manage_open_position(
             contract_size,
             atr_pct=atr,
             recommended_bias=btc_recommended_bias,
+            strategy_name=position_strategy_name,
         )
         if was_trailed:
             pnl_trail = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
@@ -4824,11 +4914,69 @@ def _manage_open_position(
                 duration_min=dur_min,
                 side=trade_side,
                 leverage=leverage,
-                strategy_name=strategy_name,
-                active_modules=_signal_active_modules(sig_payload, strategy_name),
+                strategy_name=position_strategy_name,
+                active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
             )
             _mark_position_closed(inst)
             return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+    if _strategy_is_microvol(position_strategy_name) and pos_opened_at:
+        age_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60
+        max_hold_min = max(1, int(getattr(settings, "MODULE_MICROVOL_MAX_HOLD_MINUTES", 18) or 18))
+        if age_min >= max_hold_min and last and entry_price:
+            close_side = "sell" if current_qty > 0 else "buy"
+            close_qty = abs(current_qty)
+            try:
+                close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
+                close_fee = _extract_fee_usdt(close_resp)
+                pnl_pct_timeout = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+                pnl_abs_timeout = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+                trade_side = "buy" if current_qty > 0 else "sell"
+                logger.info(
+                    "Microvol timeout close %s: age=%.1f min >= %d min pnl=%.4f",
+                    symbol,
+                    age_min,
+                    max_hold_min,
+                    pnl_pct_timeout,
+                )
+                _log_operation(
+                    inst,
+                    trade_side,
+                    close_qty,
+                    entry_price,
+                    last,
+                    reason="microvol_timeout",
+                    signal_id=str(getattr(origin_signal, "id", "") or (str(sig.id) if sig else "")),
+                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    leverage=leverage,
+                    equity_before=equity_usdt,
+                    equity_after=None,
+                    fee_usdt=close_fee,
+                    opened_at=pos_opened_at,
+                    contract_size=contract_size,
+                )
+                notify_trade_closed(
+                    inst.symbol,
+                    "microvol_timeout",
+                    pnl_pct_timeout,
+                    pnl_abs=pnl_abs_timeout,
+                    entry_price=entry_price,
+                    exit_price=last,
+                    qty=close_qty,
+                    equity_before=equity_usdt,
+                    duration_min=age_min,
+                    side=trade_side,
+                    leverage=leverage,
+                    strategy_name=position_strategy_name,
+                    active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
+                )
+                _mark_position_closed(inst)
+                return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+            except Exception as exc:
+                if _is_no_position_error(exc):
+                    _mark_position_closed(inst)
+                    return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+                logger.warning("Microvol timeout close failed %s: %s", symbol, exc)
 
     # Close old positions stuck near breakeven to free margin.
     if last and entry_price:
@@ -4877,8 +5025,8 @@ def _manage_open_position(
                     duration_min=dur_min,
                     side=trade_side,
                     leverage=leverage,
-                    strategy_name=strategy_name,
-                    active_modules=_signal_active_modules(sig_payload, strategy_name),
+                    strategy_name=position_strategy_name,
+                    active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
                 )
                 _mark_position_closed(inst)
             except Exception as exc:
@@ -4951,8 +5099,8 @@ def _manage_open_position(
                         duration_min=dur_min,
                         side="sell",
                         leverage=leverage,
-                        strategy_name=strategy_name,
-                        active_modules=_signal_active_modules(sig_payload, strategy_name),
+                        strategy_name=position_strategy_name,
+                        active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
                     )
                     _mark_position_closed(inst)
                     return True, allow_scale_entry, scale_parent_correlation, scale_add_index
@@ -5022,8 +5170,8 @@ def _manage_open_position(
                         duration_min=dur_min,
                         side="buy",
                         leverage=leverage,
-                        strategy_name=strategy_name,
-                        active_modules=_signal_active_modules(sig_payload, strategy_name),
+                        strategy_name=position_strategy_name,
+                        active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
                     )
                     _mark_position_closed(inst)
                     return True, allow_scale_entry, scale_parent_correlation, scale_add_index
@@ -5149,8 +5297,8 @@ def _manage_open_position(
                             duration_min=dur_min,
                             side=trade_side,
                             leverage=leverage,
-                            strategy_name=strategy_name,
-                            active_modules=_signal_active_modules(sig_payload, strategy_name),
+                            strategy_name=position_strategy_name,
+                            active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
                         )
                         _mark_position_closed(inst)
                         _track_consecutive_errors(symbol, success=True)
@@ -5220,8 +5368,8 @@ def _manage_open_position(
                     duration_min=dur_min,
                     side=trade_side,
                     leverage=leverage,
-                    strategy_name=strategy_name,
-                    active_modules=_signal_active_modules(sig_payload, strategy_name),
+                    strategy_name=position_strategy_name,
+                    active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
                 )
                 _mark_position_closed(inst)
                 _track_consecutive_errors(symbol, success=True)
@@ -5294,8 +5442,8 @@ def _manage_open_position(
                     duration_min=dur_min,
                     side=trade_side,
                     leverage=leverage,
-                    strategy_name=strategy_name,
-                    active_modules=_signal_active_modules(sig_payload, strategy_name),
+                    strategy_name=position_strategy_name,
+                    active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
                 )
             _mark_position_closed(inst)
             _track_consecutive_errors(symbol, success=True)

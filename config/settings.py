@@ -792,10 +792,12 @@ MODULE_TREND_ENABLED = os.getenv("MODULE_TREND_ENABLED", "true").lower() == "tru
 MODULE_MEANREV_ENABLED = os.getenv("MODULE_MEANREV_ENABLED", "true").lower() == "true"
 MODULE_CARRY_ENABLED = os.getenv("MODULE_CARRY_ENABLED", "true").lower() == "true"
 MODULE_GRID_ENABLED = os.getenv("MODULE_GRID_ENABLED", "false").lower() == "true"
+MODULE_MICROVOL_ENABLED = os.getenv("MODULE_MICROVOL_ENABLED", "false").lower() == "true"
 FEATURE_FLAGS_SOURCE = os.getenv("FEATURE_FLAGS_SOURCE", "db").strip().lower()
 if FEATURE_FLAGS_SOURCE not in {"env", "db"}:
     FEATURE_FLAGS_SOURCE = "db"
 MODULE_SIGNAL_TTL_SECONDS = int(os.getenv("MODULE_SIGNAL_TTL_SECONDS", "120"))
+MODULE_MICROVOL_SIGNAL_TTL_SECONDS = int(os.getenv("MODULE_MICROVOL_SIGNAL_TTL_SECONDS", "75"))
 MODULE_LOOKBACK_BARS = int(os.getenv("MODULE_LOOKBACK_BARS", "240"))
 MODULE_ADX_TREND_MIN = float(os.getenv("MODULE_ADX_TREND_MIN", "20.0"))
 MODULE_TREND_HTF_ADX_MIN = float(os.getenv("MODULE_TREND_HTF_ADX_MIN", "0.0"))
@@ -843,6 +845,69 @@ MODULE_GRID_ALLOWED_SESSIONS = _parse_session_set(
 MODULE_GRID_ALLOWED_SYMBOLS = _parse_symbol_set(
     os.getenv("MODULE_GRID_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
 )
+MODULE_MICROVOL_ALLOWED_SESSIONS = _parse_session_set(
+    os.getenv("MODULE_MICROVOL_ALLOWED_SESSIONS", "london,overlap,ny_open,ny")
+)
+MODULE_MICROVOL_ALLOWED_SYMBOLS = _parse_symbol_set(
+    os.getenv("MODULE_MICROVOL_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
+)
+MODULE_MICROVOL_HTF_ADX_MIN = max(0.0, float(os.getenv("MODULE_MICROVOL_HTF_ADX_MIN", "18.0")))
+MODULE_MICROVOL_HTF_ADX_MAX = max(
+    MODULE_MICROVOL_HTF_ADX_MIN,
+    float(os.getenv("MODULE_MICROVOL_HTF_ADX_MAX", "55.0")),
+)
+MODULE_MICROVOL_ATR_MIN_PCT = max(0.0, float(os.getenv("MODULE_MICROVOL_ATR_MIN_PCT", "0.0025")))
+MODULE_MICROVOL_ATR_MAX_PCT = max(
+    MODULE_MICROVOL_ATR_MIN_PCT,
+    float(os.getenv("MODULE_MICROVOL_ATR_MAX_PCT", "0.0250")),
+)
+MODULE_MICROVOL_BREAKOUT_LOOKBACK = max(8, int(os.getenv("MODULE_MICROVOL_BREAKOUT_LOOKBACK", "20")))
+MODULE_MICROVOL_BREAKOUT_BUFFER_PCT = max(
+    0.0,
+    float(os.getenv("MODULE_MICROVOL_BREAKOUT_BUFFER_PCT", "0.0010")),
+)
+MODULE_MICROVOL_VOLUME_LOOKBACK = max(10, int(os.getenv("MODULE_MICROVOL_VOLUME_LOOKBACK", "30")))
+MODULE_MICROVOL_MIN_VOLUME_RATIO = max(0.0, float(os.getenv("MODULE_MICROVOL_MIN_VOLUME_RATIO", "1.6")))
+MODULE_MICROVOL_IMPULSE_LOOKBACK = max(8, min(120, int(os.getenv("MODULE_MICROVOL_IMPULSE_LOOKBACK", "20"))))
+MODULE_MICROVOL_IMPULSE_BODY_MULT = max(
+    1.0,
+    float(os.getenv("MODULE_MICROVOL_IMPULSE_BODY_MULT", "1.8")),
+)
+MODULE_MICROVOL_IMPULSE_MIN_BODY_PCT = max(
+    0.0,
+    float(os.getenv("MODULE_MICROVOL_IMPULSE_MIN_BODY_PCT", "0.0035")),
+)
+MODULE_MICROVOL_MAX_EMA20_DIST_PCT = max(
+    0.0,
+    float(os.getenv("MODULE_MICROVOL_MAX_EMA20_DIST_PCT", "0.010")),
+)
+MODULE_MICROVOL_MIN_CONFIDENCE = max(
+    0.0,
+    min(1.0, float(os.getenv("MODULE_MICROVOL_MIN_CONFIDENCE", "0.55"))),
+)
+MODULE_MICROVOL_RISK_MULT = max(
+    0.0,
+    min(1.0, float(os.getenv("MODULE_MICROVOL_RISK_MULT", "0.35"))),
+)
+MODULE_MICROVOL_COOLDOWN_MINUTES = max(0, int(os.getenv("MODULE_MICROVOL_COOLDOWN_MINUTES", "8")))
+MODULE_MICROVOL_MAX_HOLD_MINUTES = max(1, int(os.getenv("MODULE_MICROVOL_MAX_HOLD_MINUTES", "18")))
+MODULE_MICROVOL_TP_MULT = max(
+    0.1,
+    min(1.0, float(os.getenv("MODULE_MICROVOL_TP_MULT", "0.55"))),
+)
+MODULE_MICROVOL_PARTIAL_R_MULT = max(
+    0.1,
+    min(1.0, float(os.getenv("MODULE_MICROVOL_PARTIAL_R_MULT", "0.60"))),
+)
+MODULE_MICROVOL_TRAIL_R_MULT = max(
+    0.1,
+    min(1.0, float(os.getenv("MODULE_MICROVOL_TRAIL_R_MULT", "0.45"))),
+)
+MODULE_MICROVOL_BREAKEVEN_R_MULT = max(
+    0.1,
+    min(1.0, float(os.getenv("MODULE_MICROVOL_BREAKEVEN_R_MULT", "0.50"))),
+)
+MODULE_MICROVOL_LOCKIN_MULT = max(1.0, float(os.getenv("MODULE_MICROVOL_LOCKIN_MULT", "1.25")))
 
 # SMC anti-chase gate (avoid entering right after displacement candles).
 SMC_IMPULSE_CHASE_FILTER_ENABLED = (
@@ -1293,6 +1358,7 @@ CELERY_TASK_ROUTES = {
     "signals.tasks.run_meanrev_engine": {"queue": "trading"},
     "signals.tasks.run_carry_engine": {"queue": "trading"},
     "signals.tasks.run_grid_engine": {"queue": "trading"},
+    "signals.tasks.run_microvol_engine": {"queue": "trading"},
     "signals.tasks.run_portfolio_allocator": {"queue": "trading"},
     "execution.tasks.execute_orders": {"queue": "trading"},
     "execution.tasks.retrain_entry_filter_model": {"queue": ML_TRAINING_QUEUE},
@@ -1324,6 +1390,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "run-grid-engine": {
         "task": "signals.tasks.run_grid_engine",
+        "schedule": crontab(),  # every minute
+    },
+    "run-microvol-engine": {
+        "task": "signals.tasks.run_microvol_engine",
         "schedule": crontab(),  # every minute
     },
     "run-portfolio-allocator": {

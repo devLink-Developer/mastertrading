@@ -10,6 +10,7 @@ from core.models import Instrument, AiFeedbackEvent
 from execution.models import OperationReport, Order
 from marketdata.models import Candle
 from risk.models import RiskEvent
+from signals.models import Signal
 from execution.tasks import (
     _ai_entry_market_fingerprint,
     _ai_entry_mark_rejected,
@@ -32,6 +33,7 @@ from execution.tasks import (
     _minimum_order_amount_from_error,
     _market_min_qty,
     _is_no_position_error,
+    _load_enabled_instruments_and_latest_signals,
     _log_operation,
     _normalize_order_qty,
     _position_root_correlation,
@@ -269,6 +271,18 @@ class TaskHelpersTest(SimpleTestCase):
         pnl_gate, fee_est = _tp_sl_gate_pnl_pct(0.0100)
         self.assertAlmostEqual(fee_est, 0.0, places=8)
         self.assertAlmostEqual(pnl_gate, 0.0100, places=8)
+
+    @override_settings(MODULE_MICROVOL_TP_MULT=0.50)
+    def test_microvol_tp_profile_is_tighter(self):
+        generic_tp, _, generic_tp_pct, _ = _compute_tp_sl_prices("buy", 100.0, 0.01)
+        micro_tp, _, micro_tp_pct, _ = _compute_tp_sl_prices(
+            "buy",
+            100.0,
+            0.01,
+            strategy_name="mod_microvol_long",
+        )
+        self.assertLess(micro_tp, generic_tp)
+        self.assertLess(micro_tp_pct, generic_tp_pct)
 
     @override_settings(PER_INSTRUMENT_RISK={"BTCUSDT": 0.0015})
     def test_volatility_adjusted_risk_caps_per_symbol_to_base_allocator_risk(self):
@@ -1245,6 +1259,46 @@ class OperationReportFeeNetTest(TestCase):
 
         op = OperationReport.objects.get(instrument=inst)
         self.assertEqual(op.outcome, OperationReport.Outcome.LOSS)
+
+
+class LatestSignalSelectionTest(TestCase):
+    def test_allocator_mode_includes_microvol_direct_signal(self):
+        inst = Instrument.objects.create(
+            symbol="BTCUSDT",
+            exchange="bingx",
+            base="BTC",
+            quote="USDT",
+            enabled=True,
+        )
+        Candle.objects.create(
+            instrument=inst,
+            timeframe="1m",
+            ts=dj_tz.now(),
+            open=100,
+            high=101,
+            low=99,
+            close=100,
+            volume=1,
+        )
+        Signal.objects.create(
+            instrument=inst,
+            strategy="alloc_long",
+            ts=dj_tz.now() - timedelta(minutes=2),
+            payload_json={"direction": "long"},
+            score=0.8,
+        )
+        micro = Signal.objects.create(
+            instrument=inst,
+            strategy="mod_microvol_long",
+            ts=dj_tz.now() - timedelta(seconds=30),
+            payload_json={"direction": "long"},
+            score=0.9,
+        )
+
+        instruments, latest_signals, _ = _load_enabled_instruments_and_latest_signals(True)
+        latest_ids = {inst_obj.latest_signal_id for inst_obj in instruments if inst_obj.symbol == "BTCUSDT"}
+        self.assertEqual(latest_ids, {micro.id})
+        self.assertIn(micro.id, latest_signals)
 
     @override_settings(ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False)
     def test_log_operation_persists_mfe_mae_capture_metrics(self):
