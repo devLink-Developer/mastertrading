@@ -31,6 +31,9 @@ from signals.sessions import (
     get_current_session,
     get_session_risk_mult,
     get_session_score_min,
+    get_weekday_name,
+    get_weekday_risk_mult,
+    get_weekday_score_offset,
     is_dead_session,
 )
 from signals.direction_policy import (
@@ -5476,7 +5479,9 @@ def execute_orders():
         multi_strategy_enabled,
         allocator_enabled,
     )
-    current_session = get_current_session()
+    session_now = dj_tz.now()
+    current_session = get_current_session(session_now)
+    weekday_name = get_weekday_name(session_now)
     session_min_score = float(getattr(settings, "EXECUTION_MIN_SIGNAL_SCORE", 0.80))
     session_risk_mult = 1.0
     if session_policy_enabled:
@@ -5484,10 +5489,21 @@ def execute_orders():
             current_session,
             getattr(settings, "SESSION_SCORE_MIN", {}),
         )
+        if bool(getattr(settings, "WEEKDAY_CONTEXT_ENABLED", True)):
+            session_min_score += get_weekday_score_offset(
+                weekday_name,
+                getattr(settings, "WEEKDAY_SCORE_OFFSET", {}),
+            )
+            session_min_score = max(0.0, min(1.0, float(session_min_score)))
         session_risk_mult = get_session_risk_mult(
             current_session,
             getattr(settings, "SESSION_RISK_MULTIPLIER", {}),
         )
+        if bool(getattr(settings, "WEEKDAY_CONTEXT_ENABLED", True)):
+            session_risk_mult *= get_weekday_risk_mult(
+                weekday_name,
+                getattr(settings, "WEEKDAY_RISK_MULTIPLIER", {}),
+            )
     macro_active, macro_context = _is_macro_high_impact_window(
         now_utc=dj_tz.now(),
         session_name=current_session,

@@ -13,6 +13,9 @@ from .sessions import (
     get_current_session,
     get_session_risk_mult,
     get_session_score_min,
+    get_weekday_name,
+    get_weekday_risk_mult,
+    get_weekday_score_offset,
     is_dead_session,
 )
 from .tasks import _ema_confluence_state
@@ -55,6 +58,9 @@ class SessionHelpersTest(TestCase):
         self.assertEqual(get_current_session(13), "overlap")
         self.assertEqual(get_current_session(7), "london")
         self.assertEqual(get_current_session(2), "asia")
+        self.assertEqual(get_current_session(datetime(2026, 3, 10, 13, 35, tzinfo=timezone.utc)), "ny_open")
+        self.assertEqual(get_current_session(datetime(2026, 3, 10, 13, 15, tzinfo=timezone.utc)), "overlap")
+        self.assertEqual(get_current_session(datetime(2026, 3, 10, 14, 5, tzinfo=timezone.utc)), "ny")
         self.assertTrue(is_dead_session("dead"))
         self.assertFalse(is_dead_session("london"))
 
@@ -64,6 +70,9 @@ class SessionHelpersTest(TestCase):
         # Invalid overrides fall back to defaults.
         self.assertEqual(get_session_score_min("asia", {"asia": "bad"}), 0.80)
         self.assertEqual(get_session_risk_mult("dead", {"dead": "bad"}), 0.0)
+        self.assertEqual(get_weekday_name(datetime(2026, 3, 10, 13, 35, tzinfo=timezone.utc)), "tuesday")
+        self.assertEqual(get_weekday_score_offset("sunday", {"sunday": 0.04}), 0.04)
+        self.assertEqual(get_weekday_risk_mult("friday", {"friday": 0.9}), 0.9)
 
     def test_ema_confluence_state_long_short(self):
         prices_up = list(range(100, 400))
@@ -373,6 +382,35 @@ class AllocatorWeightingTest(TestCase):
         self.assertEqual(out["symbol_state"], "open")
         trend_ctx = out.get("reasons", {}).get("trend_context", {})
         self.assertAlmostEqual(float(trend_ctx.get("adx_min_effective", 0.0)), 13.0, places=6)
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS={"ny_open"},
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_disables_trend_solo_in_ny_open(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 35.0},
+                }
+            ],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            symbol="BTCUSDT",
+            session_name="ny_open",
+        )
+        self.assertEqual(out["direction"], "flat")
+        self.assertEqual(out["symbol_state"], "blocked")
 
     @override_settings(
         ALLOCATOR_MIN_MODULES_ACTIVE=2,

@@ -681,3 +681,35 @@ docker compose logs --tail=120 chatbot
 - Motivo:
   - evita spam operativo cuando un simbolo queda atrasado varios minutos
   - mantiene la senal de incidente real sin ocultar el problema de ingestion
+
+### 2026-03-10 update: carry no puede monopolizar el allocator
+- Se corrigio un hueco del meta allocator:
+  - `META_ALLOCATOR_WEIGHT_CAP` ahora se aplica tambien post-normalizacion
+  - antes podia quedar un modulo en ~90%+ aunque el cap fuese menor, si los demas colapsaban
+- Guardrail nuevo en `signals/allocator.py`:
+  - `ALLOCATOR_CARRY_CONTRA_TREND_MAX_EFFECTIVE_WEIGHT`
+  - si `carry` va contra la direccion del `trend`, su peso efectivo queda capado (default `0.20`)
+- Objetivo:
+  - evitar shorts/longs carry-dominados fragiles
+  - bloquear casos donde `carry` solo intenta imponerse contra un `trend` moderado/opuesto
+
+### 2026-03-10 update: NY open y sesgo suave por dia de semana
+- `signals/sessions.py` ahora modela `ny_open` como sub-sesion separada:
+  - `ny_open`: 13:30-14:00 UTC
+  - `overlap`: 12:00-13:30 UTC
+  - `london`: 06:00-12:00 UTC
+  - `ny`: 14:00-20:00 UTC
+- Motivo:
+  - la apertura cash de Wall Street tiene mas volatilidad y mas probabilidad de fake move temprano
+  - no se trata como "NY normal", sino como una ventana con score/risk mas estrictos
+- Defaults operativos:
+  - `SESSION_SCORE_MIN["ny_open"] = 0.68`
+  - `SESSION_RISK_MULTIPLIER["ny_open"] = 0.65`
+  - `ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS=ny_open`
+- Sesgo semanal suave:
+  - `WEEKDAY_CONTEXT_ENABLED=true`
+  - lunes/viernes: pequeno endurecimiento (`score +0.01`, `risk x0.95`)
+  - sabado/domingo: endurecimiento mayor (`score +0.03`, `risk x0.85`)
+- Politica:
+  - usarlo como prior suave por sesion/dia
+  - no como regla dura tipo "lunes siempre long"

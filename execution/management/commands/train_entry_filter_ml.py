@@ -95,7 +95,7 @@ def _session_from_datetime(value) -> str:
     if dj_tz.is_naive(dt):
         dt = dt.replace(tzinfo=timezone.utc)
     dt_utc = dt.astimezone(timezone.utc)
-    return get_current_session(dt_utc.hour)
+    return get_current_session(dt_utc)
 
 
 def _analyze_thresholds(model: dict[str, Any], x: np.ndarray, y: np.ndarray, pnl_abs: np.ndarray) -> dict[str, Any]:

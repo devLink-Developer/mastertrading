@@ -15,6 +15,8 @@ from marketdata.models import Candle, FundingRate
 from signals.sessions import (
     get_current_session,
     get_session_score_min,
+    get_weekday_name,
+    get_weekday_score_offset,
     is_dead_session,
 )
 from signals.direction_policy import (
@@ -954,13 +956,20 @@ def run_signal_engine():
     dedup_seconds = int(getattr(settings, "SIGNAL_DEDUP_SECONDS", 120))
     session_policy_enabled = bool(getattr(settings, "SESSION_POLICY_ENABLED", False))
     session_dead_zone_block = bool(getattr(settings, "SESSION_DEAD_ZONE_BLOCK", True))
-    current_session = get_current_session()
+    current_session = get_current_session(now)
+    weekday_name = get_weekday_name(now)
     session_min_score = float(getattr(settings, "MIN_SIGNAL_SCORE", 0.80))
     if session_policy_enabled:
         session_min_score = get_session_score_min(
             current_session,
             getattr(settings, "SESSION_SCORE_MIN", {}),
         )
+        if bool(getattr(settings, "WEEKDAY_CONTEXT_ENABLED", True)):
+            session_min_score += get_weekday_score_offset(
+                weekday_name,
+                getattr(settings, "WEEKDAY_SCORE_OFFSET", {}),
+            )
+            session_min_score = max(0.0, min(1.0, float(session_min_score)))
         if session_dead_zone_block and is_dead_session(current_session):
             logger.info(
                 "Session policy blocked signal emission: session=%s dead_zone=true",

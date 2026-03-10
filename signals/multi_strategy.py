@@ -17,7 +17,12 @@ from signals.allocator import (
 from signals.meta_allocator import compute_meta_allocator_overlay
 from signals.feature_flags import FEATURE_KEYS, resolve_runtime_flags
 from signals.models import Signal
-from signals.sessions import get_current_session, get_session_risk_mult
+from signals.sessions import (
+    get_current_session,
+    get_session_risk_mult,
+    get_weekday_name,
+    get_weekday_risk_mult,
+)
 from signals.modules import carry as carry_module
 from signals.modules import grid as grid_module
 from signals.modules import meanrev as meanrev_module
@@ -71,7 +76,7 @@ def run_module_engine(module_name: str) -> str:
         if len(df_ltf) < warmup or len(df_htf) < max(80, warmup // 2):
             continue
         funding = latest_funding_rates(inst, lookback=80) if module_name == "carry" else []
-        session = get_current_session(now.hour)
+        session = get_current_session(now)
         result = detector(df_ltf, df_htf, funding, session, symbol=inst.symbol)
         if not result:
             continue
@@ -224,10 +229,17 @@ def run_allocator_cycle() -> str:
             meta_diag = {"enabled": True, "reason": f"error:{type(exc).__name__}"}
     threshold = float(getattr(settings, "ALLOCATOR_NET_THRESHOLD", 0.20))
     base_risk = float(getattr(settings, "RISK_PER_TRADE_PCT", 0.01))
-    session = get_current_session(now.hour)
+    session = get_current_session(now)
     session_risk_mult = float(
         get_session_risk_mult(session, getattr(settings, "SESSION_RISK_MULTIPLIER", {}))
     )
+    if bool(getattr(settings, "WEEKDAY_CONTEXT_ENABLED", True)):
+        session_risk_mult *= float(
+            get_weekday_risk_mult(
+                get_weekday_name(now),
+                getattr(settings, "WEEKDAY_RISK_MULTIPLIER", {}),
+            )
+        )
 
     symbol_allow_map = {
         module: _allowed_symbols_for_module(module, instruments) for module in active_modules

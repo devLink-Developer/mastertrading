@@ -428,6 +428,8 @@ def resolve_symbol_allocation(
         bool(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_ENABLED", True))
         and strong_trend
         and trend_sign != 0
+        and str(session_name or "").strip().lower()
+        not in set(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS", set()) or set())
     ):
         trend_present_same_dir = any(
             row.get("module") == "trend"

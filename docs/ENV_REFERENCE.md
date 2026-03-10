@@ -45,8 +45,11 @@ This document lists high-impact variables only. Keep secrets out of git.
 
 ## 6) Session and regime controls
 - `SESSION_POLICY_ENABLED`
-- `SESSION_SCORE_MIN` (json map)
-- `SESSION_RISK_MULTIPLIER` (json map)
+- `SESSION_SCORE_MIN` (json map; supports `asia`, `london`, `overlap`, `ny_open`, `ny`, `dead`)
+- `SESSION_RISK_MULTIPLIER` (json map; supports `asia`, `london`, `overlap`, `ny_open`, `ny`, `dead`)
+- `WEEKDAY_SCORE_OFFSET` (json map; `monday`..`sunday`)
+- `WEEKDAY_RISK_MULTIPLIER` (json map; `monday`..`sunday`)
+- `WEEKDAY_CONTEXT_ENABLED`
 - `SESSION_DEAD_ZONE_BLOCK`
 - `MARKET_REGIME_ADX_MIN`
 - `MARKET_REGIME_ADX_MIN_BY_CONTEXT` (JSON overrides: `SYMBOL:session`, `SYMBOL:*`, `*:session`, `*:*`)
@@ -79,6 +82,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `ALLOCATOR_STRONG_TREND_ADX_MIN`
 - `ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT` (JSON overrides: `SYMBOL:session`, `SYMBOL:*`, `*:session`, `*:*`)
 - `ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN`
+- `ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS`
 - `ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED`
 - `ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT`
 - `ALLOCATOR_CARRY_CONTRA_TREND_MAX_EFFECTIVE_WEIGHT`
@@ -153,12 +157,22 @@ This document lists high-impact variables only. Keep secrets out of git.
 ## 11) JSON env examples
 `SESSION_SCORE_MIN` example:
 ```json
-{"asia":0.62,"london":0.56,"ny":0.58,"overlap":0.55,"dead":0.80}
+{"asia":0.62,"london":0.56,"overlap":0.55,"ny_open":0.68,"ny":0.58,"dead":0.80}
 ```
 
 `SESSION_RISK_MULTIPLIER` example:
 ```json
-{"asia":0.70,"london":1.0,"ny":0.90,"overlap":1.0,"dead":0.0}
+{"asia":0.70,"london":1.0,"overlap":1.0,"ny_open":0.65,"ny":0.90,"dead":0.0}
+```
+
+`WEEKDAY_SCORE_OFFSET` example:
+```json
+{"monday":0.01,"friday":0.01,"saturday":0.03,"sunday":0.03}
+```
+
+`WEEKDAY_RISK_MULTIPLIER` example:
+```json
+{"monday":0.95,"friday":0.95,"saturday":0.85,"sunday":0.85}
 ```
 
 `ALLOCATOR_MODULE_WEIGHTS` example:

@@ -424,6 +424,8 @@ SESSION_POLICY_ENABLED = os.getenv("SESSION_POLICY_ENABLED", "true").lower() == 
 SESSION_DEAD_ZONE_BLOCK = os.getenv("SESSION_DEAD_ZONE_BLOCK", "true").lower() == "true"
 _SESSION_SCORE_MIN_RAW = os.getenv("SESSION_SCORE_MIN", "{}")
 _SESSION_RISK_MULT_RAW = os.getenv("SESSION_RISK_MULTIPLIER", "{}")
+_WEEKDAY_SCORE_OFFSET_RAW = os.getenv("WEEKDAY_SCORE_OFFSET", "{}")
+_WEEKDAY_RISK_MULT_RAW = os.getenv("WEEKDAY_RISK_MULTIPLIER", "{}")
 _DIRECTION_MODE_RAW = os.getenv("SIGNAL_DIRECTION_MODE", "both")
 SIGNAL_DIRECTION_MODE = _DIRECTION_MODE_RAW.strip().lower()
 if SIGNAL_DIRECTION_MODE not in {"both", "long_only", "short_only", "disabled"}:
@@ -619,8 +621,34 @@ try:
 except Exception:
     SESSION_RISK_MULTIPLIER = {}
 try:
+    _allowed_weekdays = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "*"}
+    _raw_weekday_score = _json.loads(_WEEKDAY_SCORE_OFFSET_RAW)
+    if isinstance(_raw_weekday_score, dict):
+        WEEKDAY_SCORE_OFFSET = {
+            str(k).strip().lower(): float(v)
+            for k, v in _raw_weekday_score.items()
+            if str(k).strip().lower() in _allowed_weekdays
+        }
+    else:
+        WEEKDAY_SCORE_OFFSET = {}
+except Exception:
+    WEEKDAY_SCORE_OFFSET = {}
+try:
+    _allowed_weekdays = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "*"}
+    _raw_weekday_risk = _json.loads(_WEEKDAY_RISK_MULT_RAW)
+    if isinstance(_raw_weekday_risk, dict):
+        WEEKDAY_RISK_MULTIPLIER = {
+            str(k).strip().lower(): float(v)
+            for k, v in _raw_weekday_risk.items()
+            if str(k).strip().lower() in _allowed_weekdays
+        }
+    else:
+        WEEKDAY_RISK_MULTIPLIER = {}
+except Exception:
+    WEEKDAY_RISK_MULTIPLIER = {}
+try:
     _raw_regime_ctx = _parse_regime_context_mapping(_MARKET_REGIME_ADX_MIN_BY_CONTEXT_RAW)
-    _allowed_sessions = {"asia", "london", "ny", "overlap", "dead", "*"}
+    _allowed_sessions = {"asia", "london", "ny_open", "ny", "overlap", "dead", "*"}
     MARKET_REGIME_ADX_MIN_BY_CONTEXT = {}
     for _k, _v in _raw_regime_ctx.items():
         _thr = max(0.0, float(_v))
@@ -649,7 +677,7 @@ try:
         ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION = {
             str(k).strip().lower(): max(0.0, float(v))
             for k, v in _raw_volume_by_session.items()
-            if str(k).strip().lower() in {"asia", "london", "ny", "overlap", "dead"}
+            if str(k).strip().lower() in {"asia", "london", "ny_open", "ny", "overlap", "dead"}
         }
     else:
         ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION = {}
@@ -725,7 +753,7 @@ def _parse_int_set(raw: str, *, min_val: int, max_val: int) -> set[int]:
 
 
 def _parse_session_set(raw: str) -> set[str]:
-    allowed = {"asia", "london", "ny", "overlap", "dead"}
+    allowed = {"asia", "london", "ny_open", "ny", "overlap", "dead"}
     txt = (raw or "").strip()
     if not txt:
         return set()
@@ -740,6 +768,12 @@ def _parse_session_set(raw: str) -> set[str]:
     if not values:
         values = [x.strip().lower() for x in txt.split(",") if x.strip()]
     return {v for v in values if v in allowed}
+
+
+WEEKDAY_CONTEXT_ENABLED = os.getenv("WEEKDAY_CONTEXT_ENABLED", "true").lower() == "true"
+ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS = _parse_session_set(
+    os.getenv("ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS", "ny_open")
+)
 
 
 def _parse_symbol_set(raw: str) -> set[str]:
@@ -849,7 +883,7 @@ try:
     _raw_alloc_trend_ctx = _parse_regime_context_mapping(
         _ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT_RAW
     )
-    _allowed_sessions = {"asia", "london", "ny", "overlap", "dead", "*"}
+    _allowed_sessions = {"asia", "london", "ny_open", "ny", "overlap", "dead", "*"}
     ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT = {}
     for _k, _v in _raw_alloc_trend_ctx.items():
         _thr = max(0.0, float(_v))
