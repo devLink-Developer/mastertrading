@@ -633,3 +633,27 @@ docker compose logs --tail=120 chatbot
 - Permite bajar solo el umbral ADX para habilitar `min_modules=1` en contexto puntual (ej. `BTCUSDT:london`) sin relajar globalmente todo el bot.
 - Integrado en `signals/allocator.py` con fallback al valor global `ALLOCATOR_STRONG_TREND_ADX_MIN`.
 
+---
+
+## 14. Runtime Overrides DB-First (2026-03-10)
+
+- Se reutiliza `signals.StrategyConfig` para overrides runtime sin crear otra tabla.
+- Convención:
+  - `version=runtime_cfg_v1`
+  - `name=<SETTING_KEY>`
+  - `enabled=true` significa que la override está activa
+  - `params_json={"value": ...}` guarda el valor real
+- Helper nuevo: `signals/runtime_overrides.py`
+  - cachea en Redis por 30s
+  - fallback seguro a `settings.*` si DB/Redis falla
+- Integraciones activas:
+  - `AI_ENTRY_GATE_ENABLED`
+  - `AI_EXIT_GATE_ENABLED`
+  - `BTC_LEAD_FILTER_ENABLED`
+  - `REGIME_BULL_SHORT_BLOCK_ENABLED`
+  - `REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES`
+  - `REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES`
+- Política operativa:
+  - secretos, URLs, puertos, credenciales y bootstrap infra siguen en `.env`
+  - flags/toggles de estrategia deben preferir DB para evitar duplicación entre stacks
+
