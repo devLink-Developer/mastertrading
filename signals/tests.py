@@ -418,6 +418,45 @@ class AllocatorWeightingTest(TestCase):
         self.assertEqual(dampened["direction"], "long")
         self.assertGreater(float(dampened["net_score"]), float(baseline["net_score"]))
 
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED=True,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT=0.5,
+        ALLOCATOR_CARRY_CONTRA_TREND_MAX_EFFECTIVE_WEIGHT=0.20,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_caps_carry_when_it_opposes_non_strong_trend(self):
+        module_signals = [
+            {
+                "module": "trend",
+                "direction": "long",
+                "confidence": 0.78,
+                "reasons": {"adx_htf": 23.0},
+            },
+            {"module": "carry", "direction": "short", "confidence": 0.98},
+        ]
+        weights = {"trend": 0.0389, "meanrev": 0.0, "carry": 0.9611, "grid": 0.0, "smc": 0.0}
+        risk_budgets = dict(weights)
+
+        out = resolve_symbol_allocation(
+            module_signals,
+            threshold=0.20,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights=weights,
+            risk_budgets=risk_budgets,
+        )
+
+        self.assertEqual(out["direction"], "flat")
+        carry_row = next(
+            row for row in out["reasons"]["module_contributions"] if row["module"] == "carry"
+        )
+        self.assertTrue(bool(carry_row["carry_contra_trend_weight_capped"]))
+        self.assertAlmostEqual(float(carry_row["weight"]), 0.20, places=6)
+
 
 class AllocatorBudgetMixFloorTest(TestCase):
     def _run_alloc(self) -> dict:

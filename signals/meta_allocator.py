@@ -55,6 +55,53 @@ def _normalize_map(raw: dict[str, float], fallback: dict[str, float]) -> dict[st
     return {k: max(0.0, _safe_float(raw.get(k, 0.0))) / total for k in MODULE_ORDER}
 
 
+def _cap_normalized_weights(weights: dict[str, float], max_weight: float) -> dict[str, float]:
+    """
+    Enforce a real post-normalization max share per module.
+
+    Without this second pass, clamping raw weights before normalization still allows one
+    module to dominate near 100% when the rest collapse toward zero.
+    """
+    cap = _clamp(max_weight, 0.0, 1.0)
+    normalized = _normalize_map(weights, weights)
+    if cap >= 1.0:
+        return normalized
+
+    positive_modules = [m for m in MODULE_ORDER if float(normalized.get(m, 0.0)) > 1e-12]
+    if not positive_modules:
+        return normalized
+    if len(positive_modules) * cap < 1.0 - 1e-9:
+        return normalized
+
+    out = {m: 0.0 for m in MODULE_ORDER}
+    remaining = set(positive_modules)
+    remaining_total = 1.0
+
+    while remaining:
+        base_sum = sum(float(normalized[m]) for m in remaining)
+        if base_sum <= 1e-12 or remaining_total <= 1e-12:
+            break
+        proposed = {
+            m: remaining_total * (float(normalized[m]) / base_sum)
+            for m in remaining
+        }
+        overflow = [m for m, val in proposed.items() if val > cap + 1e-12]
+        if not overflow:
+            for m, val in proposed.items():
+                out[m] = float(val)
+            remaining.clear()
+            break
+        for module in overflow:
+            out[module] = cap
+            remaining.remove(module)
+            remaining_total = max(0.0, remaining_total - cap)
+
+    total = sum(out.values())
+    if total <= 0:
+        return normalized
+    return {m: float(out.get(m, 0.0)) / total for m in MODULE_ORDER}
+
+
 def _strategy_to_module(strategy_name: str) -> str:
     st = str(strategy_name or "").strip().lower()
     if st.startswith("mod_"):
@@ -282,7 +329,7 @@ def compute_meta_weights_from_metrics(
     if raw_total <= 0 and p4_enabled:
         normalized = {m: 0.0 for m in MODULE_ORDER}
     else:
-        normalized = _normalize_map(raw, base)
+        normalized = _cap_normalized_weights(_normalize_map(raw, base), weight_cap)
 
     winner = ""
     if single_winner_enabled:

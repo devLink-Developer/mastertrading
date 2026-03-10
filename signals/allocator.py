@@ -354,32 +354,50 @@ def resolve_symbol_allocation(
                     getattr(settings, "ALLOCATOR_SMC_NON_CONFLUENCE_WEIGHT_MULT", 0.85)
                 )
         carry_contra_dampened = False
+        carry_contra_weight_capped = False
         if (
             module == "carry"
             and bool(
                 getattr(settings, "ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED", True)
             )
-            and strong_trend
             and trend_sign != 0
             and sign != trend_sign
         ):
-            carry_mult = max(
+            if strong_trend:
+                carry_mult = max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(
+                            getattr(
+                                settings,
+                                "ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT",
+                                0.50,
+                            )
+                        ),
+                    ),
+                )
+                weight_mult *= carry_mult
+                carry_contra_dampened = carry_mult < 1.0
+        weight_mult = max(0.0, float(weight_mult))
+        weight = weight_base * weight_mult
+        if module == "carry" and trend_sign != 0 and sign != trend_sign:
+            carry_weight_cap = max(
                 0.0,
                 min(
                     1.0,
                     float(
                         getattr(
                             settings,
-                            "ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT",
-                            0.50,
+                            "ALLOCATOR_CARRY_CONTRA_TREND_MAX_EFFECTIVE_WEIGHT",
+                            0.20,
                         )
                     ),
                 ),
             )
-            weight_mult *= carry_mult
-            carry_contra_dampened = carry_mult < 1.0
-        weight_mult = max(0.0, float(weight_mult))
-        weight = weight_base * weight_mult
+            if carry_weight_cap > 0.0 and weight > carry_weight_cap:
+                weight = carry_weight_cap
+                carry_contra_weight_capped = True
         contribution = weight * confidence * sign
         net_score += contribution
         abs_capacity += abs(weight * confidence)
@@ -393,6 +411,7 @@ def resolve_symbol_allocation(
                 "weight_mult": round(weight_mult, 4),
                 "smc_confluence": bool(sig.get("smc_confluence", False)),
                 "carry_contra_trend_dampened": bool(carry_contra_dampened),
+                "carry_contra_trend_weight_capped": bool(carry_contra_weight_capped),
                 "contribution": round(contribution, 6),
             }
         )

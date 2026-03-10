@@ -79,6 +79,9 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `ALLOCATOR_STRONG_TREND_ADX_MIN`
 - `ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT` (JSON overrides: `SYMBOL:session`, `SYMBOL:*`, `*:session`, `*:*`)
 - `ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN`
+- `ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED`
+- `ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT`
+- `ALLOCATOR_CARRY_CONTRA_TREND_MAX_EFFECTIVE_WEIGHT`
 - `ALLOCATOR_BUDGET_MIX_MIN_MULT` (0.30 default; set 0.0 for strict budget isolation mode)
 - `ALLOCATOR_DYNAMIC_WEIGHTS_ENABLED`
 - `ALLOCATOR_DYNAMIC_WINDOW_DAYS`
@@ -88,6 +91,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `META_ALLOCATOR_LOOKBACK_DAYS`, `META_ALLOCATOR_MIN_TRADES`
 - `META_ALLOCATOR_CACHE_SECONDS`
 - `META_ALLOCATOR_WEIGHT_CAP`
+  - post-normalization max share per module; prevents a single module from dominating when others collapse
   - `META_ALLOCATOR_LOSS_CLUSTER_PENALTY`
   - `META_ALLOCATOR_PF_TARGET`
   - `META_ALLOCATOR_CORR_PENALTY_STRENGTH`
