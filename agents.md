@@ -728,3 +728,28 @@ docker compose logs --tail=120 chatbot
 - Rollout recomendado:
   - activar primero solo en `demo`
   - no activar en `live` sin observar algunos dias de ejecucion y rechazos
+
+### 2026-03-10 update: cierre heuristico por progreso a TP
+- Se agrego un evaluador de salida temprana `tp_progress_exit` en `execution/tasks.py`.
+- Objetivo:
+  - capturar ganancias cuando el trade ya recorrio buena parte del TP pero pierde continuidad antes de completar el ultimo tramo
+  - evitar casos donde llega al 70-90% del objetivo y despues devuelve todo
+- Variables usadas:
+  - `progress = pnl_gate / tp_pct`
+  - `giveback_ratio` contra el HWM (`trail:max_fav`)
+  - desalineacion de la señal actual (`signal_mismatch`)
+  - sesgo MTF/BTC en contra (`bias_opposed`)
+  - envejecimiento relativo de `microvol`
+- Defaults operativos:
+  - `TP_PROGRESS_EARLY_EXIT_ENABLED=true`
+  - `TP_PROGRESS_EARLY_EXIT_MIN_PROGRESS=0.70`
+  - `TP_PROGRESS_EARLY_EXIT_MIN_R=0.8`
+  - `TP_PROGRESS_EARLY_EXIT_MAX_GIVEBACK_RATIO=0.25`
+  - `TP_PROGRESS_EARLY_EXIT_FORCE_PROGRESS=0.90`
+  - `TP_PROGRESS_EARLY_EXIT_FORCE_GIVEBACK_RATIO=0.18`
+  - `TP_PROGRESS_EARLY_EXIT_CLOSE_SCORE=2`
+  - `TP_PROGRESS_EARLY_EXIT_MICROVOL_AGE_RATIO=0.50`
+- Politica:
+  - no reemplaza el TP normal ni el trailing
+  - actua antes del `AI_EXIT_GATE`
+  - registra `reason=tp_progress_exit` y `close_sub_reason` con la causa heuristica
