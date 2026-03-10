@@ -657,3 +657,17 @@ docker compose logs --tail=120 chatbot
   - secretos, URLs, puertos, credenciales y bootstrap infra siguen en `.env`
   - flags/toggles de estrategia deben preferir DB para evitar duplicación entre stacks
 
+
+### Deploy multi-stack: regla obligatoria
+- `rortigoza` y `eudy` NO usan el mismo compose operativo.
+- Stack principal (`rortigoza`):
+  - usar `docker compose ...` con `docker-compose.yml` y `.env`
+- Stack `eudy`:
+  - usar `docker compose -p trading_bot_eudy -f docker-compose.eudy.yml -f docker-compose.eudy.override.yml --env-file .env.eudy ...`
+- No desplegar `eudy` con `docker-compose.yml` base.
+  - Motivo: el compose base publica `5434:5432` y `6381:6379`
+  - Si se usa para `eudy`, intenta recrear `postgres/redis` con los mismos puertos del stack principal
+  - Resultado: conflicto de puertos y fallo de despliegue, no de logica
+- Regla practica:
+  - para cambios de `eudy`, siempre usar `docker-compose.eudy.yml` + `docker-compose.eudy.override.yml`
+  - para cambios del stack principal, usar solo `docker-compose.yml`
