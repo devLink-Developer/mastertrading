@@ -75,6 +75,40 @@ def _volatility_adjusted_risk(
 ) -> float:
     return _shared_volatility_adjusted_risk(symbol, atr_pct, base_risk)
 
+
+def _execution_min_signal_score(
+    session: str,
+    *,
+    session_policy_enabled: bool,
+    session_score_overrides: dict | None = None,
+) -> float:
+    """Mirror live execution score gating for backtest entries."""
+    if session_policy_enabled:
+        return float(get_session_score_min(session, session_score_overrides))
+    return float(
+        getattr(
+            settings,
+            "EXECUTION_MIN_SIGNAL_SCORE",
+            getattr(settings, "MIN_SIGNAL_SCORE", 0.0),
+        )
+        or 0.0
+    )
+
+
+def _passes_execution_score_gate(
+    score: float,
+    session: str,
+    *,
+    session_policy_enabled: bool,
+    session_score_overrides: dict | None = None,
+) -> tuple[bool, float]:
+    min_score = _execution_min_signal_score(
+        session,
+        session_policy_enabled=session_policy_enabled,
+        session_score_overrides=session_score_overrides,
+    )
+    return score >= min_score, min_score
+
 # ---------------------------------------------------------------------------
 # Fee model
 # ---------------------------------------------------------------------------
@@ -913,6 +947,15 @@ def run_backtest(
             score = float(alloc["confidence"])
 
             if direction not in {"long", "short"}:
+                continue
+
+            score_ok, _exec_min_score = _passes_execution_score_gate(
+                score,
+                session,
+                session_policy_enabled=session_policy_enabled,
+                session_score_overrides=session_score_overrides,
+            )
+            if not score_ok:
                 continue
 
             if not is_direction_allowed(direction, inst.symbol):
