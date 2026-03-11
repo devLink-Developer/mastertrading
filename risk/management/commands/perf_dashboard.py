@@ -23,6 +23,7 @@ from django.utils import timezone as dj_tz
 from execution.models import OperationReport
 from marketdata.models import Candle
 from signals.models import Signal
+from signals.sessions import get_current_session, get_weekday_name
 
 
 def _f(v: Any) -> float:
@@ -89,12 +90,24 @@ def _bucket_stats(trades: list[dict]) -> dict[str, Any]:
     mfe_capture_values = [
         x for x in (_finite_or_none(t.get("mfe_capture_ratio")) for t in trades) if x is not None
     ]
+    mfe_values = [
+        x for x in (_finite_or_none(t.get("mfe_r")) for t in trades) if x is not None
+    ]
+    mae_values = [
+        x for x in (_finite_or_none(t.get("mae_r")) for t in trades) if x is not None
+    ]
     mfe_capture_avg = (
         (sum(mfe_capture_values) / len(mfe_capture_values))
         if mfe_capture_values else None
     )
     mfe_capture_p50 = _percentile(mfe_capture_values, 0.50)
     mfe_capture_p75 = _percentile(mfe_capture_values, 0.75)
+    avg_mfe_r = (sum(mfe_values) / len(mfe_values)) if mfe_values else None
+    avg_mae_r = (sum(mae_values) / len(mae_values)) if mae_values else None
+    giveback_avg = (
+        sum(max(0.0, 1.0 - v) for v in mfe_capture_values) / len(mfe_capture_values)
+        if mfe_capture_values else None
+    )
 
     return {
         "n": n,
@@ -106,9 +119,13 @@ def _bucket_stats(trades: list[dict]) -> dict[str, Any]:
         "profit_factor": round(pf, 4),
         "total_return_pct": round(total * 100, 4),
         "avg_duration_min": round(avg_dur, 1),
+        "avg_mfe_r": round(avg_mfe_r, 4) if avg_mfe_r is not None else None,
+        "avg_mae_r": round(avg_mae_r, 4) if avg_mae_r is not None else None,
         "mfe_capture_avg": round(mfe_capture_avg, 4) if mfe_capture_avg is not None else None,
         "mfe_capture_p50": round(mfe_capture_p50, 4) if mfe_capture_p50 is not None else None,
         "mfe_capture_p75": round(mfe_capture_p75, 4) if mfe_capture_p75 is not None else None,
+        "giveback_avg": round(giveback_avg, 4) if giveback_avg is not None else None,
+        "capture_samples": len(mfe_capture_values),
     }
 
 
@@ -186,6 +203,30 @@ class Command(BaseCommand):
         for k in sorted(by_sym, key=lambda s: by_sym[s]["total_return_pct"], reverse=True):
             self.stdout.write(_cols(by_sym[k], k))
 
+        by_session = self._group_stats(trades, "session")
+        result["by_session"] = by_session
+        self.stdout.write(self.style.SUCCESS("\n  By Session"))
+        self.stdout.write(_HEADER)
+        self.stdout.write(_SEP)
+        for k in sorted(by_session):
+            self.stdout.write(_cols(by_session[k], k))
+
+        by_weekday = self._group_stats(trades, "weekday")
+        result["by_weekday"] = by_weekday
+        self.stdout.write(self.style.SUCCESS("\n  By Weekday"))
+        self.stdout.write(_HEADER)
+        self.stdout.write(_SEP)
+        for k in sorted(by_weekday):
+            self.stdout.write(_cols(by_weekday[k], k))
+
+        by_strategy = self._group_stats(trades, "strategy")
+        result["by_strategy"] = by_strategy
+        self.stdout.write(self.style.SUCCESS("\n  By Strategy"))
+        self.stdout.write(_HEADER)
+        self.stdout.write(_SEP)
+        for k in sorted(by_strategy, key=lambda s: by_strategy[s].get("total_return_pct", 0), reverse=True):
+            self.stdout.write(_cols(by_strategy[k], k))
+
         by_regime = self._group_stats(trades, "regime")
         result["by_regime"] = by_regime
         self.stdout.write(self.style.SUCCESS("\n  By Regime"))
@@ -201,6 +242,14 @@ class Command(BaseCommand):
         self.stdout.write(_SEP)
         for k in sorted(by_reason, key=lambda r: by_reason[r]["n"], reverse=True):
             self.stdout.write(_cols(by_reason[k], k))
+
+        by_reason_detail = self._group_stats(trades, "reason_detail")
+        result["by_reason_detail"] = by_reason_detail
+        self.stdout.write(self.style.SUCCESS("\n  By Close Reason Detail"))
+        self.stdout.write(_HEADER)
+        self.stdout.write(_SEP)
+        for k in sorted(by_reason_detail, key=lambda r: by_reason_detail[r]["n"], reverse=True):
+            self.stdout.write(_cols(by_reason_detail[k], k))
 
         by_mod = self._group_stats(trades, "dominant_module")
         result["by_module"] = by_mod
@@ -229,18 +278,84 @@ class Command(BaseCommand):
         for k in sorted(by_sdr, key=lambda x: by_sdr[x]["n"], reverse=True):
             self.stdout.write(_cols(by_sdr[k], k))
 
+        by_bias = self._group_stats(trades, "recommended_bias")
+        result["by_recommended_bias"] = by_bias
+        self.stdout.write(self.style.SUCCESS("\n  By Recommended Bias"))
+        self.stdout.write(_HEADER)
+        self.stdout.write(_SEP)
+        for k in sorted(by_bias):
+            self.stdout.write(_cols(by_bias[k], k))
+
+        by_btc_lead = self._group_stats(trades, "btc_lead_state")
+        result["by_btc_lead_state"] = by_btc_lead
+        self.stdout.write(self.style.SUCCESS("\n  By BTC Lead State"))
+        self.stdout.write(_HEADER)
+        self.stdout.write(_SEP)
+        for k in sorted(by_btc_lead):
+            self.stdout.write(_cols(by_btc_lead[k], k))
+
+        by_mtf = self._group_stats(trades, "mtf_snapshot")
+        result["by_mtf_snapshot"] = by_mtf
+        self.stdout.write(self.style.SUCCESS("\n  By MTF Snapshot"))
+        self.stdout.write(_HEADER)
+        self.stdout.write(_SEP)
+        for k in sorted(by_mtf, key=lambda x: by_mtf[x]["n"], reverse=True):
+            self.stdout.write(_cols(by_mtf[k], k))
+
+        by_symbol_session = self._group_stats_custom(
+            trades,
+            key_fn=lambda t: f"{t.get('symbol', 'unknown')}|{t.get('session', 'unknown')}",
+        )
+        result["by_symbol_session"] = by_symbol_session
+        self.stdout.write(self.style.SUCCESS("\n  By Symbol|Session"))
+        self.stdout.write(_HEADER)
+        self.stdout.write(_SEP)
+        for k in sorted(by_symbol_session, key=lambda x: by_symbol_session[x]["total_return_pct"]):
+            self.stdout.write(_cols(by_symbol_session[k], k))
+
         self.stdout.write(self.style.SUCCESS("\n  MFE Capture Ratio Summary"))
         self.stdout.write(
             f"  OVERALL avg={_fmt_opt(overall.get('mfe_capture_avg'))} "
             f"p50={_fmt_opt(overall.get('mfe_capture_p50'))} "
-            f"p75={_fmt_opt(overall.get('mfe_capture_p75'))}"
+            f"p75={_fmt_opt(overall.get('mfe_capture_p75'))} "
+            f"mfe={_fmt_opt(overall.get('avg_mfe_r'))} "
+            f"mae={_fmt_opt(overall.get('avg_mae_r'))} "
+            f"giveback={_fmt_opt(overall.get('giveback_avg'))}"
         )
         for k in sorted(by_regime):
             stats = by_regime[k]
             self.stdout.write(
                 f"  {k:<20} avg={_fmt_opt(stats.get('mfe_capture_avg'))} "
                 f"p50={_fmt_opt(stats.get('mfe_capture_p50'))} "
-                f"p75={_fmt_opt(stats.get('mfe_capture_p75'))}"
+                f"p75={_fmt_opt(stats.get('mfe_capture_p75'))} "
+                f"mfe={_fmt_opt(stats.get('avg_mfe_r'))} "
+                f"mae={_fmt_opt(stats.get('avg_mae_r'))}"
+            )
+        self.stdout.write("")
+
+        capture_hotspots = self._capture_hotspots(trades)
+        result["capture_hotspots"] = capture_hotspots
+        self.stdout.write(self.style.SUCCESS("  Capture Hotspots (worst buckets)"))
+        for row in capture_hotspots[:12]:
+            self.stdout.write(
+                f"  {row['bucket']:<32} n={row['n']:>3} "
+                f"cap={_fmt_opt(row['mfe_capture_avg'])} "
+                f"giveback={_fmt_opt(row['giveback_avg'])} "
+                f"mfe={_fmt_opt(row['avg_mfe_r'])} "
+                f"mae={_fmt_opt(row['avg_mae_r'])} "
+                f"ret={row['total_return_pct']:+.2f}%"
+            )
+        self.stdout.write("")
+
+        stop_clusters = self._stop_clusters(trades)
+        result["stop_clusters"] = stop_clusters
+        self.stdout.write(self.style.SUCCESS("  Stop Clusters"))
+        for row in stop_clusters[:12]:
+            self.stdout.write(
+                f"  {row['bucket']:<32} n={row['n']:>3} "
+                f"ret={row['total_return_pct']:+.2f}% "
+                f"wr={row['win_rate']:.1%} "
+                f"cap={_fmt_opt(row.get('mfe_capture_avg'))}"
             )
         self.stdout.write("")
 
@@ -269,6 +384,10 @@ class Command(BaseCommand):
                 "pnl_abs": _f(r.pnl_abs),
                 "reason": r.reason,
                 "close_sub_reason": r.close_sub_reason,
+                "reason_detail": (
+                    f"{r.reason}:{r.close_sub_reason}"
+                    if r.close_sub_reason else r.reason
+                ),
                 "signal_id": r.signal_id,
                 "outcome": r.outcome,
                 "duration_min": dur,
@@ -279,6 +398,15 @@ class Command(BaseCommand):
                 "mfe_capture_ratio": _finite_or_none(r.mfe_capture_ratio),
                 "dominant_module": "unknown",
                 "modules": [],
+                "strategy": "unknown",
+                "session": get_current_session(r.opened_at or r.closed_at),
+                "weekday": get_weekday_name(r.opened_at or r.closed_at),
+                "monthly_regime": str(r.monthly_regime or "").strip().lower() or "unknown",
+                "weekly_regime": str(r.weekly_regime or "").strip().lower() or "unknown",
+                "daily_regime": str(r.daily_regime or "").strip().lower() or "unknown",
+                "btc_lead_state": str(r.btc_lead_state or "").strip().lower() or "unknown",
+                "recommended_bias": str(r.recommended_bias or "").strip().lower() or "unknown",
+                "mtf_snapshot": "unknown",
                 "regime": "unknown",
             })
         return trades
@@ -308,10 +436,13 @@ class Command(BaseCommand):
                 continue
             if not sig or not isinstance(sig.payload_json, dict):
                 if sig and sig.strategy:
+                    t["strategy"] = sig.strategy
                     t["dominant_module"] = sig.strategy
                 continue
 
             payload = sig.payload_json
+            if sig.strategy:
+                t["strategy"] = sig.strategy
             reasons = payload.get("reasons", {})
             contribs = reasons.get("module_contributions", [])
 
@@ -326,9 +457,30 @@ class Command(BaseCommand):
                 t["dominant_module"] = sig.strategy
 
     def _enrich_with_regime(self, trades: list[dict]) -> None:
-        """Infer simple HTF regime (bull/bear/neutral) near trade close using 1h EMA20/EMA50."""
+        """Use stored regime snapshots when present; otherwise infer a simple fallback regime."""
         if not trades:
             return
+        need_fallback = []
+        for t in trades:
+            monthly = str(t.get("monthly_regime") or "").strip().lower()
+            weekly = str(t.get("weekly_regime") or "").strip().lower()
+            daily = str(t.get("daily_regime") or "").strip().lower()
+            t["mtf_snapshot"] = f"{monthly}|{weekly}|{daily}"
+            if daily != "unknown":
+                t["regime"] = daily
+                continue
+            if weekly != "unknown":
+                t["regime"] = weekly
+                continue
+            if monthly != "unknown":
+                t["regime"] = monthly
+                continue
+            t["regime"] = "unknown"
+            need_fallback.append(t)
+
+        if not need_fallback:
+            return
+
         symbols = sorted({str(t.get("symbol") or "").strip().upper() for t in trades if t.get("symbol")})
         closed_ts = [t.get("closed_at") for t in trades if t.get("closed_at") is not None]
         if not symbols or not closed_ts:
@@ -376,7 +528,7 @@ class Command(BaseCommand):
                 regime_list.append(regime)
             regime_lookup[sym] = {"ts": ts_list, "regime": regime_list}
 
-        for t in trades:
+        for t in need_fallback:
             sym = str(t.get("symbol") or "").strip().upper()
             closed_at = t.get("closed_at")
             if not sym or not closed_at:
@@ -395,6 +547,8 @@ class Command(BaseCommand):
                 t["regime"] = "unknown"
                 continue
             t["regime"] = lookup["regime"][idx]
+            if str(t.get("mtf_snapshot") or "") == "unknown|unknown|unknown":
+                t["mtf_snapshot"] = f"unknown|unknown|{t['regime']}"
 
     @staticmethod
     def _group_stats(trades: list[dict], key: str) -> dict[str, dict]:
@@ -424,3 +578,53 @@ class Command(BaseCommand):
                 if name:
                     groups[name].append(t)
         return {k: _bucket_stats(v) for k, v in groups.items()}
+
+    @staticmethod
+    def _capture_hotspots(trades: list[dict], *, min_trades: int = 3) -> list[dict[str, Any]]:
+        groups = Command._group_stats_custom(
+            trades,
+            key_fn=lambda t: f"{t.get('symbol', 'unknown')}|{t.get('session', 'unknown')}",
+        )
+        rows: list[dict[str, Any]] = []
+        for bucket, stats in groups.items():
+            if int(stats.get("n", 0)) < int(min_trades):
+                continue
+            if stats.get("mfe_capture_avg") is None:
+                continue
+            rows.append({"bucket": bucket, **stats})
+        rows.sort(
+            key=lambda row: (
+                float(row.get("mfe_capture_avg", 999.0)),
+                -int(row.get("n", 0)),
+            )
+        )
+        return rows
+
+    @staticmethod
+    def _stop_clusters(trades: list[dict], *, min_trades: int = 2) -> list[dict[str, Any]]:
+        stop_like = []
+        for t in trades:
+            reason = str(t.get("reason") or "").strip().lower()
+            detail = str(t.get("reason_detail") or "").strip().lower()
+            if reason in {"sl", "trailing_stop"} or "exchange_stop" in detail:
+                stop_like.append(t)
+        groups = Command._group_stats_custom(
+            stop_like,
+            key_fn=lambda t: (
+                f"{t.get('symbol', 'unknown')}|"
+                f"{t.get('side', 'unknown')}|"
+                f"{t.get('session', 'unknown')}"
+            ),
+        )
+        rows: list[dict[str, Any]] = []
+        for bucket, stats in groups.items():
+            if int(stats.get("n", 0)) < int(min_trades):
+                continue
+            rows.append({"bucket": bucket, **stats})
+        rows.sort(
+            key=lambda row: (
+                float(row.get("total_return_pct", 0.0)),
+                -int(row.get("n", 0)),
+            )
+        )
+        return rows

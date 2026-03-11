@@ -923,3 +923,34 @@ docker compose logs --tail=120 chatbot
     mejora claramente el tramo malo
     y no degrada el tramo bueno en las ventanas probadas
   - eso la convierte en un candidato razonable para rollout controlado, primero en `demo`
+
+### 2026-03-11 update: dashboard operativo de captura y hotspots
+- Se amplio `risk/management/commands/perf_dashboard.py` para responder tres preguntas operativas:
+  1. donde gana/pierde por simbolo, sesion, estrategia y regimen
+  2. donde deja ganancias sobre la mesa (`mfe_capture_ratio`, `giveback`)
+  3. donde se concentran los stops reales (`sl`, `exchange_stop`, `trailing_stop`)
+- Nuevos breakdowns:
+  - `by_session`
+  - `by_weekday`
+  - `by_strategy`
+  - `by_reason_detail` (`reason:close_sub_reason`)
+  - `by_recommended_bias`
+  - `by_btc_lead_state`
+  - `by_mtf_snapshot` (`monthly|weekly|daily`)
+  - `by_symbol_session`
+- Nuevas metricas de bucket:
+  - `avg_mfe_r`
+  - `avg_mae_r`
+  - `mfe_capture_avg / p50 / p75`
+  - `giveback_avg`
+  - `capture_samples`
+- Se agregaron dos vistas de analisis rapido:
+  - `capture_hotspots`
+    - buckets `symbol|session` con peor captura relativa
+    - sirven para detectar donde el bot devuelve mucho despues de ir bien
+  - `stop_clusters`
+    - buckets `symbol|side|session` con cluster de salidas tipo stop
+    - sirven para detectar contextos de entrada estructuralmente malos
+- Regla de interpretacion:
+  - si baja `mfe_capture_avg` pero sube `avg_mfe_r`, el problema suele ser de salida
+  - si `avg_mfe_r` ya es pobre y encima hay `stop_clusters`, el problema suele ser de entrada/contexto
