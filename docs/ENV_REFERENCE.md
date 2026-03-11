@@ -67,6 +67,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 ## 7) Strategy composition and allocator
 - `MULTI_STRATEGY_ENABLED`
 - `MODULE_TREND_ENABLED`, `MODULE_MEANREV_ENABLED`, `MODULE_CARRY_ENABLED`, `MODULE_GRID_ENABLED`, `MODULE_MICROVOL_ENABLED`
+- `MODULE_TREND_EMA20_PULLBACK_TOLERANCE_PCT`
 - Grid module controls:
   - `MODULE_GRID_ADX_MIN`, `MODULE_GRID_ADX_MAX`
   - `MODULE_GRID_ATR_MIN_PCT`, `MODULE_GRID_ATR_MAX_PCT`

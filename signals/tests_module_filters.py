@@ -36,6 +36,32 @@ def _build_df(values: list[float]) -> pd.DataFrame:
 class ModuleImpulseFiltersTest(SimpleTestCase):
     @override_settings(
         MODULE_ADX_TREND_MIN=5.0,
+        MODULE_TREND_HTF_ADX_MIN=5.0,
+        MODULE_TREND_EMA20_PULLBACK_TOLERANCE_PCT=0.003,
+        MODULE_IMPULSE_FILTER_ENABLED=False,
+    )
+    def test_trend_detector_allows_small_pullback_below_htf_ema20(self):
+        df_htf = _build_df([100 + i * 0.25 for i in range(119)] + [128.4])
+        df_ltf = _build_df([100 + i * 0.08 for i in range(120)])
+        out = trend_module.detect(df_ltf, df_htf, [], "asia")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["direction"], "long")
+        self.assertIn("ema20_pullback_tolerance_pct", out["reasons"])
+
+    @override_settings(
+        MODULE_ADX_TREND_MIN=5.0,
+        MODULE_TREND_HTF_ADX_MIN=5.0,
+        MODULE_TREND_EMA20_PULLBACK_TOLERANCE_PCT=0.001,
+        MODULE_IMPULSE_FILTER_ENABLED=False,
+    )
+    def test_trend_detector_still_blocks_when_pullback_exceeds_tolerance(self):
+        df_htf = _build_df([100 + i * 0.25 for i in range(119)] + [126.9])
+        df_ltf = _build_df([100 + i * 0.08 for i in range(120)])
+        out = trend_module.detect(df_ltf, df_htf, [], "asia")
+        self.assertIsNone(out)
+
+    @override_settings(
+        MODULE_ADX_TREND_MIN=5.0,
         MODULE_IMPULSE_FILTER_ENABLED=True,
         MODULE_IMPULSE_LOOKBACK=20,
         MODULE_IMPULSE_BODY_MULT=1.5,

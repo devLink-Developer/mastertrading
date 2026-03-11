@@ -42,10 +42,14 @@ def detect(
     if ema20 <= 0 or ema50 <= 0 or last <= 0:
         return None
 
+    pullback_tol = max(
+        0.0,
+        float(getattr(settings, "MODULE_TREND_EMA20_PULLBACK_TOLERANCE_PCT", 0.003) or 0.003),
+    )
     direction = ""
-    if ema20 > ema50 and last >= ema20:
+    if ema20 > ema50 and last >= (ema20 * (1.0 - pullback_tol)):
         direction = "long"
-    elif ema20 < ema50 and last <= ema20:
+    elif ema20 < ema50 and last <= (ema20 * (1.0 + pullback_tol)):
         direction = "short"
     if not direction:
         return None
@@ -99,6 +103,7 @@ def detect(
         "ema50": round(ema50, 6),
         "last": round(last, 6),
         "ema_gap_pct": round(ema_gap * 100, 4),
+        "ema20_pullback_tolerance_pct": round(pullback_tol * 100, 4),
     }
     if impulse_details:
         reasons["impulse_guard"] = impulse_details
