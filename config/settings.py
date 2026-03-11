@@ -959,6 +959,10 @@ ALLOCATOR_ENABLED = os.getenv("ALLOCATOR_ENABLED", "true").lower() == "true"
 ALLOCATOR_INCLUDE_SMC = os.getenv("ALLOCATOR_INCLUDE_SMC", "false").lower() == "true"
 ALLOCATOR_NET_THRESHOLD = float(os.getenv("ALLOCATOR_NET_THRESHOLD", "0.20"))
 ALLOCATOR_LONG_SCORE_PENALTY = max(0.0, min(1.0, float(os.getenv("ALLOCATOR_LONG_SCORE_PENALTY", "1.0"))))
+_ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT_RAW = os.getenv(
+    "ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT",
+    "{}",
+)
 ALLOCATOR_CONFLICT_POLICY = os.getenv("ALLOCATOR_CONFLICT_POLICY", "net_score").strip().lower()
 if ALLOCATOR_CONFLICT_POLICY not in {"net_score"}:
     ALLOCATOR_CONFLICT_POLICY = "net_score"
@@ -1004,6 +1008,31 @@ try:
             ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT[f"{_single.upper()}:*"] = _thr
 except Exception:
     ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT = {}
+try:
+    _raw_alloc_direction_ctx = _json.loads(_ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT_RAW)
+    _allowed_sessions = {"asia", "london", "ny_open", "ny", "overlap", "dead", "*"}
+    _allowed_directions = {"long", "short", "*"}
+    ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT = {}
+    if isinstance(_raw_alloc_direction_ctx, dict):
+        for _k, _v in _raw_alloc_direction_ctx.items():
+            try:
+                _mult = max(0.0, min(2.0, float(_v)))
+            except Exception:
+                continue
+            _parts = [p.strip() for p in str(_k).split(":")]
+            if len(_parts) != 3:
+                continue
+            _sym_raw, _ses_raw, _dir_raw = _parts
+            _sym = _sym_raw.upper() if _sym_raw != "*" else "*"
+            _ses = _ses_raw.lower() if _ses_raw != "*" else "*"
+            _dir = _dir_raw.lower() if _dir_raw != "*" else "*"
+            if _ses not in _allowed_sessions or _dir not in _allowed_directions:
+                continue
+            ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT[f"{_sym}:{_ses}:{_dir}"] = _mult
+    else:
+        ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT = {}
+except Exception:
+    ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT = {}
 ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN = max(
     0.0,
     min(

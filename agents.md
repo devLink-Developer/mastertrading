@@ -889,3 +889,37 @@ docker compose logs --tail=120 chatbot
 - Lectura:
   - el drenaje principal del tramo malo no fue "todo el bot", sino sobre todo `ETH` y `SOL`
   - eso apunta a calibracion por simbolo/modulo/contexto, no a relajar globalmente el sistema
+
+### 2026-03-11 update: penalizacion contextual por `symbol:session:direction`
+- Se agrego una nueva superficie general en el allocator:
+  - `ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT`
+  - formato JSON:
+    - `{"ETHUSDT:london:short":0.70,"SOLUSDT:london:short":0.70}`
+  - semantica:
+    - multiplicador sobre el `net_score` del allocator solo cuando coincide `symbol + session + direction`
+    - sirve para penalizar contextos malos sin tocar todo el sistema
+- Motivo:
+  - en el periodo malo `2026-02-01 -> 2026-02-12`, el leak estaba concentrado en:
+    - `ETHUSDT` shorts
+    - `SOLUSDT` shorts
+    - especialmente en `london`
+  - no conviene responder a eso relajando o endureciendo reglas globales
+  - conviene un control fino y generalizable por contexto
+- Evidencia guardada:
+  - `reports/eth_sol_prior_window_breakdown_20260201_20260212.json`
+  - `reports/eth_sol_direction_penalty_search_20260201_20260223.json`
+- Resultado del barrido:
+  - baseline `sin penalizacion`:
+    - ventana `prior`: `PnL -11.5011`, `PF 0.783`, `DD 1.68%`
+    - tramo completo `2026-02-01 -> 2026-02-23`: `PnL +15.9688`, `PF 1.201`, `DD 1.68%`
+  - `ETH/SOL + london + short = 0.80`:
+    - mejora minima, insuficiente
+  - `ETH/SOL + london + short = 0.70`:
+    - ventana `prior`: `PnL -5.8224`, `PF 0.881`, `DD 1.32%`
+    - tramo completo `2026-02-01 -> 2026-02-23`: `PnL +21.8112`, `PF 1.289`, `DD 1.32%`
+    - ventana `recent`: sin deterioro observable frente al baseline (`PnL +26.4239`, `PF 1.914`)
+- Lectura operativa:
+  - la penalizacion contextual `0.70` para `ETHUSDT:london:short` y `SOLUSDT:london:short`
+    mejora claramente el tramo malo
+    y no degrada el tramo bueno en las ventanas probadas
+  - eso la convierte en un candidato razonable para rollout controlado, primero en `demo`

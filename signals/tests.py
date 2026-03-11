@@ -760,6 +760,68 @@ class AllocatorLongScorePenaltyTest(TestCase):
         self.assertEqual(result["net_score"], baseline["net_score"])
 
 
+class AllocatorDirectionContextPenaltyTest(TestCase):
+    """Verify contextual direction score multipliers in the allocator."""
+
+    def _run_alloc(self, signals, *, symbol="ETHUSDT", session_name="london"):
+        weights = {"trend": 0.50, "meanrev": 0.50, "carry": 0.0, "grid": 0.0, "smc": 0.0}
+        risk_budgets = dict(weights)
+        return resolve_symbol_allocation(
+            signals,
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights=weights,
+            risk_budgets=risk_budgets,
+            symbol=symbol,
+            session_name=session_name,
+        )
+
+    @override_settings(
+        ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT={"ETHUSDT:london:short": 0.5}
+    )
+    def test_specific_symbol_session_short_penalty_can_block_entry(self):
+        signals = [
+            {"module": "trend", "direction": "short", "confidence": 0.06},
+            {"module": "meanrev", "direction": "short", "confidence": 0.06},
+        ]
+        result = self._run_alloc(signals, symbol="ETHUSDT", session_name="london")
+        self.assertEqual(result["direction"], "flat")
+        self.assertEqual(
+            result["reasons"].get("direction_score_context_key"),
+            "ETHUSDT:london:short",
+        )
+
+    @override_settings(
+        ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT={"*:london:short": 0.5}
+    )
+    def test_session_wildcard_penalty_applies(self):
+        signals = [
+            {"module": "trend", "direction": "short", "confidence": 0.06},
+            {"module": "meanrev", "direction": "short", "confidence": 0.06},
+        ]
+        result = self._run_alloc(signals, symbol="SOLUSDT", session_name="london")
+        self.assertEqual(result["direction"], "flat")
+        self.assertEqual(
+            result["reasons"].get("direction_score_context_key"),
+            "*:london:short",
+        )
+
+    @override_settings(
+        ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT={"ETHUSDT:london:short": 0.5}
+    )
+    def test_short_penalty_does_not_affect_longs(self):
+        signals = [
+            {"module": "trend", "direction": "long", "confidence": 0.06},
+            {"module": "meanrev", "direction": "long", "confidence": 0.06},
+        ]
+        penalized = self._run_alloc(signals, symbol="ETHUSDT", session_name="london")
+        with self.settings(ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT={}):
+            baseline = self._run_alloc(signals, symbol="ETHUSDT", session_name="london")
+        self.assertEqual(penalized["direction"], "long")
+        self.assertEqual(penalized["net_score"], baseline["net_score"])
+
+
 # -----------------------------------------------------------------------
 # Tests for MODULE_TREND_HTF_ADX_MIN
 # -----------------------------------------------------------------------

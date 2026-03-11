@@ -42,6 +42,39 @@ def _context_float_override(
     return resolved
 
 
+def _context_direction_float_override(
+    raw_overrides: dict | None,
+    *,
+    symbol: str,
+    session_name: str,
+    direction: str,
+    default: float,
+) -> tuple[float, str]:
+    sym = str(symbol or "").strip().upper() or "*"
+    session = str(session_name or "").strip().lower() or "*"
+    side = str(direction or "").strip().lower() or "*"
+    resolved = max(0.0, min(2.0, float(default or 1.0)))
+    if not isinstance(raw_overrides, dict):
+        return resolved, ""
+    for key in (
+        f"{sym}:{session}:{side}",
+        f"{sym}:*:{side}",
+        f"*:{session}:{side}",
+        f"*:*:{side}",
+        f"{sym}:{session}:*",
+        f"{sym}:*:*",
+        f"*:{session}:*",
+        "*:*:*",
+    ):
+        if key not in raw_overrides:
+            continue
+        try:
+            return max(0.0, min(2.0, float(raw_overrides[key]))), key
+        except Exception:
+            continue
+    return resolved, ""
+
+
 def _trend_context(
     module_signals: Iterable[dict],
     *,
@@ -477,6 +510,20 @@ def resolve_symbol_allocation(
     if net_score > 0 and long_penalty < 1.0:
         net_score *= long_penalty
 
+    direction_ctx_mult = 1.0
+    direction_ctx_key = ""
+    tentative_direction = "long" if net_score > 0 else "short" if net_score < 0 else "flat"
+    if tentative_direction in {"long", "short"}:
+        direction_ctx_mult, direction_ctx_key = _context_direction_float_override(
+            getattr(settings, "ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT", {}),
+            symbol=symbol,
+            session_name=session_name,
+            direction=tentative_direction,
+            default=1.0,
+        )
+        if direction_ctx_mult != 1.0:
+            net_score *= direction_ctx_mult
+
     direction = sign_to_direction(net_score, threshold=threshold)
     allocator_confidence = 0.0
     if abs_capacity > 0:
@@ -519,6 +566,8 @@ def resolve_symbol_allocation(
                 "session_risk_mult": round(float(session_risk_mult), 6),
                 "budget_mix": round(float(budget_mix), 6),
                 "budget_mix_min_mult": round(float(budget_mix_min_mult), 6),
+                "direction_score_context_mult": round(float(direction_ctx_mult), 6),
+                "direction_score_context_key": direction_ctx_key,
                 "trend_context": {
                     "is_strong": bool(trend_ctx.get("is_strong", False)),
                     "direction": str(trend_ctx.get("direction", "flat")),
