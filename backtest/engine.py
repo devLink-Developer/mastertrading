@@ -109,6 +109,30 @@ def _passes_execution_score_gate(
     )
     return score >= min_score, min_score
 
+
+def _resolve_backtest_symbol_allocation(
+    module_signals: list[dict],
+    *,
+    threshold: float,
+    base_risk_pct: float,
+    session_risk_mult: float,
+    weights: dict[str, float],
+    risk_budgets: dict[str, float],
+    symbol: str,
+    session_name: str,
+) -> dict:
+    """Mirror live allocator context for backtest entries."""
+    return resolve_symbol_allocation(
+        module_signals,
+        threshold=threshold,
+        base_risk_pct=base_risk_pct,
+        session_risk_mult=session_risk_mult,
+        weights=weights,
+        risk_budgets=risk_budgets,
+        symbol=symbol,
+        session_name=session_name,
+    )
+
 # ---------------------------------------------------------------------------
 # Fee model
 # ---------------------------------------------------------------------------
@@ -927,11 +951,10 @@ def run_backtest(
                     module_signals.append(cached["signal"])
 
             # ── Allocator: combine modules ──
-            min_modules = max(1, int(getattr(settings, "ALLOCATOR_MIN_MODULES_ACTIVE", 2)))
-            if len(module_signals) < min_modules:
+            if not module_signals:
                 continue  # not enough conviction
 
-            alloc = resolve_symbol_allocation(
+            alloc = _resolve_backtest_symbol_allocation(
                 module_signals,
                 threshold=float(getattr(settings, "ALLOCATOR_NET_THRESHOLD", 0.20)),
                 base_risk_pct=float(settings.RISK_PER_TRADE_PCT),
@@ -942,6 +965,8 @@ def run_backtest(
                 ),
                 weights=alloc_weights,
                 risk_budgets=alloc_risk_budgets,
+                symbol=inst.symbol,
+                session_name=session,
             )
             direction = alloc["direction"]
             score = float(alloc["confidence"])

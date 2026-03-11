@@ -729,6 +729,20 @@ docker compose logs --tail=120 chatbot
   - activar primero solo en `demo`
   - no activar en `live` sin observar algunos dias de ejecucion y rechazos
 
+### 2026-03-11 update: trend permite pullback chico sobre EMA20 HTF
+- Se detecto que `trend` quedaba en `0` en Asia aunque hubiese estructura alcista/bajista, porque exigia:
+  - `ema20 > ema50` y `last >= ema20` para long
+  - `ema20 < ema50` y `last <= ema20` para short
+- Eso bloqueaba continuaciones validas cuando el precio estaba apenas debajo/encima de `EMA20` en un pullback sano.
+- Se agrego `MODULE_TREND_EMA20_PULLBACK_TOLERANCE_PCT` (default `0.003` = `0.30%`).
+- Nueva logica:
+  - long: `last >= ema20 * (1 - tol)`
+  - short: `last <= ema20 * (1 + tol)`
+- Politica:
+  - es una relajacion chica y controlada
+  - no elimina el gate de ADX ni los guards de impulso/rebote
+  - sirve para recuperar emisiones de `trend` en continuaciones con pullback, sin convertirlo en mean reversion
+
 ### 2026-03-10 update: cierre heuristico por progreso a TP
 - Se agrego un evaluador de salida temprana `tp_progress_exit` en `execution/tasks.py`.
 - Objetivo:
@@ -753,3 +767,125 @@ docker compose logs --tail=120 chatbot
   - no reemplaza el TP normal ni el trailing
   - actua antes del `AI_EXIT_GATE`
   - registra `reason=tp_progress_exit` y `close_sub_reason` con la causa heuristica
+
+### 2026-03-11 update: backtest alineado con el gate real de ejecucion
+- Se detecto una brecha entre `backtest` y `live`:
+  - el engine de backtest podia abrir operaciones que en runtime real hubiesen sido filtradas por `EXECUTION_MIN_SIGNAL_SCORE` / `SESSION_SCORE_MIN`
+  - eso hacia que cualquier optimizacion sobre TP/SL/score quedara contaminada
+- Fix aplicado en `backtest/engine.py`:
+  - helper `_execution_min_signal_score(...)`
+  - helper `_passes_execution_score_gate(...)`
+  - antes de abrir posicion, el backtest ahora exige el mismo piso de score que usa ejecucion real
+- Test agregado:
+  - `backtest/tests_engine_execution_score.py`
+- Motivo:
+  - no optimizar sobre un motor mas permisivo que produccion
+  - evitar elegir combinaciones de parametros que solo "funcionan" porque el backtest estaba dejando pasar entradas invalidas
+
+### 2026-03-11 update: calibracion reciente de salidas y decision operativa
+- Se corrio una busqueda reducida en datos locales `2026-02-12 -> 2026-02-23` con reportes:
+  - `reports/combo_search_recent_20260212_20260223.json`
+  - `reports/context_search_recent_20260212_20260223.json`
+- Mejor combinacion reciente probada:
+  - `ATR_MULT_TP=1.6`
+  - `ATR_MULT_SL=1.5`
+  - `MIN_SIGNAL_SCORE=0.45`
+  - `trailing_stop=on`
+- Resultado de esa combinacion en la ventana reciente:
+  - `PnL +0.3629`
+  - `PF 1.013`
+  - `DD max 1.10%`
+  - `59 trades`
+  - `WR 64.41%`
+- Comparacion contra el set similar con `TP=1.8`:
+  - `TP=1.8 / SL=1.5 / score=0.45` dio `PnL -1.4431` y `PF 0.943`
+- Lectura:
+  - bajar `TP` de `1.8` a `1.6` mejora la captura de ganancias en el tramo reciente
+  - `SL=1.5` fue mejor que apretarlo a `1.3`
+  - subir `MIN_SIGNAL_SCORE` a `0.50` no aporto mejora visible en esa ventana
+  - apagar trailing empeoro el resultado
+- Limite importante:
+  - esta mejora NO vuelve al sistema robustamente rentable por si sola
+  - en la ventana previa `2026-02-01 -> 2026-02-12`, el mismo set siguio negativo
+  - conclusion: TP/SL ayudan, pero el edge sigue dependiendo mas de contexto y calidad de entrada que de salidas solamente
+
+### 2026-03-11 update: cambios aplicados en `rortigoza` demo y que NO conviene dejar
+- Cambio aplicado en `/opt/trading_bot/.env` del stack principal:
+  - `ATR_MULT_TP=1.6`
+  - `ATR_MULT_SL=1.5`
+  - `MIN_SIGNAL_SCORE=0.45`
+- Motivo:
+  - es el mejor set reciente de los probados y mantiene el bot dentro de un perfil conservador
+- Se revisaron tambien dos relajaciones contextuales que se habian usado para destrabar entradas:
+  - `MARKET_REGIME_ADX_MIN_BY_CONTEXT`
+  - `ALLOCATOR_CARRY_CONTRA_TREND_MAX_EFFECTIVE_WEIGHT=0.18`
+- Decision:
+  - NO dejarlas activas en demo como configuracion base
+  - se revirtieron a:
+    - `MARKET_REGIME_ADX_MIN=17.0`
+    - `MARKET_REGIME_ADX_MIN_BY_CONTEXT={}` (sin override)
+    - `ALLOCATOR_CARRY_CONTRA_TREND_MAX_EFFECTIVE_WEIGHT=0.20`
+- Motivo:
+  - el backtest reciente mostro que bajar el gate ADX a `16.0` empeora PnL (`-0.3040`) aunque suba la cantidad de trades
+  - capear `carry` en `0.18` no mejoro nada frente a `0.20`
+  - regla operativa: no dejar en runtime relajaciones de entrada que no demostraron mejora en backtest reciente
+
+### 2026-03-11 update: segunda brecha critica entre backtest y live
+- Se detecto otra desalineacion importante:
+  - el backtest hacia un `continue` si `len(module_signals) < ALLOCATOR_MIN_MODULES_ACTIVE`
+  - eso impedia que el allocator evaluara `strong trend solo`
+  - en live, ese caso SI debe poder abrir cuando `trend` es fuerte y la sesion no esta bloqueada
+- Fix aplicado en `backtest/engine.py`:
+  - ya no corta antes por `min_modules`
+  - ahora delega la decision al allocator via `_resolve_backtest_symbol_allocation(...)`
+  - el helper pasa `symbol` y `session_name`, para que funcionen igual que en live:
+    - `ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT`
+    - `ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS`
+- Tests agregados en `backtest/tests_engine_execution_score.py`:
+  - valida que el bridge de backtest pase `symbol/session`
+  - valida que `ny_open` siga bloqueando `strong trend solo` aunque el trend sea fuerte
+- Implicancia:
+  - las optimizaciones de entradas hechas antes de este fix subestimaban de forma fuerte el potencial del setup actual
+  - cualquier calibracion nueva de `allocator/session/regime` debe leerse solo despues de esta correccion
+
+### 2026-03-11 update: recalibracion de entradas con el backtest corregido
+- Tras corregir la brecha de `strong trend solo`, el mismo setup base mejoro mucho en la ventana reciente `2026-02-12 -> 2026-02-23`:
+  - `ATR_MULT_TP=1.6`
+  - `ATR_MULT_SL=1.5`
+  - `MIN_SIGNAL_SCORE=0.45`
+  - `ALLOCATOR_STRONG_TREND_ADX_MIN=25`
+  - `ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.80`
+  - `SESSION_SCORE_MIN={"asia":0.62,"london":0.56,"ny":0.58,"overlap":0.55,"dead":0.80}`
+- Resultado reciente con el backtest ya alineado:
+  - `PnL +26.4239`
+  - `PF 1.914`
+  - `DD max 0.60%`
+  - `114 trades`
+  - `WR 75.44%`
+- Matriz probada en `reports/entry_context_search_recent_20260212_20260223.json`:
+  - bajar `ALLOCATOR_STRONG_TREND_ADX_MIN` a `23` o `21` NO mejoro el baseline
+  - bajar `ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN` a `0.78` tampoco mejoro
+  - aflojar `SESSION_SCORE_MIN` para `ny/asia` tampoco mejoro
+- Conclusiones operativas:
+  - no conviene seguir relajando entradas por sesion/régimen a ciegas
+  - el baseline actual de `strong trend solo` (`ADX 25 / confidence 0.80`) es el mejor de los probados en la ventana reciente
+  - el problema de edge ya no parece estar en "falta abrir mas", sino en periodos puntuales/simbolos puntuales
+
+### 2026-03-11 update: donde se pierde el periodo malo con el setup corregido
+- Se comparo el mismo setup base en dos ventanas:
+  - `prior`: `2026-02-01 -> 2026-02-12`
+  - `recent`: `2026-02-12 -> 2026-02-23`
+- Resultado:
+  - `prior`: `PnL -11.5011`, `PF 0.783`, `129 trades`
+  - `recent`: `PnL +26.4239`, `PF 1.914`, `114 trades`
+- Breakdown util del periodo malo (`prior`):
+  - por direccion:
+    - `short`: `121 trades`, `PnL -7.9244`
+    - `long`: `8 trades`, `PnL -3.5767`
+  - por simbolo:
+    - `ETHUSDT`: `PnL -9.1356`
+    - `SOLUSDT`: `PnL -7.6096`
+    - `BTCUSDT`: `PnL +3.0491`
+- Lectura:
+  - el drenaje principal del tramo malo no fue "todo el bot", sino sobre todo `ETH` y `SOL`
+  - eso apunta a calibracion por simbolo/modulo/contexto, no a relajar globalmente el sistema
