@@ -417,6 +417,40 @@ class AllocatorWeightingTest(TestCase):
         ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
         ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
         ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY=True,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_blocks_trend_solo_when_carry_opposes(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 35.0},
+                },
+                {
+                    "module": "carry",
+                    "direction": "short",
+                    "confidence": 0.60,
+                },
+            ],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            symbol="ETHUSDT",
+            session_name="ny",
+        )
+        self.assertEqual(out["reasons"]["required_modules"], 2)
+        self.assertTrue(out["reasons"]["strong_trend_solo_blocked_by_opposing_carry"])
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
         ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED=True,
         ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT=0.5,
         ALLOCATOR_LONG_SCORE_PENALTY=1.0,

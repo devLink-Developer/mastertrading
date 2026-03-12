@@ -1112,3 +1112,6 @@ docker compose logs --tail=120 chatbot
 - Si se retoma esta linea, la proxima version defendible no deberia ser solo `ADX` mas bajo:
   - deberia exigir condiciones mas finas, por ejemplo ausencia de `carry` opuesto, mejor follow-through o filtro de microestructura
   - y validarse OOS separando `BTC` y `ETH`
+  - se prototipo un guardrail opcional `ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY`
+  - aun con `ETHUSDT:ny=19`, `confidence>=0.90` y veto a `carry` opuesto, la mejora siguio sin sostenerse en la ventana reciente
+  - conclusion: tampoco corresponde activarlo todavia; queda solo como herramienta opcional para futuros experimentos

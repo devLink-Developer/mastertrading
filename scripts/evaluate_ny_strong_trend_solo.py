@@ -115,6 +115,43 @@ CONFIGS = [
             "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS": {"ny_open"},
         },
     },
+    {
+        "name": "eth19_no_opp_carry_conf90",
+        "overrides": {
+            "ATR_MULT_TP": 1.6,
+            "ATR_MULT_SL": 1.5,
+            "MIN_SIGNAL_SCORE": 0.45,
+            "EXECUTION_MIN_SIGNAL_SCORE": 0.45,
+            "ALLOCATOR_MIN_MODULES_ACTIVE": 2,
+            "ALLOCATOR_STRONG_TREND_SOLO_ENABLED": True,
+            "ALLOCATOR_STRONG_TREND_ADX_MIN": 25.0,
+            "ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT": {
+                "ETHUSDT:ny": 19.0,
+            },
+            "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN": 0.90,
+            "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY": True,
+            "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS": {"ny_open"},
+        },
+    },
+    {
+        "name": "btc18_eth19_no_opp_carry_conf90",
+        "overrides": {
+            "ATR_MULT_TP": 1.6,
+            "ATR_MULT_SL": 1.5,
+            "MIN_SIGNAL_SCORE": 0.45,
+            "EXECUTION_MIN_SIGNAL_SCORE": 0.45,
+            "ALLOCATOR_MIN_MODULES_ACTIVE": 2,
+            "ALLOCATOR_STRONG_TREND_SOLO_ENABLED": True,
+            "ALLOCATOR_STRONG_TREND_ADX_MIN": 25.0,
+            "ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT": {
+                "BTCUSDT:ny": 18.0,
+                "ETHUSDT:ny": 19.0,
+            },
+            "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN": 0.90,
+            "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY": True,
+            "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS": {"ny_open"},
+        },
+    },
 ]
 
 

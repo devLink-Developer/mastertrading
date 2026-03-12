@@ -457,6 +457,7 @@ def resolve_symbol_allocation(
             else getattr(settings, "ALLOCATOR_MIN_MODULES_ACTIVE", 2)
         ),
     )
+    opposing_carry_present = False
     if (
         bool(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_ENABLED", True))
         and strong_trend
@@ -472,7 +473,24 @@ def resolve_symbol_allocation(
             == trend_sign
             for row in module_contributions
         )
-        if trend_present_same_dir:
+        opposing_carry_present = any(
+            row.get("module") == "carry"
+            and (
+                1 if str(row.get("direction", "")).strip().lower() == "long" else -1
+            )
+            == (-trend_sign)
+            for row in module_contributions
+        )
+        requires_no_opposing_carry = bool(
+            getattr(
+                settings,
+                "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
+                False,
+            )
+        )
+        if trend_present_same_dir and (
+            not requires_no_opposing_carry or not opposing_carry_present
+        ):
             required_modules = 1
 
     if len(module_contributions) < required_modules:
@@ -502,6 +520,23 @@ def resolve_symbol_allocation(
                         4,
                     ),
                 },
+                "strong_trend_solo_requires_no_opposing_carry": bool(
+                    getattr(
+                        settings,
+                        "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
+                        False,
+                    )
+                ),
+                "strong_trend_solo_blocked_by_opposing_carry": bool(
+                    opposing_carry_present
+                    and bool(
+                        getattr(
+                            settings,
+                            "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
+                            False,
+                        )
+                    )
+                ),
             },
         }
 
@@ -561,22 +596,40 @@ def resolve_symbol_allocation(
             "threshold": round(float(threshold), 6),
             "module_contributions": module_contributions,
             "active_module_count": len(module_contributions),
+            "required_modules": required_modules,
             "abs_capacity": round(abs_capacity, 6),
-                "base_risk_pct": round(float(base_risk_pct), 6),
-                "session_risk_mult": round(float(session_risk_mult), 6),
-                "budget_mix": round(float(budget_mix), 6),
-                "budget_mix_min_mult": round(float(budget_mix_min_mult), 6),
-                "direction_score_context_mult": round(float(direction_ctx_mult), 6),
-                "direction_score_context_key": direction_ctx_key,
-                "trend_context": {
-                    "is_strong": bool(trend_ctx.get("is_strong", False)),
-                    "direction": str(trend_ctx.get("direction", "flat")),
-                    "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
-                    "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
-                    "adx_min_effective": round(
-                        float(trend_ctx.get("adx_min_effective", 0.0)),
-                        4,
-                    ),
+            "base_risk_pct": round(float(base_risk_pct), 6),
+            "session_risk_mult": round(float(session_risk_mult), 6),
+            "budget_mix": round(float(budget_mix), 6),
+            "budget_mix_min_mult": round(float(budget_mix_min_mult), 6),
+            "direction_score_context_mult": round(float(direction_ctx_mult), 6),
+            "direction_score_context_key": direction_ctx_key,
+            "trend_context": {
+                "is_strong": bool(trend_ctx.get("is_strong", False)),
+                "direction": str(trend_ctx.get("direction", "flat")),
+                "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
+                "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
+                "adx_min_effective": round(
+                    float(trend_ctx.get("adx_min_effective", 0.0)),
+                    4,
+                ),
             },
+            "strong_trend_solo_requires_no_opposing_carry": bool(
+                getattr(
+                    settings,
+                    "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
+                    False,
+                )
+            ),
+            "strong_trend_solo_blocked_by_opposing_carry": bool(
+                opposing_carry_present
+                and bool(
+                    getattr(
+                        settings,
+                        "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
+                        False,
+                    )
+                )
+            ),
         },
     }

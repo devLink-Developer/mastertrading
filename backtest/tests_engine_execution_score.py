@@ -145,3 +145,37 @@ class BacktestAllocatorBridgeTest(SimpleTestCase):
         )
         self.assertEqual(alloc["direction"], "flat")
         self.assertEqual(alloc["reasons"]["required_modules"], 2)
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.80,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY=True,
+        ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS={"ny_open"},
+    )
+    def test_backtest_allocator_blocks_trend_solo_with_opposing_carry(self):
+        alloc = _resolve_backtest_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.90,
+                    "reasons": {"adx_htf": 30.0},
+                },
+                {
+                    "module": "carry",
+                    "direction": "short",
+                    "confidence": 0.70,
+                },
+            ],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            symbol="ETHUSDT",
+            session_name="ny",
+        )
+        self.assertEqual(alloc["reasons"]["required_modules"], 2)
+        self.assertTrue(alloc["reasons"]["strong_trend_solo_blocked_by_opposing_carry"])
