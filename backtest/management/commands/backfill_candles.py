@@ -7,11 +7,12 @@ Uses CCXT to fetch OHLCV data in bulk.
 from __future__ import annotations
 
 import logging
+import math
+import re
 import time
 from datetime import datetime, timezone, timedelta
 
 from django.core.management.base import BaseCommand, CommandError
-from django.conf import settings
 
 from adapters import get_default_adapter
 from core.models import Instrument
@@ -39,6 +40,56 @@ TF_DELTA = {
     "4h": timedelta(hours=4),
     "1d": timedelta(days=1),
 }
+
+_BINGX_RETRY_AT_RE = re.compile(r"retry after time:\s*(\d+)", re.IGNORECASE)
+
+
+def _parse_retry_after_seconds(exc: Exception, default_sleep: float) -> float:
+    msg = str(exc or "")
+    m = _BINGX_RETRY_AT_RE.search(msg)
+    if not m:
+        return max(float(default_sleep), 1.0)
+    try:
+        raw = int(m.group(1))
+    except Exception:
+        return max(float(default_sleep), 1.0)
+    retry_at_ms = raw if raw > 10_000_000_000 else raw * 1000
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    wait_s = math.ceil(max(0, retry_at_ms - now_ms) / 1000.0) + 1.0
+    return max(wait_s, float(default_sleep), 1.0)
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    return (
+        "109429" in msg
+        or "rate limit" in msg
+        or "too many requests" in msg
+        or "retry after time" in msg
+    )
+
+
+def _resolve_ccxt_symbol(adapter, inst: Instrument) -> str | None:
+    candidates = [
+        inst.symbol,
+        f"{inst.base}/{inst.quote}:USDT",
+        f"{inst.base}/USDT:USDT",
+    ]
+    client = getattr(adapter, "client", None)
+    markets = getattr(client, "markets", None) or {}
+    for sym_candidate in candidates:
+        mapped = (
+            adapter._map_symbol(sym_candidate)
+            if hasattr(adapter, "_map_symbol")
+            else sym_candidate
+        )
+        if mapped in markets:
+            return mapped
+        if sym_candidate in markets:
+            return sym_candidate
+    if hasattr(adapter, "_map_symbol"):
+        return adapter._map_symbol(inst.symbol)
+    return candidates[0]
 
 
 class Command(BaseCommand):
@@ -75,6 +126,12 @@ class Command(BaseCommand):
             default=1.0,
             help="Sleep between API calls in seconds (default: 1.0)",
         )
+        parser.add_argument(
+            "--max-retries",
+            type=int,
+            default=8,
+            help="Max retries for rate-limited requests before skipping the chunk (default: 8)",
+        )
 
     def handle(self, *args, **options):
         try:
@@ -101,6 +158,7 @@ class Command(BaseCommand):
 
         timeframes = [tf.strip() for tf in options["timeframes"].split(",")]
         sleep_sec = options["sleep"]
+        max_retries = max(1, int(options["max_retries"]))
 
         adapter = get_default_adapter()
 
@@ -111,16 +169,7 @@ class Command(BaseCommand):
         total_saved = 0
 
         for inst in instruments:
-            # Try multiple symbol formats
-            ccxt_symbol = None
-            for sym_candidate in (inst.symbol, f"{inst.base}/{inst.quote}:USDT", f"{inst.base}/USDT:USDT"):
-                try:
-                    adapter.fetch_ticker(sym_candidate)
-                    ccxt_symbol = sym_candidate
-                    break
-                except Exception:
-                    continue
-
+            ccxt_symbol = _resolve_ccxt_symbol(adapter, inst)
             if not ccxt_symbol:
                 self.stdout.write(self.style.WARNING(f"  Could not resolve symbol for {inst.symbol}, skipping"))
                 continue
@@ -135,10 +184,27 @@ class Command(BaseCommand):
 
                 while cursor < end:
                     since_ms = int(cursor.timestamp() * 1000)
-                    try:
-                        ohlcv = adapter.fetch_ohlcv(ccxt_symbol, tf, since=since_ms, limit=limit)
-                    except Exception as exc:
-                        self.stdout.write(self.style.WARNING(f"    API error at {cursor}: {exc}"))
+                    ohlcv = None
+                    for attempt in range(1, max_retries + 1):
+                        try:
+                            ohlcv = adapter.fetch_ohlcv(ccxt_symbol, tf, since=since_ms, limit=limit)
+                            break
+                        except Exception as exc:
+                            if _is_rate_limit_error(exc) and attempt < max_retries:
+                                wait_s = _parse_retry_after_seconds(exc, sleep_sec)
+                                self.stdout.write(
+                                    self.style.WARNING(
+                                        f"    Rate limit at {cursor} (attempt {attempt}/{max_retries}); "
+                                        f"sleeping {wait_s:.1f}s and retrying same chunk"
+                                    )
+                                )
+                                time.sleep(wait_s)
+                                continue
+                            self.stdout.write(self.style.WARNING(f"    API error at {cursor}: {exc}"))
+                            ohlcv = None
+                            break
+
+                    if ohlcv is None:
                         cursor += delta * limit
                         time.sleep(sleep_sec)
                         continue

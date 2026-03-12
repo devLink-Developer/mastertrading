@@ -989,6 +989,37 @@ docker compose logs --tail=120 chatbot
 - Archivo de evidencia:
   - `reports/symbol_robustness_20260101_20260223.json`
 
+### 2026-03-12 update: robustez por simbolo rerun con cobertura completa
+- Despues de corregir el backfill minute-level y completar `ADA/DOGE/LINK/XRP` en `5m`, se repitio la misma comparacion:
+  - `baseline_tp18_sl15_score045`
+  - `candidate_tp16_sl15_score045`
+  - rango `2026-01-01 -> 2026-02-23`
+- Archivo de evidencia corregido:
+  - `reports/symbol_robustness_20260101_20260223_fullcov.json`
+- Resultado final con cobertura completa:
+  - `BTCUSDT`:
+    - baseline apenas mejor (`+5.042` vs `+5.013`)
+    - lectura: `TP 1.6` es neutro en BTC, no mejora clara
+  - `ETHUSDT`:
+    - candidato mejor (`+12.313` vs `+5.587`, PF `1.164` vs `1.071`, DD menor)
+  - `SOLUSDT`:
+    - candidato mejor (`+23.633` vs `+19.764`, PF `1.492` vs `1.403`, DD menor)
+  - `ADAUSDT`:
+    - candidato mejor (`+18.864` vs `+14.542`, PF `1.273` vs `1.204`, DD menor)
+  - `DOGEUSDT`:
+    - baseline levemente mejor (`+6.619` vs `+6.527`)
+    - lectura: `TP 1.6` no agrega ventaja clara
+  - `LINKUSDT`:
+    - candidato menos malo (`-0.412` vs `-1.768`, PF `0.993` vs `0.970`)
+  - `XRPUSDT`:
+    - candidato mucho mejor (`+42.809` vs `+29.291`, PF `1.569` vs `1.360`)
+- Lectura operativa corregida:
+  - una vez resuelta la calidad de datos, `TP 1.6` deja de verse como mejora solo en `ETH/SOL`
+  - la mejora pasa a ser amplia en `ETH`, `SOL`, `ADA`, `LINK` y `XRP`
+  - `BTC` y `DOGE` quedan practicamente neutros / levemente mejor con baseline
+  - conclusion: el cambio `TP 1.8 -> 1.6` si tiene soporte bastante mas general que lo que parecia con la muestra incompleta
+  - aun asi, eso no justifica overrides por simbolo automaticamente; justifica primero considerar `TP 1.6` como candidato global y despues validar en `demo/live`
+
 ### 2026-03-12 update: limite real de backfill BingX
 - Se corrigio `backtest/management/commands/backfill_candles.py`:
   - `1m` y `5m` ahora usan `limit=1440`, no `1500`
@@ -999,3 +1030,7 @@ docker compose logs --tail=120 chatbot
 - Leccion:
   - si falta historico en simbolos BingX, primero revisar cobertura real de velas antes de interpretar un backtest
   - un resultado por simbolo con cobertura `0.33-0.77` no sirve para justificar un override estructural
+  - el comando tambien dejo de usar `fetch_ticker` para resolver simbolos y ahora reintenta el mismo chunk cuando BingX devuelve `109429`
+  - politica correcta:
+    - nunca avanzar el cursor por un `rate limit`
+    - solo avanzar cuando realmente se persistio ohlcv del chunk actual
