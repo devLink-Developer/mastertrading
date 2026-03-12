@@ -1079,3 +1079,36 @@ docker compose logs --tail=120 chatbot
 - Criterio:
   - permitir solo `BTCUSDT` y `ETHUSDT`
   - no abrir la excepcion al allocator completo ni a alts secundarias
+
+### 2026-03-12 update: strong trend solo en NY para BTC/ETH no queda validado
+- Se reviso el caso de `ETH` en NY donde aparecia `trend long` sin segunda confirmacion del allocator.
+- Diagnostico:
+  - no fue un bug del modulo `trend`
+  - la segunda confirmacion faltaba porque `carry/meanrev/smc` no emitian en la misma direccion
+  - bajo `ALLOCATOR_MIN_MODULES_ACTIVE=2`, el `alloc_flat` fue el comportamiento correcto
+- Script reusable agregado:
+  - `scripts/evaluate_ny_strong_trend_solo.py`
+  - compara baseline vs overrides contextuales de `ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT` para `BTCUSDT` y `ETHUSDT` en `ny`
+  - desglosa `overall`, `ny` y `ny_open`
+- Evidencia guardada:
+  - `reports/ny_strong_trend_solo_20260201_20260223.json`
+- Configs evaluadas:
+  - `baseline_25_25`
+  - `btc18_eth19_ny`
+  - `btc17_eth18_ny`
+  - `btc16_eth17_ny`
+  - chequeos adicionales puntuales:
+    - `eth19_only`
+    - `eth19_only_conf90`
+    - `btc18_eth19_conf90`
+- Resultado:
+  - bajar solo el ADX contextual en `ny` agrega trades, pero empeora la ventana reciente y el agregado de `BTC+ETH`
+  - `BTC` sale mejor sin relajar la regla
+  - `ETH` mejora en una ventana previa, pero no sostiene la mejora en la ventana reciente
+  - incluso subiendo `ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN` a `0.90`, la mejora no queda estable OOS
+- Decision operativa:
+  - NO activar por ahora una regla global de `strong trend solo` para `BTC/ETH` en `ny`
+  - la ausencia de segunda confirmacion debe tratarse como falta real de confluencia, no como permiso automatico para abrir
+- Si se retoma esta linea, la proxima version defendible no deberia ser solo `ADX` mas bajo:
+  - deberia exigir condiciones mas finas, por ejemplo ausencia de `carry` opuesto, mejor follow-through o filtro de microestructura
+  - y validarse OOS separando `BTC` y `ETH`
