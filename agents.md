@@ -1034,3 +1034,48 @@ docker compose logs --tail=120 chatbot
   - politica correcta:
     - nunca avanzar el cursor por un `rate limit`
     - solo avanzar cuando realmente se persistio ohlcv del chunk actual
+
+### 2026-03-12 update: microvol no debe deformarse para forzar frecuencia
+- Se audito `microvol` en prod/demo (`rortigoza`) con diagnostico bar-by-bar sobre `BTCUSDT` y `ETHUSDT`.
+- Hallazgo:
+  - en `overlap` de `2026-03-12 12:07-12:08 UTC`, `microvol` no emitia por un bug de logica de HTF similar al que antes tenia `trend`:
+    - `ema20_htf > ema50_htf`
+    - pero `last_htf` quedaba apenas debajo de `ema20_htf`
+    - el detector exigia `last_htf >= ema20_htf` para long y devolvia `None`
+- Fix aplicado:
+  - `signals/modules/microvol.py` ahora usa `MODULE_MICROVOL_HTF_PULLBACK_TOLERANCE_PCT`
+  - logica nueva:
+    - long: `last_htf >= ema20_htf * (1 - tol)`
+    - short: `last_htf <= ema20_htf * (1 + tol)`
+  - default: `0.003` (`0.30%`)
+- Leccion importante:
+  - aun corrigiendo ese gate, el mismo `overlap` seguia sin ser setup valido de `microvol`
+  - despues del HTF, se caia por:
+    - `ATR 1m` demasiado bajo
+    - y, si se relajaba mas ATR, por falta de `impulse bar`
+  - conclusion:
+    - no conviene seguir bajando `ATR_MIN` o `IMPULSE_MIN_BODY_PCT` solo para fabricar mas trades
+    - eso convertiria `microvol` en otro detector de continuacion floja, no en un motor de expansion rapida
+
+### 2026-03-12 update: macro high-impact no debe bloquear ciegamente microvol
+- Se observo una senal real:
+  - `mod_microvol_long`
+  - `ETHUSDT`
+  - `2026-03-12 14:16 UTC`
+  - `score=0.6392`
+- Esa senal no termino en orden porque `execution/tasks.py` la bloqueo con:
+  - `Macro high-impact window blocked entry on ETHUSDT`
+- Decision:
+  - agregar excepcion controlada al filtro macro solo para `microvol`
+  - limitada por:
+    - `MACRO_HIGH_IMPACT_ALLOW_MICROVOL`
+    - `MACRO_HIGH_IMPACT_ALLOW_MICROVOL_SYMBOLS`
+- Politica operativa:
+  - si la excepcion esta desactivada, el comportamiento sigue igual
+  - si esta activada, solo `microvol` en simbolos permitidos puede pasar la ventana macro
+  - el riesgo sigue reducido por:
+    - `MODULE_MICROVOL_RISK_MULT`
+    - y el multiplicador macro existente `MACRO_HIGH_IMPACT_RISK_MULTIPLIER`
+- Criterio:
+  - permitir solo `BTCUSDT` y `ETHUSDT`
+  - no abrir la excepcion al allocator completo ni a alts secundarias

@@ -53,10 +53,14 @@ def detect(
     ema20_htf = float(closes_htf.ewm(span=20, adjust=False).mean().iloc[-1])
     ema50_htf = float(closes_htf.ewm(span=50, adjust=False).mean().iloc[-1])
     last_htf = float(closes_htf.iloc[-1])
+    htf_pullback_tol = max(
+        0.0,
+        min(0.02, float(getattr(settings, "MODULE_MICROVOL_HTF_PULLBACK_TOLERANCE_PCT", 0.003))),
+    )
     htf_direction = ""
-    if ema20_htf > ema50_htf and last_htf >= ema20_htf:
+    if ema20_htf > ema50_htf and last_htf >= ema20_htf * (1.0 - htf_pullback_tol):
         htf_direction = "long"
-    elif ema20_htf < ema50_htf and last_htf <= ema20_htf:
+    elif ema20_htf < ema50_htf and last_htf <= ema20_htf * (1.0 + htf_pullback_tol):
         htf_direction = "short"
     if not htf_direction:
         return None
@@ -156,6 +160,7 @@ def detect(
             "atr_pct": round(float(atr_pct) * 100, 4),
             "adx_htf": round(float(adx_htf), 4),
             "htf_direction": htf_direction,
+            "htf_pullback_tolerance_pct": round(float(htf_pullback_tol) * 100, 4),
             "ema20_htf": round(float(ema20_htf), 6),
             "ema50_htf": round(float(ema50_htf), 6),
             "ema20_ltf": round(float(ema20_ltf), 6),

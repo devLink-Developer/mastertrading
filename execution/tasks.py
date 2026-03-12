@@ -560,6 +560,22 @@ def _strategy_is_microvol(strategy_name: str) -> bool:
     return _strategy_module_name(strategy_name) == "microvol"
 
 
+def _macro_high_impact_allows_entry(
+    *,
+    strategy_name: str,
+    symbol: str,
+) -> bool:
+    if not _strategy_is_microvol(strategy_name):
+        return False
+    if not bool(getattr(settings, "MACRO_HIGH_IMPACT_ALLOW_MICROVOL", False)):
+        return False
+    allowed_symbols = set(
+        getattr(settings, "MACRO_HIGH_IMPACT_ALLOW_MICROVOL_SYMBOLS", set()) or set()
+    )
+    symbol_norm = str(symbol or "").strip().upper()
+    return (not allowed_symbols) or (symbol_norm in allowed_symbols)
+
+
 def _microvol_exit_profile(strategy_name: str) -> dict[str, float | bool | str]:
     if not _strategy_is_microvol(strategy_name):
         return {"active": False, "profile": ""}
@@ -4071,7 +4087,12 @@ def _attempt_entry_open(
         return 0, 0.0
 
     entry_reason = _signal_entry_reason(sig_payload, strategy_name)
-    if macro_active and macro_block_entries:
+    macro_override_allowed = bool(
+        macro_active
+        and macro_block_entries
+        and _macro_high_impact_allows_entry(strategy_name=strategy_name, symbol=inst.symbol)
+    )
+    if macro_active and macro_block_entries and not macro_override_allowed:
         logger.info(
             "Macro high-impact window blocked entry on %s (session=%s hour=%s weekday=%s)",
             inst.symbol,
@@ -4080,6 +4101,15 @@ def _attempt_entry_open(
             macro_context.get("weekday"),
         )
         return 0, 0.0
+    if macro_override_allowed:
+        logger.info(
+            "Macro high-impact window allowing microvol entry on %s with reduced risk "
+            "(session=%s hour=%s weekday=%s)",
+            inst.symbol,
+            macro_context.get("session"),
+            macro_context.get("hour_utc"),
+            macro_context.get("weekday"),
+        )
 
     if inst.symbol in regime_blocked_symbols and not allow_scale_entry:
         effective_regime_adx_min = float(regime_adx_min_by_symbol.get(inst.symbol, regime_adx_min))
@@ -4470,13 +4500,13 @@ def _attempt_entry_open(
                 strategy_name,
             )
             return 0, 0.0
-        if macro_active and not macro_block_entries:
+        if macro_active and (not macro_block_entries or macro_override_allowed):
             inst_risk_pct *= macro_risk_mult
     else:
         effective_risk_mult = (session_risk_mult if session_policy_enabled else 1.0) * ai_risk_mult
         if _strategy_is_microvol(strategy_name):
             effective_risk_mult *= float(getattr(settings, "MODULE_MICROVOL_RISK_MULT", 0.35) or 0.35)
-        if macro_active and not macro_block_entries:
+        if macro_active and (not macro_block_entries or macro_override_allowed):
             effective_risk_mult *= macro_risk_mult
         if effective_risk_mult <= 0:
             logger.info(

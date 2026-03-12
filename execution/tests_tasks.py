@@ -32,6 +32,7 @@ from execution.tasks import (
     _align_min_order_qty,
     _minimum_order_amount_from_error,
     _market_min_qty,
+    _macro_high_impact_allows_entry,
     _is_no_position_error,
     _load_enabled_instruments_and_latest_signals,
     _log_operation,
@@ -1262,6 +1263,30 @@ class TaskHelpersTest(SimpleTestCase):
         ts_inactive_session = datetime(2026, 2, 9, 13, 5, tzinfo=timezone.utc)
         inactive_session, _ = _is_macro_high_impact_window(ts_inactive_session, session_name="asia")
         self.assertFalse(inactive_session)
+
+    @override_settings(
+        MACRO_HIGH_IMPACT_ALLOW_MICROVOL=True,
+        MACRO_HIGH_IMPACT_ALLOW_MICROVOL_SYMBOLS={"BTCUSDT", "ETHUSDT"},
+    )
+    def test_macro_high_impact_allows_microvol_only_for_allowed_symbols(self):
+        self.assertTrue(
+            _macro_high_impact_allows_entry(
+                strategy_name="mod_microvol_long",
+                symbol="BTCUSDT",
+            )
+        )
+        self.assertFalse(
+            _macro_high_impact_allows_entry(
+                strategy_name="mod_microvol_long",
+                symbol="DOGEUSDT",
+            )
+        )
+        self.assertFalse(
+            _macro_high_impact_allows_entry(
+                strategy_name="alloc_long",
+                symbol="BTCUSDT",
+            )
+        )
 
 
 class OperationReportFeeNetTest(TestCase):
