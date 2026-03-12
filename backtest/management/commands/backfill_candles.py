@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 
 # CCXT timeframe → max candles per request (conservative)
 TF_LIMIT = {
-    "1m": 1500,
-    "5m": 1500,
+    # BingX rejects limits > 1440 on minute-level candle endpoints.
+    "1m": 1440,
+    "5m": 1440,
     "15m": 1000,
     "1h": 500,
     "4h": 500,

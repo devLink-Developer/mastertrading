@@ -954,3 +954,48 @@ docker compose logs --tail=120 chatbot
 - Regla de interpretacion:
   - si baja `mfe_capture_avg` pero sube `avg_mfe_r`, el problema suele ser de salida
   - si `avg_mfe_r` ya es pobre y encima hay `stop_clusters`, el problema suele ser de entrada/contexto
+
+### 2026-03-12 update: robustez por simbolo en ventana larga antes de tocar reglas finas
+- Se definio una regla operativa explicita:
+  - no activar ni desactivar overrides por simbolo solo porque una ventana reciente sale bien o mal
+  - antes hay que mirar un backtest mas largo por simbolo y revisar calidad de datos
+- Se agrego `scripts/evaluate_symbol_robustness.py` para comparar configuraciones fijas por simbolo usando todo el rango disponible dentro de una ventana pedida.
+- Configuraciones comparadas en la corrida inicial:
+  - `baseline_tp18_sl15_score045`
+  - `candidate_tp16_sl15_score045`
+- Rango pedido:
+  - `2026-01-01 -> 2026-02-23`
+- Hallazgos:
+  - `BTCUSDT` (`53d`, cobertura `1.00`):
+    - baseline levemente mejor (`+5.042` vs `+5.013`)
+    - conclusion: `TP 1.6` no aporta mejora clara en BTC
+  - `ETHUSDT` (`53d`, cobertura `1.00`):
+    - candidato claramente mejor (`+12.313` vs `+5.587`, PF `1.164` vs `1.071`, DD menor)
+  - `SOLUSDT` (`53d`, cobertura `0.994`):
+    - candidato claramente mejor (`+23.633` vs `+19.764`, PF `1.492` vs `1.403`, DD menor)
+  - `ADAUSDT` (`13.1d`, cobertura `0.974`):
+    - candidato mejor, pero la muestra es demasiado corta para sacar una regla estructural
+  - `DOGEUSDT` (`23d`, cobertura `0.773`):
+    - baseline mejor
+  - `LINKUSDT` (`43d`, cobertura `0.414`):
+    - candidato menos malo, pero la cobertura es demasiado pobre
+  - `XRPUSDT` (`53d`, cobertura `0.336`):
+    - baseline mejor, pero la cobertura es demasiado pobre para confiar en el resultado
+- Lectura operativa:
+  - `TP 1.6` si muestra evidencia seria en `ETH` y `SOL`
+  - `BTC` queda practicamente neutro
+  - en `DOGE/LINK/XRP` no conviene sacar conclusiones fuertes porque el historial 5m esta incompleto
+  - por eso no corresponde meter reglas finas por simbolo todavia basadas en esos tres
+- Archivo de evidencia:
+  - `reports/symbol_robustness_20260101_20260223.json`
+
+### 2026-03-12 update: limite real de backfill BingX
+- Se corrigio `backtest/management/commands/backfill_candles.py`:
+  - `1m` y `5m` ahora usan `limit=1440`, no `1500`
+- Motivo:
+  - BingX rechaza requests minute-level con `limit > 1440`
+  - error observado:
+    - `code 109400: limit must be less than or equal to 1440`
+- Leccion:
+  - si falta historico en simbolos BingX, primero revisar cobertura real de velas antes de interpretar un backtest
+  - un resultado por simbolo con cobertura `0.33-0.77` no sirve para justificar un override estructural
