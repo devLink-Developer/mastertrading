@@ -1115,3 +1115,56 @@ docker compose logs --tail=120 chatbot
   - se prototipo un guardrail opcional `ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY`
   - aun con `ETHUSDT:ny=19`, `confidence>=0.90` y veto a `carry` opuesto, la mejora siguio sin sostenerse en la ventana reciente
   - conclusion: tampoco corresponde activarlo todavia; queda solo como herramienta opcional para futuros experimentos
+
+### 2026-03-13 update: OperationReport debe atribuir al signal de entrada, no al state de salida
+- Se detecto un bug de atribucion en `execution/tasks.py` dentro de `_manage_open_position`.
+- Sintoma operativo:
+  - cierres ganadores recientes aparecian ligados a `signal.strategy=alloc_flat`
+  - eso rompia la lectura de si el trade habia nacido como `microvol` o `alloc`
+- Causa raiz:
+  - varios caminos de cierre seguian llamando `_log_operation(...)` con:
+    - `signal_id=str(sig.id)`
+    - `correlation_id=f"{sig.id}-{inst.symbol}"`
+  - `sig` en esa etapa representa el signal del ciclo de salida, no necesariamente el signal que abrio la posicion
+  - como el allocator emite `alloc_flat` con frecuencia, los reports quedaban contaminados con el estado mas reciente
+- Fix aplicado:
+  - helper nuevo `execution.tasks._position_origin_refs(...)`
+  - resuelve de forma estable:
+    - `signal_id` = signal de origen de la posicion cuando existe
+    - `correlation_id` = root correlation de la posicion, no el signal del ciclo actual
+  - se aplico a todos los cierres de `_manage_open_position`:
+    - `trailing_stop`
+    - `microvol_timeout`
+    - `stale_cleanup`
+    - `uptrend_short_kill`
+    - `downtrend_long_kill`
+    - `tp_progress_exit`
+    - `ai_tp_early_exit`
+    - `tp/sl`
+    - `signal_flip`
+- Tests agregados:
+  - helper puro: preferencia por entry signal + root correlation
+  - integracion: un TP con `origin_signal=mod_microvol_long` y `sig actual=alloc_flat` debe loguear el origin, no el flat
+- Politica:
+  - cuando se analicen cierres por estrategia, confiar en `OperationReport` solo despues de este fix
+  - antes del fix, la atribucion historica reciente puede mezclar estrategia de entrada con estado de salida
+
+### 2026-03-13 update: eudy plano no implica fallo
+- En la revision de las ultimas 12h:
+  - `rortigoza` tuvo cierres positivos y actividad normal
+  - `eudy` quedo plano, sin ordenes nuevas ni `RiskEvent`
+- Los logs muestran que `eudy` no estaba caido:
+  - `trend module emitted=6`
+  - `carry module emitted=3`
+  - `allocator emitted=7`
+  - `execute_orders` corria normal
+- La diferencia visible frente al stack principal fue:
+  - `microvol:disabled_flag` en `eudy`
+  - en `rortigoza`, `microvol` si corre aunque muchas veces emita `0`
+- Para los simbolos con score suficiente parcial, el cuello de botella real fue:
+  - `Signal score too low for execution ... (session=london)`
+- Conclusiones operativas:
+  - `eudy` plano en esa ventana no fue un crash ni un bloqueo de DD
+  - fue combinacion de:
+    - `microvol` desactivado en live
+    - y setups del allocator que no superaron el `score gate` de sesion

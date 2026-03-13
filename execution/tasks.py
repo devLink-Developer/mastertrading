@@ -2090,6 +2090,25 @@ def _position_origin_signal(inst: Instrument, pos_side: str) -> Signal | None:
     return None
 
 
+def _position_origin_refs(inst: Instrument, pos_side: str, origin_signal: Signal | None, sig: Signal | None) -> tuple[str, str]:
+    """
+    Resolve stable operation attribution for an already-open position.
+
+    signal_id should point to the entry/origin signal when available.
+    correlation_id should point to the root position correlation, not the
+    latest cycle signal, so close reports remain tied to the position origin.
+    """
+    origin_signal_id = str(getattr(origin_signal, "id", "") or (str(getattr(sig, "id", "")) if sig else ""))
+    root_corr = _position_root_correlation(inst, pos_side)
+    if root_corr:
+        return origin_signal_id, root_corr
+    if origin_signal_id:
+        return origin_signal_id, _safe_correlation_id(f"{origin_signal_id}-{inst.symbol}")
+    if sig:
+        return "", _safe_correlation_id(f"{sig.id}-{inst.symbol}")
+    return "", ""
+
+
 def _trail_sl_from_hwm(entry_price: float, max_fav_pct: float, lock_in_pct: float, is_long: bool) -> float:
     """
     Trailing SL derived from the max favorable move (HWM).
@@ -4974,6 +4993,7 @@ def _manage_open_position(
     pos_side = "buy" if current_qty > 0 else "sell"
     pos_direction = "long" if current_qty > 0 else "short"
     origin_signal = _position_origin_signal(inst, pos_side)
+    origin_signal_id, origin_correlation_id = _position_origin_refs(inst, pos_side, origin_signal, sig)
     position_strategy_name = str(getattr(origin_signal, "strategy", "") or strategy_name).strip().lower()
     position_sig_payload = (
         getattr(origin_signal, "payload_json", {}) if getattr(origin_signal, "payload_json", None) else sig_payload
@@ -5041,8 +5061,8 @@ def _manage_open_position(
                 entry_price,
                 last,
                 reason="trailing_stop",
-                signal_id=str(sig.id) if sig else "",
-                correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                signal_id=origin_signal_id,
+                correlation_id=origin_correlation_id,
                 leverage=leverage,
                 equity_before=equity_usdt,
                 equity_after=None,
@@ -5094,8 +5114,8 @@ def _manage_open_position(
                     entry_price,
                     last,
                     reason="microvol_timeout",
-                    signal_id=str(getattr(origin_signal, "id", "") or (str(sig.id) if sig else "")),
-                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    signal_id=origin_signal_id,
+                    correlation_id=origin_correlation_id,
                     leverage=leverage,
                     equity_before=equity_usdt,
                     equity_after=None,
@@ -5152,8 +5172,8 @@ def _manage_open_position(
                     entry_price,
                     last,
                     reason="stale_cleanup",
-                    signal_id=str(sig.id) if sig else "",
-                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    signal_id=origin_signal_id,
+                    correlation_id=origin_correlation_id,
                     leverage=leverage,
                     equity_before=equity_usdt,
                     equity_after=None,
@@ -5226,8 +5246,8 @@ def _manage_open_position(
                         entry_price,
                         last,
                         reason="uptrend_short_kill",
-                        signal_id=str(sig.id) if sig else "",
-                        correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                        signal_id=origin_signal_id,
+                        correlation_id=origin_correlation_id,
                         leverage=leverage,
                         equity_before=equity_usdt,
                         equity_after=None,
@@ -5297,8 +5317,8 @@ def _manage_open_position(
                         entry_price,
                         last,
                         reason="downtrend_long_kill",
-                        signal_id=str(sig.id) if sig else "",
-                        correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                        signal_id=origin_signal_id,
+                        correlation_id=origin_correlation_id,
                         leverage=leverage,
                         equity_before=equity_usdt,
                         equity_after=None,
@@ -5370,8 +5390,8 @@ def _manage_open_position(
                     entry_price,
                     last,
                     reason="tp_progress_exit",
-                    signal_id=str(getattr(origin_signal, "id", "") or (str(sig.id) if sig else "")),
-                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    signal_id=origin_signal_id,
+                    correlation_id=origin_correlation_id,
                     leverage=leverage,
                     equity_before=equity_usdt,
                     equity_after=None,
@@ -5508,8 +5528,8 @@ def _manage_open_position(
                             entry_price,
                             last,
                             reason="ai_tp_early_exit",
-                            signal_id=str(sig.id) if sig else "",
-                            correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                            signal_id=origin_signal_id,
+                            correlation_id=origin_correlation_id,
                             leverage=leverage,
                             equity_before=equity_usdt,
                             equity_after=None,
@@ -5579,8 +5599,8 @@ def _manage_open_position(
                     entry_price,
                     last,
                     reason=reason,
-                    signal_id=str(sig.id) if sig else "",
-                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    signal_id=origin_signal_id,
+                    correlation_id=origin_correlation_id,
                     leverage=leverage,
                     equity_before=equity_usdt,
                     equity_after=None,
@@ -5653,8 +5673,8 @@ def _manage_open_position(
                     entry_price,
                     last,
                     reason="signal_flip",
-                    signal_id=str(sig.id) if sig else "",
-                    correlation_id=f"{sig.id}-{inst.symbol}" if sig else "",
+                    signal_id=origin_signal_id,
+                    correlation_id=origin_correlation_id,
                     leverage=leverage,
                     equity_before=equity_usdt,
                     equity_after=None,

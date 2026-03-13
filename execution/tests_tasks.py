@@ -38,12 +38,14 @@ from execution.tasks import (
     _log_operation,
     _normalize_order_qty,
     _position_root_correlation,
+    _position_origin_refs,
     _release_task_lock,
     _reconcile_sl,
     _resolve_signal_direction,
     _safe_correlation_id,
     _signal_active_modules,
     _signal_entry_reason,
+    _manage_open_position,
     _is_macro_high_impact_window,
     _regime_adx_min_for_symbol_session,
     _bull_short_retrace_precheck,
@@ -1691,6 +1693,125 @@ class PyramidingHelpersTest(TestCase):
         )
         self.assertEqual(_position_root_correlation(inst, "buy"), root)
         self.assertEqual(_count_pyramid_adds(inst, "buy", root), 1)
+
+
+class PositionOriginAttributionTest(TestCase):
+    def setUp(self):
+        self.inst = Instrument.objects.create(
+            symbol="ETHUSDT",
+            exchange="bingx",
+            base="ETH",
+            quote="USDT",
+        )
+
+    def test_position_origin_refs_prefer_entry_signal_and_root_correlation(self):
+        origin_signal = Signal.objects.create(
+            strategy="mod_microvol_long",
+            instrument=self.inst,
+            ts=dj_tz.now() - timedelta(minutes=5),
+            payload_json={"origin": "entry"},
+            score=0.91,
+        )
+        current_sig = Signal.objects.create(
+            strategy="alloc_flat",
+            instrument=self.inst,
+            ts=dj_tz.now(),
+            payload_json={},
+            score=0.0,
+        )
+        root = f"{origin_signal.id}-{self.inst.symbol}"
+        Order.objects.create(
+            instrument=self.inst,
+            side=Order.OrderSide.BUY,
+            type=Order.OrderType.MARKET,
+            qty=1.0,
+            price=2000,
+            status=Order.OrderStatus.FILLED,
+            reduce_only=False,
+            correlation_id=root,
+            parent_correlation_id=root,
+            opened_at=dj_tz.now() - timedelta(minutes=5),
+        )
+
+        signal_id, correlation_id = _position_origin_refs(self.inst, "buy", origin_signal, current_sig)
+        self.assertEqual(signal_id, str(origin_signal.id))
+        self.assertEqual(correlation_id, root)
+
+    @override_settings(
+        AI_EXIT_GATE_ENABLED=False,
+        TRAILING_STOP_ENABLED=True,
+        TP_PROGRESS_EARLY_EXIT_ENABLED=False,
+    )
+    def test_manage_open_position_logs_origin_signal_on_tp_close(self):
+        origin_signal = Signal.objects.create(
+            strategy="mod_microvol_long",
+            instrument=self.inst,
+            ts=dj_tz.now() - timedelta(minutes=6),
+            payload_json={"origin": "entry"},
+            score=0.88,
+        )
+        current_sig = Signal.objects.create(
+            strategy="alloc_flat",
+            instrument=self.inst,
+            ts=dj_tz.now(),
+            payload_json={},
+            score=0.0,
+        )
+        root = f"{origin_signal.id}-{self.inst.symbol}"
+        opened_at = dj_tz.now() - timedelta(minutes=5)
+        Order.objects.create(
+            instrument=self.inst,
+            side=Order.OrderSide.BUY,
+            type=Order.OrderType.MARKET,
+            qty=1.0,
+            price=2000,
+            status=Order.OrderStatus.FILLED,
+            reduce_only=False,
+            correlation_id=root,
+            parent_correlation_id=root,
+            opened_at=opened_at,
+        )
+
+        with patch("execution.tasks._redis_client", return_value=None):
+            with patch("execution.tasks._reconcile_sl"):
+                with patch("execution.tasks._check_trailing_stop", return_value=(False, 0.0)):
+                    with patch("execution.tasks._tp_sl_gate_pnl_pct", return_value=(0.02, 0.0)):
+                        with patch("execution.tasks._compute_tp_sl_prices", return_value=(102.0, 99.0, 0.01, 0.01)):
+                            with patch("execution.tasks.notify_trade_closed"):
+                                with patch("execution.tasks._mark_position_closed"):
+                                    skip_symbol, _, _, _ = _manage_open_position(
+                                        adapter=_DummyAdapter(),
+                                        inst=self.inst,
+                                        sig=current_sig,
+                                        sig_payload={},
+                                        strategy_name=current_sig.strategy,
+                                        symbol=self.inst.symbol,
+                                        ticker_used={"last": 2020.0},
+                                        last_price=2020.0,
+                                        current_qty=1.0,
+                                        entry_price=2000.0,
+                                        pos_opened_at=opened_at,
+                                        signal_direction="flat",
+                                        side="",
+                                        direction_allowed=True,
+                                        atr=None,
+                                        contract_size=1.0,
+                                        leverage=5.0,
+                                        equity_usdt=1000.0,
+                                        current_session="ny",
+                                        btc_recommended_bias="",
+                                        account_ai_enabled=False,
+                                        account_ai_config_id=None,
+                                        account_owner_id=None,
+                                        account_alias="rortigoza",
+                                        account_service="bingx",
+                                    )
+
+        self.assertTrue(skip_symbol)
+        op = OperationReport.objects.get(instrument=self.inst)
+        self.assertEqual(op.reason, "tp")
+        self.assertEqual(op.signal_id, str(origin_signal.id))
+        self.assertEqual(op.correlation_id, root)
 
 
 class AiFeedbackRetrySuppressTest(TestCase):
