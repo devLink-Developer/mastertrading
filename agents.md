@@ -1168,3 +1168,26 @@ docker compose logs --tail=120 chatbot
   - fue combinacion de:
     - `microvol` desactivado en live
     - y setups del allocator que no superaron el `score gate` de sesion
+
+### 2026-03-16 update: BingX `timestamp is invalid` en `fetch_balance`
+- Se observaron warnings recurrentes en el stack principal:
+  - `Balance check failed (manage-only): bingx {"code":109400,"msg":"timestamp is invalid","data":{}}`
+- Frecuencia observada:
+  - 3 ocurrencias en 24h
+  - no tumbaban el worker, pero generaban ruido operativo y podian impedir el balance check puntual
+- Causa probable:
+  - drift entre reloj local y reloj del exchange
+  - el adapter de BingX no estaba forzando `adjustForTimeDifference` ni `recvWindow`
+  - tampoco tenia re-sync explicito al detectar `109400`
+- Fix aplicado en `adapters/bingx.py`:
+  - `recvWindow=10000`
+  - `options.adjustForTimeDifference=True`
+  - `_sync_clock()` usando `load_time_difference()`
+  - `fetch_balance()` ahora:
+    - detecta `timestamp is invalid`
+    - sincroniza reloj
+    - reintenta una vez
+- Politica:
+  - el fix es acotado a BingX y a `fetch_balance`
+  - no se debe capturar de forma genérica cualquier exception y reintentar a ciegas
+  - si reaparece el 109400 en otros endpoints autenticados, extender el mismo patron endpoint por endpoint

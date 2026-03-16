@@ -120,3 +120,42 @@ class BingXAdapterCreateOrderTests(SimpleTestCase):
 
         self.assertEqual(resp["id"], "ok-net")
         self.assertEqual(client.create_order.call_count, 3)
+
+
+class BingXAdapterBalanceSyncTests(SimpleTestCase):
+    def _build_adapter(self, client):
+        adapter = object.__new__(BingXFuturesAdapter)
+        adapter.client = client
+        adapter.sandbox = False
+        adapter.margin_mode = "cross"
+        adapter.leverage = 0
+        adapter._markets_loaded = True
+        adapter._leverage_set_symbols = set()
+        return adapter
+
+    def test_fetch_balance_resyncs_on_timestamp_invalid(self):
+        client = mock.Mock()
+        client.fetch_balance.side_effect = [
+            Exception('bingx {"code":109400,"msg":"timestamp is invalid","data":{}}'),
+            {"total": {"USDT": 100.0}},
+        ]
+        client.load_time_difference = mock.Mock(return_value=0)
+        adapter = self._build_adapter(client)
+
+        resp = adapter.fetch_balance()
+
+        self.assertEqual(resp["total"]["USDT"], 100.0)
+        self.assertEqual(client.fetch_balance.call_count, 2)
+        client.load_time_difference.assert_called_once()
+
+    def test_fetch_balance_does_not_swallow_other_errors(self):
+        client = mock.Mock()
+        client.fetch_balance.side_effect = Exception("boom")
+        client.load_time_difference = mock.Mock(return_value=0)
+        adapter = self._build_adapter(client)
+
+        with self.assertRaises(Exception):
+            adapter.fetch_balance()
+
+        self.assertEqual(client.fetch_balance.call_count, 1)
+        client.load_time_difference.assert_not_called()

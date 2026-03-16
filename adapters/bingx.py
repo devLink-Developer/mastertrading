@@ -19,6 +19,11 @@ _retry_exchange = retry(
 )
 
 
+def _is_timestamp_invalid_error(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    return "timestamp is invalid" in msg or '"code":109400' in msg or "'code':109400" in msg
+
+
 class BingXFuturesAdapter:
     def __init__(
         self,
@@ -38,7 +43,11 @@ class BingXFuturesAdapter:
                 "secret": api_secret,
                 "password": password or None,
                 "enableRateLimit": True,
-                "options": {"defaultType": "swap"},
+                "recvWindow": 10000,
+                "options": {
+                    "defaultType": "swap",
+                    "adjustForTimeDifference": True,
+                },
             }
         )
         self._markets_loaded = False
@@ -49,6 +58,7 @@ class BingXFuturesAdapter:
             except Exception as exc:
                 logger.warning("set_sandbox_mode not available on bingx: %s", exc)
         self._ensure_markets_loaded()
+        self._sync_clock()
 
     @classmethod
     def from_config(cls, cfg: dict | None = None) -> "BingXFuturesAdapter":
@@ -113,8 +123,26 @@ class BingXFuturesAdapter:
         return self.client.fetch_ticker(self._map_symbol(symbol))
 
     @_retry_exchange
-    def fetch_balance(self):
+    def _fetch_balance_with_retry(self):
         return self.client.fetch_balance()
+
+    def _sync_clock(self):
+        try:
+            if hasattr(self.client, "load_time_difference"):
+                self.client.load_time_difference()
+                logger.info("BingX clock synchronized")
+        except Exception as exc:
+            logger.warning("BingX clock sync failed: %s", exc)
+
+    def fetch_balance(self):
+        try:
+            return self._fetch_balance_with_retry()
+        except Exception as exc:
+            if not _is_timestamp_invalid_error(exc):
+                raise
+            logger.warning("BingX timestamp invalid on fetch_balance; re-syncing clock and retrying")
+            self._sync_clock()
+            return self._fetch_balance_with_retry()
 
     @_retry_exchange
     def _create_order_with_retry(
