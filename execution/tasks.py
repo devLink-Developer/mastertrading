@@ -4992,6 +4992,25 @@ def _manage_open_position(
     last = float(ticker_used.get("last")) if ticker_used else last_price
     pos_side = "buy" if current_qty > 0 else "sell"
     pos_direction = "long" if current_qty > 0 else "short"
+
+    # Use the actual entry leverage stored in the opening Order (may be boosted above adapter.leverage).
+    # This ensures _log_operation reports the real leverage used, not the adapter default.
+    try:
+        _entry_order_lev = (
+            Order.objects.filter(
+                instrument=inst,
+                side=pos_side,
+                status=Order.OrderStatus.FILLED,
+            )
+            .order_by("-opened_at")
+            .values_list("leverage", flat=True)
+            .first()
+        )
+        if _entry_order_lev is not None and float(_entry_order_lev) > 0:
+            leverage = float(_entry_order_lev)
+    except Exception:
+        pass
+
     origin_signal = _position_origin_signal(inst, pos_side)
     origin_signal_id, origin_correlation_id = _position_origin_refs(inst, pos_side, origin_signal, sig)
     position_strategy_name = str(getattr(origin_signal, "strategy", "") or strategy_name).strip().lower()

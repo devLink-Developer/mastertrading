@@ -316,11 +316,11 @@ CONFIDENCE_LEVERAGE_ML_PROB_THRESHOLD = max(
 CONFIDENCE_LEVERAGE_REQUIRE_BOTH = os.getenv("CONFIDENCE_LEVERAGE_REQUIRE_BOTH", "false").lower() == "true"
 CONFIDENCE_LEVERAGE_MULT = max(
     1.0,
-    float(os.getenv("CONFIDENCE_LEVERAGE_MULT", "1.30")),
+    float(os.getenv("CONFIDENCE_LEVERAGE_MULT", "1.50")),
 )
 CONFIDENCE_LEVERAGE_MAX = max(
     1.0,
-    float(os.getenv("CONFIDENCE_LEVERAGE_MAX", "8.0")),
+    float(os.getenv("CONFIDENCE_LEVERAGE_MAX", "10.0")),
 )
 AI_FEEDBACK_CONTEXT_MAX_TOKENS = max(
     0,
