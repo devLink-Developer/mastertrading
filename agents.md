@@ -743,6 +743,103 @@ docker compose logs --tail=120 chatbot
   - no elimina el gate de ADX ni los guards de impulso/rebote
   - sirve para recuperar emisiones de `trend` en continuaciones con pullback, sin convertirlo en mean reversion
 
+### 2026-03-16 update: divergencia MTF entre stacks por historico `1d`
+- Se detecto una diferencia real entre `rortigoza` y `eudy` en `MTF regime BTC context`:
+  - main: `monthly=bear_confirmed`
+  - eudy: `monthly=transition`
+- La causa raiz no era config ni codigo:
+  - ambos stacks tenian la misma logica MTF
+  - el problema era que cada stack usa su propia base Postgres
+  - `signals/regime_mtf.py` calcula mensual/semanal desde `latest_candles(..., \"1d\")`
+  - `eudy` tenia mucho menos historico `1d` cargado que el stack principal
+- Verificacion:
+  - antes del fix, `BTCUSDT 1d`:
+    - main: `436` candles
+    - eudy: `222` candles
+  - al truncar el lookback del main a `222`, su snapshot pasaba a `transition`, igual que `eudy`
+- Correccion operativa aplicada en prod:
+  - backfill `1d` desde `2024-09-30` para todos los instrumentos activos en ambos stacks
+  - comando:
+    - main: `docker compose exec -T web python manage.py backfill --start 2024-09-30 --timeframes 1d --limit 500`
+    - eudy: `docker compose -p trading_bot_eudy -f docker-compose.eudy.yml --env-file .env.eudy exec -T web python manage.py backfill --start 2024-09-30 --timeframes 1d --limit 500`
+- Estado despues del fix:
+  - ambos stacks quedaron con `534` velas `1d` de `BTCUSDT`
+  - mismo digest de la serie y mismo snapshot:
+    - `monthly=bear_confirmed`
+    - `weekly=transition`
+    - `daily=transition`
+- Leccion:
+  - cuando dos stacks comparten codigo pero no comparten DB, hay que auditar tambien cobertura historica y no solo `.env`/flags
+  - cualquier rollout de `regime_mtf`, `weekday context` o reglas dependientes de `1d` debe validar paridad de velas `1d` entre stacks
+
+### 2026-03-16 update: sizing, capital por operacion y leverage real en prod
+
+- El bot no usa un monto fijo por trade.
+- Usa `risk sizing` por stop:
+  - `qty = (risk_pct * equity) / stop_distance_abs`
+- Primero decide cuanto esta dispuesto a perder si pega el SL y despues deriva el tamaño.
+
+#### Runtime actual observado en prod
+
+| Parametro | Valor |
+|---|---|
+| `RISK_PER_TRADE_PCT` | `0.003` |
+| `PER_INSTRUMENT_RISK` | `{"BTCUSDT":0.0015,"SOLUSDT":0.002,"LINKUSDT":0.002,"ADAUSDT":0.002}` |
+| `MAX_EFF_LEVERAGE` | `5.0` |
+| `CONFIDENCE_LEVERAGE_BOOST_ENABLED` | `true` |
+| `CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR` | `true` |
+| `CONFIDENCE_LEVERAGE_ALLOW_MICROVOL` | `true` |
+| `CONFIDENCE_LEVERAGE_SCORE_THRESHOLD` | `0.90` |
+| `CONFIDENCE_LEVERAGE_MICROVOL_SCORE_THRESHOLD` | `0.60` |
+| `CONFIDENCE_LEVERAGE_MULT` | `1.5` |
+| `CONFIDENCE_LEVERAGE_MAX` | `10.0` |
+
+#### Riesgo nominal por trade con equity observado
+
+Snapshot usado:
+- `rortigoza`: equity `57.9251 USDT`
+- `eudy`: equity `10.7528 USDT`
+
+| Stack | Regla general | BTC | SOL/LINK/ADA |
+|---|---|---|---|
+| `rortigoza` | `0.1738 USDT` | `0.0869 USDT` | `0.1159 USDT` |
+| `eudy` | `0.0323 USDT` | `0.0161 USDT` | `0.0215 USDT` |
+
+Nota:
+- esos valores son el riesgo al stop, no el notional total de la posicion
+- el notional final depende de SL efectivo, ATR, caps de exposicion y minimos del exchange
+
+#### Ejemplo real reciente de capital usado
+
+| Stack | Simbolo | Notional | Margen usado | Leverage |
+|---|---|---|---|---|
+| `rortigoza` | `BTCUSDT` | `7.4722 USDT` | `1.4944 USDT` | `5.0x` |
+| `eudy` | `BTCUSDT` | `7.5696 USDT` | `1.5139 USDT` | `5.0x` |
+
+#### Escalado automatico de leverage
+
+- Si la señal supera umbrales de conviccion, el bot puede subir leverage automaticamente.
+- Se aplica a:
+  - `allocator` cuando `sig_score >= 0.90`
+  - `microvol` cuando `sig_score >= 0.60`
+- Desde 2026-03-16 se deja configurado para poder llegar a `10x` por conviccion sin tocar el cap efectivo total de cuenta:
+  - `CONFIDENCE_LEVERAGE_MULT=2.0`
+  - `CONFIDENCE_LEVERAGE_MAX=10.0`
+  - `MAX_EFF_LEVERAGE` se mantiene aparte como freno de exposicion total
+
+#### Evidencia real de uso del auto-escalado
+
+Ultimos 7 dias:
+
+| Stack | Reports | Trades con leverage `> 5x` | Max observado |
+|---|---|---|---|
+| `rortigoza` | `38` | `15` | `6.5x` |
+| `eudy` | `26` | `9` | `7.5x` |
+
+Conclusion operativa:
+- si, el leverage ya esta escalando automaticamente en prod
+- no sube de forma indiscriminada: sigue condicionado por score, caps de exposicion, margen libre y riesgo por stop
+
 ### 2026-03-16 update: hipotesis NY open + TP mas corto
 - Se evaluaron dos hipotesis practicas para el trade perdedor reciente de `ETHUSDT` en `ny_open`:
   1. penalizar longs de `ETH` en `ny_open`

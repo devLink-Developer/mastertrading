@@ -143,8 +143,8 @@ Examples:
 - `name=BTC_LEAD_FILTER_ENABLED`, `params_json={"value": true}`
 - `name=REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES`, `params_json={"value": 2}`
 - `name=REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES`, `params_json={"value": ["meanrev","smc"]}`
-- `CONFIDENCE_LEVERAGE_MULT=1.30`
-- `CONFIDENCE_LEVERAGE_MAX=8.0`
+- `CONFIDENCE_LEVERAGE_MULT=2.00`
+- `CONFIDENCE_LEVERAGE_MAX=10.0`
 - `AI_FEEDBACK_CONTEXT_MAX_TOKENS=700`
 - `AI_FEEDBACK_JSONL_ENABLED=true|false`
 - `AI_FEEDBACK_JSONL_PATH=tmp/ai/feedback_stream.jsonl`
