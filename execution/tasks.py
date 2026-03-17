@@ -1405,11 +1405,20 @@ def _confidence_adjusted_entry_leverage(
     base = max(1.0, float(base_leverage or 1.0))
     if not bool(getattr(settings, "CONFIDENCE_LEVERAGE_BOOST_ENABLED", False)):
         return base, "disabled"
+    strategy_txt = str(strategy_name or "").strip().lower()
+    is_allocator = strategy_txt.startswith("alloc_")
+    is_microvol = _strategy_is_microvol(strategy_txt)
     if bool(getattr(settings, "CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR", True)):
-        if not str(strategy_name or "").strip().lower().startswith("alloc_"):
+        allow_microvol = bool(getattr(settings, "CONFIDENCE_LEVERAGE_ALLOW_MICROVOL", True))
+        if not is_allocator and not (allow_microvol and is_microvol):
             return base, "non_allocator"
 
     score_threshold = float(getattr(settings, "CONFIDENCE_LEVERAGE_SCORE_THRESHOLD", 0.90) or 0.90)
+    if is_microvol:
+        score_threshold = float(
+            getattr(settings, "CONFIDENCE_LEVERAGE_MICROVOL_SCORE_THRESHOLD", score_threshold)
+            or score_threshold
+        )
     ml_threshold = float(getattr(settings, "CONFIDENCE_LEVERAGE_ML_PROB_THRESHOLD", 0.70) or 0.70)
     require_both = bool(getattr(settings, "CONFIDENCE_LEVERAGE_REQUIRE_BOTH", False))
 

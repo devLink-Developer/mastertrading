@@ -42,7 +42,7 @@ MAX_SPREAD_BPS = float(os.getenv("MAX_SPREAD_BPS", "20"))      # 20 bps = 0.2%
 SPREAD_DYNAMIC_BY_ATR_ENABLED = os.getenv("SPREAD_DYNAMIC_BY_ATR_ENABLED", "true").lower() == "true"
 SPREAD_ATR_RELAX_FACTOR = float(os.getenv("SPREAD_ATR_RELAX_FACTOR", "0.12"))
 MAX_DYNAMIC_SPREAD_BPS = float(os.getenv("MAX_DYNAMIC_SPREAD_BPS", "60"))
-MAX_EFF_LEVERAGE = float(os.getenv("MAX_EFF_LEVERAGE", "2.0"))   # was 3.0 — reduce leverage to limit loss amplitude
+MAX_EFF_LEVERAGE = float(os.getenv("MAX_EFF_LEVERAGE", "2.5"))   # moderate cap; confidence boost remains constrained by risk sizing
 ATR_MULT_TP = float(os.getenv("ATR_MULT_TP", "2.5"))           # 2.5x ATR TP (was 3x — more reachable, take profits earlier)
 ATR_MULT_TP_LONG = float(os.getenv("ATR_MULT_TP_LONG", "1.6"))
 ATR_MULT_TP_SHORT = float(os.getenv("ATR_MULT_TP_SHORT", "2.2"))
@@ -303,11 +303,16 @@ TP_PROGRESS_EARLY_EXIT_MICROVOL_AGE_RATIO = max(
     min(1.0, float(os.getenv("TP_PROGRESS_EARLY_EXIT_MICROVOL_AGE_RATIO", "0.50"))),
 )
 # -- Confidence leverage boost (optional) --
-CONFIDENCE_LEVERAGE_BOOST_ENABLED = os.getenv("CONFIDENCE_LEVERAGE_BOOST_ENABLED", "false").lower() == "true"
+CONFIDENCE_LEVERAGE_BOOST_ENABLED = os.getenv("CONFIDENCE_LEVERAGE_BOOST_ENABLED", "true").lower() == "true"
 CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR = os.getenv("CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR", "true").lower() == "true"
+CONFIDENCE_LEVERAGE_ALLOW_MICROVOL = os.getenv("CONFIDENCE_LEVERAGE_ALLOW_MICROVOL", "true").lower() == "true"
 CONFIDENCE_LEVERAGE_SCORE_THRESHOLD = max(
     0.0,
     min(1.0, float(os.getenv("CONFIDENCE_LEVERAGE_SCORE_THRESHOLD", "0.90"))),
+)
+CONFIDENCE_LEVERAGE_MICROVOL_SCORE_THRESHOLD = max(
+    0.0,
+    min(1.0, float(os.getenv("CONFIDENCE_LEVERAGE_MICROVOL_SCORE_THRESHOLD", "0.60"))),
 )
 CONFIDENCE_LEVERAGE_ML_PROB_THRESHOLD = max(
     0.0,
@@ -884,6 +889,8 @@ MODULE_MICROVOL_ALLOWED_SESSIONS = _parse_session_set(
 MODULE_MICROVOL_ALLOWED_SYMBOLS = _parse_symbol_set(
     os.getenv("MODULE_MICROVOL_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
 )
+MODULE_MICROVOL_DEBUG_ENABLED = os.getenv("MODULE_MICROVOL_DEBUG_ENABLED", "false").lower() == "true"
+MODULE_MICROVOL_DEBUG_SYMBOLS = _parse_symbol_set(os.getenv("MODULE_MICROVOL_DEBUG_SYMBOLS", ""))
 MODULE_MICROVOL_HTF_PULLBACK_TOLERANCE_PCT = max(
     0.0,
     min(0.02, float(os.getenv("MODULE_MICROVOL_HTF_PULLBACK_TOLERANCE_PCT", "0.003"))),

@@ -262,3 +262,34 @@ class ModuleImpulseFiltersTest(SimpleTestCase):
         with patch("signals.modules.microvol.compute_adx", return_value=24.0):
             out = microvol_module.detect(df_ltf, df_htf, [], "ny_open", symbol="DOGEUSDT")
         self.assertIsNone(out)
+
+    @override_settings(
+        MODULE_MICROVOL_ALLOWED_SESSIONS={"asia", "ny_open"},
+        MODULE_MICROVOL_ALLOWED_SYMBOLS={"BTCUSDT", "ETHUSDT"},
+        MODULE_MICROVOL_HTF_PULLBACK_TOLERANCE_PCT=0.003,
+        MODULE_MICROVOL_HTF_ADX_MIN=18.0,
+        MODULE_MICROVOL_HTF_ADX_MAX=55.0,
+        MODULE_MICROVOL_ATR_MIN_PCT=0.0025,
+        MODULE_MICROVOL_ATR_MAX_PCT=0.025,
+        MODULE_MICROVOL_BREAKOUT_LOOKBACK=20,
+        MODULE_MICROVOL_BREAKOUT_BUFFER_PCT=0.001,
+        MODULE_MICROVOL_VOLUME_LOOKBACK=20,
+        MODULE_MICROVOL_MIN_VOLUME_RATIO=1.4,
+        MODULE_MICROVOL_IMPULSE_LOOKBACK=20,
+        MODULE_MICROVOL_IMPULSE_BODY_MULT=1.4,
+        MODULE_MICROVOL_IMPULSE_MIN_BODY_PCT=0.002,
+        MODULE_MICROVOL_MAX_EMA20_DIST_PCT=0.03,
+        MODULE_MICROVOL_MIN_CONFIDENCE=0.30,
+    )
+    def test_microvol_explain_reports_reject_stage(self):
+        vals = [100 + (i * 0.03) for i in range(120)]
+        vals[-3:] = [103.2, 104.0, 105.4]
+        df_ltf = _build_df(vals)
+        df_ltf.loc[df_ltf.index[:-1], "volume"] = 10.0
+        df_ltf.loc[df_ltf.index[-1], "volume"] = 11.0
+        df_htf = _build_df([100 + (i * 0.20) for i in range(80)])
+        with patch("signals.modules.microvol.compute_adx", return_value=24.0):
+            diag = microvol_module.explain(df_ltf, df_htf, [], "asia", symbol="BTCUSDT")
+        self.assertFalse(diag["accepted"])
+        self.assertEqual(diag["stage"], "volume")
+        self.assertIn("volume_ratio", diag)

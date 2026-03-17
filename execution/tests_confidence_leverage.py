@@ -55,6 +55,8 @@ class ConfidenceLeverageBoostTests(SimpleTestCase):
     @override_settings(
         CONFIDENCE_LEVERAGE_BOOST_ENABLED=True,
         CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR=True,
+        CONFIDENCE_LEVERAGE_ALLOW_MICROVOL=True,
+        CONFIDENCE_LEVERAGE_MICROVOL_SCORE_THRESHOLD=0.60,
         CONFIDENCE_LEVERAGE_SCORE_THRESHOLD=0.9,
         CONFIDENCE_LEVERAGE_ML_PROB_THRESHOLD=0.7,
         CONFIDENCE_LEVERAGE_REQUIRE_BOTH=False,
@@ -125,6 +127,25 @@ class ConfidenceLeverageBoostTests(SimpleTestCase):
         )
         self.assertEqual(lev, 5.0)
         self.assertEqual(reason, "non_allocator")
+
+    @override_settings(
+        CONFIDENCE_LEVERAGE_BOOST_ENABLED=True,
+        CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR=True,
+        CONFIDENCE_LEVERAGE_ALLOW_MICROVOL=True,
+        CONFIDENCE_LEVERAGE_MICROVOL_SCORE_THRESHOLD=0.60,
+        CONFIDENCE_LEVERAGE_MULT=1.3,
+        CONFIDENCE_LEVERAGE_MAX=8.0,
+    )
+    def test_microvol_can_receive_boost_with_own_threshold(self):
+        lev, reason = _confidence_adjusted_entry_leverage(
+            base_leverage=5.0,
+            strategy_name="mod_microvol_long",
+            sig_score=0.65,
+            ml_prob=None,
+            ml_enabled=False,
+        )
+        self.assertEqual(reason, "score")
+        self.assertAlmostEqual(lev, 6.5, places=6)
 
 
 class EnsureEntryLeverageTests(SimpleTestCase):

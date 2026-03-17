@@ -743,6 +743,33 @@ docker compose logs --tail=120 chatbot
   - no elimina el gate de ADX ni los guards de impulso/rebote
   - sirve para recuperar emisiones de `trend` en continuaciones con pullback, sin convertirlo en mean reversion
 
+### 2026-03-16 update: hipotesis NY open + TP mas corto
+- Se evaluaron dos hipotesis practicas para el trade perdedor reciente de `ETHUSDT` en `ny_open`:
+  1. penalizar longs de `ETH` en `ny_open`
+  2. usar `ATR_MULT_TP` mas corto como proxy de toma de ganancias mas realista
+- Script reusable:
+  - `scripts/evaluate_ny_open_hypotheses.py`
+  - ahora soporta filtros `--windows` y `--configs`
+  - la ventana `full` usa realmente el `--start/--end` solicitado
+- Reportes generados:
+  - `reports/ny_open_hypotheses_btc_eth_20260201_20260315.json`
+  - `reports/ny_open_hypotheses_btc_eth_htf1h_20260201_20260315.json`
+  - `reports/ny_open_hypotheses_btc_eth_recentlatest_20260310_20260317.json`
+- Hallazgo clave:
+  - el trade real de `ETH` del 2026-03-16 **no fue un caso de TP lejano**
+  - en live tuvo `mfe_r` muy bajo y termino en `exchange_stop`
+  - o sea: no estuvo "encaminado" y luego devolvio; fue una entrada que no desarrollo
+- Resultado de backtest:
+  - el proxy `ATR_MULT_TP=1.4` no mostro mejora robusta
+  - en algunas ventanas viejas mejora apenas el total, pero empeora la ventana reciente
+  - por eso **no conviene acortar TP globalmente** todavia
+- Limitacion importante:
+  - el backtest actual no reprodujo trades `BTC/ETH long` en `ny_open` en las ventanas auditadas
+  - entonces la hipotesis de endurecer `ETH:ny_open:long` no quedo validada ni invalidada por backtest; simplemente no hubo muestra util en el motor
+- Politica operativa derivada:
+  - no cambiar TP global por intuicion
+  - para casos `ny_open`, priorizar replay/auditoria de señales live y mejoras del motor de backtest (cadencia 60s / tp_progress_exit) antes de activar filtros nuevos
+
 ### 2026-03-10 update: cierre heuristico por progreso a TP
 - Se agrego un evaluador de salida temprana `tp_progress_exit` en `execution/tasks.py`.
 - Objetivo:
@@ -1191,3 +1218,47 @@ docker compose logs --tail=120 chatbot
   - el fix es acotado a BingX y a `fetch_balance`
   - no se debe capturar de forma genérica cualquier exception y reintentar a ciegas
   - si reaparece el 109400 en otros endpoints autenticados, extender el mismo patron endpoint por endpoint
+
+### 2026-03-16 update: diagnostico deterministico para `microvol`
+- Se detecto una divergencia real entre stacks:
+  - `eudy` emitio un `mod_microvol_long` en BTC
+  - `rortigoza` no emitio nada en la misma ventana
+  - la comparacion previa ya habia descartado:
+    - diferencia de candles crudas
+    - diferencia de flags/thresholds de `microvol`
+- Para no volver a diagnosticar esto a ciegas, `signals/modules/microvol.py` ahora expone `explain(...)`:
+  - devuelve `stage` de rechazo/aceptacion
+  - y los valores finales mas importantes del detector
+    - `adx_htf`
+    - `atr_pct`
+    - `body_pct`
+    - `breakout_pct`
+    - `volume_ratio`
+    - `confidence`
+    - `close_location`
+- `signals/multi_strategy.py` puede loguear ese resumen cuando:
+  - `MODULE_MICROVOL_DEBUG_ENABLED=true`
+  - y opcionalmente el simbolo esta en `MODULE_MICROVOL_DEBUG_SYMBOLS`
+- Politica:
+  - mantener debug apagado por default
+  - activarlo solo al perseguir divergencias entre stacks o gaps raros de emision
+  - usarlo preferentemente para `BTCUSDT`/`ETHUSDT`, no para todo el universo
+
+### 2026-03-16 update: leverage sube por conviccion, no globalmente
+- Se reforzo la politica de leverage controlado:
+  - `MAX_EFF_LEVERAGE` default sube moderadamente a `2.5`
+  - no se vuelve a abrir la canilla global a todos los trades
+- `execution/tasks.py` ahora permite `confidence leverage boost` tambien en `microvol`:
+  - `CONFIDENCE_LEVERAGE_BOOST_ENABLED=true` por default
+  - `CONFIDENCE_LEVERAGE_ONLY_ALLOCATOR=true` sigue vigente
+  - pero con `CONFIDENCE_LEVERAGE_ALLOW_MICROVOL=true`, `microvol` puede recibir boost sin abrir otros modulos
+- Umbrales:
+  - allocator sigue usando `CONFIDENCE_LEVERAGE_SCORE_THRESHOLD=0.90`
+  - microvol usa su propio umbral:
+    - `CONFIDENCE_LEVERAGE_MICROVOL_SCORE_THRESHOLD=0.60`
+- Razon:
+  - `microvol` y `allocator` no puntuan en la misma escala
+  - exigir `0.90` a `microvol` lo dejaba practicamente sin boost
+- Politica:
+  - preferir subida de leverage por conviccion del trade
+  - no subir leverage indiscriminadamente en todos los simbolos/sesiones

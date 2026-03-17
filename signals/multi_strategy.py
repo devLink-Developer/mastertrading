@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import timedelta
 
@@ -106,7 +107,38 @@ def run_module_engine(module_name: str) -> str:
             continue
         funding = latest_funding_rates(inst, lookback=80) if module_name == "carry" else []
         session = get_current_session(now)
-        result = detector(df_ltf, df_htf, funding, session, symbol=inst.symbol)
+        if module_name == "microvol" and _microvol_debug_enabled():
+            debug_symbols = _microvol_debug_symbols()
+            if not debug_symbols or inst.symbol in debug_symbols:
+                diag = microvol_module.explain(df_ltf, df_htf, funding, session, symbol=inst.symbol)
+                result = diag.get("result")
+                logger.info(
+                    "microvol debug %s",
+                    json.dumps(
+                        {
+                            "symbol": inst.symbol,
+                            "session": session,
+                            "stage": diag.get("stage"),
+                            "accepted": bool(diag.get("accepted")),
+                            "direction": diag.get("direction", ""),
+                            "htf_direction": diag.get("htf_direction", ""),
+                            "adx_htf": diag.get("adx_htf"),
+                            "atr_pct": diag.get("atr_pct"),
+                            "body_pct": diag.get("body_pct"),
+                            "volume_ratio": diag.get("volume_ratio"),
+                            "breakout_pct": diag.get("breakout_pct"),
+                            "confidence": diag.get("confidence"),
+                            "close_location": diag.get("close_location"),
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            else:
+                result = detector(df_ltf, df_htf, funding, session, symbol=inst.symbol)
+        else:
+            result = detector(df_ltf, df_htf, funding, session, symbol=inst.symbol)
         if not result:
             continue
         direction = str(result.get("direction", "")).strip().lower()
@@ -173,6 +205,14 @@ def _allowed_symbols_for_module(module_name: str, instruments: list[Instrument])
         return set(symbols)
     cap = max(1, int(getattr(settings, "LIVE_GRADUAL_MAX_SYMBOLS_PER_MODULE", len(symbols))))
     return set(sorted(symbols)[:cap])
+
+
+def _microvol_debug_enabled() -> bool:
+    return bool(getattr(settings, "MODULE_MICROVOL_DEBUG_ENABLED", False))
+
+
+def _microvol_debug_symbols() -> set[str]:
+    return set(getattr(settings, "MODULE_MICROVOL_DEBUG_SYMBOLS", set()) or set())
 
 
 def _smc_reason_payload(payload: dict | None) -> dict:
