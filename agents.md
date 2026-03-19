@@ -1359,3 +1359,40 @@ Conclusion operativa:
 - Politica:
   - preferir subida de leverage por conviccion del trade
   - no subir leverage indiscriminadamente en todos los simbolos/sesiones
+
+### 2026-03-19 update: `SOLUSDT` puede sobre-riesgar por minimo de lote
+- Caso auditado en prod (`rortigoza`, Asia):
+  - `alloc_short` abierto `2026-03-19 01:54 UTC`
+  - cerrado `2026-03-19 03:20 UTC`
+  - `reason=uptrend_short_kill`
+  - perdida realizada `-0.671 USDT`
+- Hallazgos:
+  - no fue cierre por `SL` del exchange
+  - el hard stop seguia mas arriba (`91.3229`)
+  - despues del cierre, el precio todavia hizo un maximo peor (`91.36`), por lo que el `kill` probablemente redujo dano frente al stop duro
+  - el precio recien volvio debajo de la entry unos `46.9` minutos despues del cierre
+- Causa estructural:
+  - `SOLUSDT` en BingX usa `lot_size=1`
+  - en cuentas chicas/medianas eso puede obligar a abrir `1 SOL` aunque el sizing por riesgo pida bastante menos
+  - el riesgo realizado puede quedar muy por encima del `risk_budget_pct` presupuestado
+- Comparacion con `eudy`:
+  - vio la misma senal `alloc_short`
+  - no abrio porque el minimo de `1 SOL` excedia el `MAX_EFF_LEVERAGE=5.0` de la cuenta
+  - log real: `Pre-trade leverage cap ... max_new=54.74 min_qty=1.0; skipping`
+- Politica derivada:
+  - no juzgar este patron solo como problema de timing/salida
+  - revisar siempre `lot_size`, notional minimo y riesgo realizado vs riesgo objetivo
+  - futuro hardening candidato: saltar entradas cuando `min_qty` implique un riesgo al stop muy por encima del presupuesto
+
+### 2026-03-19 update: guardrail activo contra `min_qty` que rompe el riesgo
+- Se implemento hardening en `execution/tasks.py`:
+  - despues de calcular `qty` final, el bot compara:
+    - `target_risk_amount = equity * effective_risk_pct`
+    - `actual_stop_risk_amount = qty * stop_distance_pct * entry_price * contract_size`
+  - si el `min_qty` del exchange forzo una posicion y el riesgo real supera varias veces el presupuesto, la entrada se bloquea
+- Nuevos settings:
+  - `MIN_QTY_RISK_GUARD_ENABLED=true`
+  - `MIN_QTY_RISK_MULTIPLIER_MAX=3.0`
+- Intencion:
+  - evitar casos como `SOLUSDT` donde el minimo de `1` contrato puede transformar un trade de riesgo pequeno en una perdida de ~1% del capital
+  - mantener tolerancia a pequenas desviaciones normales, pero frenar overshoot grosero de riesgo
