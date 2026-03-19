@@ -1161,6 +1161,51 @@ def _create_risk_event(
         logger.warning("Failed to create risk event: %s", exc)
 
 
+def _record_min_qty_risk_guard_event(
+    instrument: Instrument,
+    *,
+    qty: float,
+    risk_qty: float,
+    min_qty: float,
+    actual_risk_amount: float,
+    target_risk_amount: float,
+    risk_multiplier: float,
+    stop_distance_pct: float,
+) -> None:
+    """Persist a deduplicated DB event for min-qty over-risk blocks without Telegram noise."""
+    try:
+        symbol = instrument.symbol
+        dedup_seconds = max(
+            1,
+            int(getattr(settings, "RISK_EVENT_DEDUP_SECONDS", 300) or 300),
+        )
+        bucket = int(dj_tz.now().timestamp()) // dedup_seconds
+        fp_raw = f"min_qty_risk_guard|{symbol}|{bucket}"
+        fp = hashlib.sha1(fp_raw.encode("utf-8", errors="ignore")).hexdigest()
+        dedup_key = f"risk:event:quiet:{fp}"
+        client = _redis_client()
+        if client is not None:
+            allow_emit = bool(client.set(dedup_key, "1", nx=True, ex=dedup_seconds))
+            if not allow_emit:
+                return
+        RiskEvent.objects.create(
+            instrument=instrument,
+            kind="min_qty_risk_guard",
+            severity=RiskEvent.Severity.WARN,
+            details_json={
+                "qty": round(float(qty), 10),
+                "risk_qty": round(float(risk_qty), 10),
+                "min_qty": round(float(min_qty), 10),
+                "risk_actual": round(float(actual_risk_amount), 8),
+                "risk_target": round(float(target_risk_amount), 8),
+                "risk_mult": round(float(risk_multiplier), 4),
+                "stop_pct": round(float(stop_distance_pct), 6),
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to record min-qty risk guard event: %s", exc)
+
+
 def _format_risk_event_notification_details(instrument=None, details: dict | None = None) -> str:
     details_obj = details or {}
     lines: list[str] = []
@@ -4795,6 +4840,16 @@ def _attempt_entry_open(
         target_risk_amount=target_risk_amount,
     )
     if min_qty_risk_blocked:
+        _record_min_qty_risk_guard_event(
+            inst,
+            qty=qty,
+            risk_qty=risk_qty,
+            min_qty=min_qty,
+            actual_risk_amount=actual_stop_risk_amount,
+            target_risk_amount=target_risk_amount,
+            risk_multiplier=actual_risk_mult,
+            stop_distance_pct=stop_dist,
+        )
         logger.info(
             "Min-qty risk guard blocked %s: qty=%.10f risk_qty=%.10f min_qty=%.10f "
             "risk_actual=%.5f risk_target=%.5f risk_mult=%.2f stop_pct=%.4f%%",
