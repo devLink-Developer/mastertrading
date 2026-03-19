@@ -1494,6 +1494,33 @@ def _order_is_reduce_only(order_payload: dict | None) -> bool:
     return str(raw or "").strip().lower() in {"true", "1", "yes"}
 
 
+def _min_qty_dynamic_allowlist_state(risk_multiplier: float) -> str:
+    block_mult = max(
+        1.0,
+        float(
+            getattr(
+                settings,
+                "MIN_QTY_DYNAMIC_ALLOWLIST_BLOCK_MULTIPLIER",
+                getattr(settings, "MIN_QTY_RISK_MULTIPLIER_MAX", 3.0),
+            )
+            or getattr(settings, "MIN_QTY_RISK_MULTIPLIER_MAX", 3.0)
+        ),
+    )
+    watch_mult = max(
+        1.0,
+        min(
+            block_mult,
+            float(getattr(settings, "MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER", 2.0) or 2.0),
+        ),
+    )
+    mult = max(0.0, float(risk_multiplier or 0.0))
+    if mult >= block_mult:
+        return "blocked"
+    if mult >= watch_mult:
+        return "watch"
+    return "tradable"
+
+
 def _confidence_adjusted_entry_leverage(
     *,
     base_leverage: float,
@@ -4904,6 +4931,53 @@ def _attempt_entry_open(
         notional_order = last_price * contract_size * qty
 
     target_risk_amount = max(0.0, equity_usdt * effective_risk_pct)
+    actual_stop_risk_amount = _actual_stop_risk_amount(
+        qty=qty,
+        entry_price=last_price,
+        stop_distance_pct=stop_dist,
+        contract_size=contract_size,
+    )
+    actual_risk_mult = (
+        actual_stop_risk_amount / target_risk_amount
+        if actual_stop_risk_amount > 0 and target_risk_amount > 0
+        else 0.0
+    )
+    allowlist_state = _min_qty_dynamic_allowlist_state(actual_risk_mult)
+    if bool(getattr(settings, "MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED", True)):
+        if allowlist_state == "blocked":
+            _record_min_qty_risk_guard_event(
+                inst,
+                qty=qty,
+                risk_qty=risk_qty,
+                min_qty=min_qty,
+                actual_risk_amount=actual_stop_risk_amount,
+                target_risk_amount=target_risk_amount,
+                risk_multiplier=actual_risk_mult,
+                stop_distance_pct=stop_dist,
+            )
+            logger.info(
+                "Dynamic min-qty allowlist blocked %s: state=%s qty=%.10f risk_qty=%.10f "
+                "min_qty=%.10f risk_actual=%.5f risk_target=%.5f risk_mult=%.2f",
+                symbol,
+                allowlist_state,
+                qty,
+                risk_qty,
+                min_qty,
+                actual_stop_risk_amount,
+                target_risk_amount,
+                actual_risk_mult,
+            )
+            return 0, 0.0
+        if allowlist_state == "watch":
+            logger.info(
+                "Dynamic min-qty allowlist watch %s: qty=%.10f risk_qty=%.10f min_qty=%.10f risk_mult=%.2f",
+                symbol,
+                qty,
+                risk_qty,
+                min_qty,
+                actual_risk_mult,
+            )
+
     min_qty_risk_blocked, actual_stop_risk_amount, actual_risk_mult = _min_qty_risk_guard(
         qty=qty,
         risk_qty=risk_qty,

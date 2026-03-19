@@ -79,6 +79,20 @@ MIN_QTY_RISK_MULTIPLIER_MAX = max(
     1.0,
     float(os.getenv("MIN_QTY_RISK_MULTIPLIER_MAX", "3.0")),
 )
+MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED = os.getenv("MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED", "true").lower() == "true"
+MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER = max(
+    1.0,
+    float(os.getenv("MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER", "2.0")),
+)
+MIN_QTY_DYNAMIC_ALLOWLIST_BLOCK_MULTIPLIER = max(
+    MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER,
+    float(
+        os.getenv(
+            "MIN_QTY_DYNAMIC_ALLOWLIST_BLOCK_MULTIPLIER",
+            os.getenv("MIN_QTY_RISK_MULTIPLIER_MAX", "3.0"),
+        )
+    ),
+)
 ORPHAN_REDUCE_ONLY_CLEANUP_ENABLED = os.getenv("ORPHAN_REDUCE_ONLY_CLEANUP_ENABLED", "true").lower() == "true"
 ORPHAN_REDUCE_ONLY_CLEANUP_INTERVAL_SECONDS = max(
     60,
@@ -1311,6 +1325,10 @@ _PERF_BEAT_HOUR_RAW = int(os.getenv("PERFORMANCE_REPORT_BEAT_HOUR", "0"))
 _PERF_BEAT_MINUTE_RAW = int(os.getenv("PERFORMANCE_REPORT_BEAT_MINUTE", "0"))
 PERFORMANCE_REPORT_BEAT_HOUR = max(0, min(23, _PERF_BEAT_HOUR_RAW))
 PERFORMANCE_REPORT_BEAT_MINUTE = max(0, min(59, _PERF_BEAT_MINUTE_RAW))
+MIN_QTY_RISK_REPORT_ENABLED = os.getenv("MIN_QTY_RISK_REPORT_ENABLED", "true").lower() == "true"
+MIN_QTY_RISK_REPORT_DAYS = max(1, int(os.getenv("MIN_QTY_RISK_REPORT_DAYS", "7")))
+MIN_QTY_RISK_REPORT_HOUR = max(0, min(23, int(os.getenv("MIN_QTY_RISK_REPORT_HOUR", "9"))))
+MIN_QTY_RISK_REPORT_MINUTE = max(0, min(59, int(os.getenv("MIN_QTY_RISK_REPORT_MINUTE", "5"))))
 
 # -- Monte Carlo nightly automation (optional) --
 MONTE_CARLO_NIGHTLY_ENABLED = os.getenv("MONTE_CARLO_NIGHTLY_ENABLED", "false").lower() == "true"
@@ -1457,6 +1475,7 @@ CELERY_TASK_ROUTES = {
     "execution.tasks.retrain_entry_filter_model": {"queue": ML_TRAINING_QUEUE},
     "execution.tasks._log_operation": {"queue": "trading"},
     "risk.tasks.send_performance_report": {"queue": "trading"},
+    "risk.tasks.send_min_qty_risk_report": {"queue": "trading"},
     "risk.tasks.run_nightly_monte_carlo": {"queue": "trading"},
     "marketdata.tasks.fetch_ohlcv_and_funding": {"queue": "marketdata"},
     "marketdata.tasks.fetch_instrument_data": {"queue": "marketdata"},
@@ -1509,6 +1528,15 @@ if PERFORMANCE_REPORT_ENABLED:
     CELERY_BEAT_SCHEDULE["send-performance-report"] = {
         "task": "risk.tasks.send_performance_report",
         "schedule": crontab(),  # every minute
+    }
+
+if MIN_QTY_RISK_REPORT_ENABLED:
+    CELERY_BEAT_SCHEDULE["send-min-qty-risk-report"] = {
+        "task": "risk.tasks.send_min_qty_risk_report",
+        "schedule": crontab(
+            hour=MIN_QTY_RISK_REPORT_HOUR,
+            minute=MIN_QTY_RISK_REPORT_MINUTE,
+        ),
     }
 
 if MONTE_CARLO_NIGHTLY_ENABLED:

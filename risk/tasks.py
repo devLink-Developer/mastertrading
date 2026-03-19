@@ -14,6 +14,7 @@ from django.utils import timezone as dj_tz
 
 from core.exchange_runtime import get_runtime_exchange_context
 from execution.models import BalanceSnapshot, OperationReport, Order, Position
+from risk.management.commands.min_qty_risk_report import build_min_qty_risk_rows
 from signals.models import Signal
 
 from .notifications import send_telegram
@@ -168,6 +169,40 @@ def _build_performance_report(window_minutes: int) -> str:
     return "\n".join(lines)
 
 
+def _build_min_qty_risk_report_message(days: int) -> str:
+    rows = build_min_qty_risk_rows(days=days)
+    if not rows:
+        return ""
+
+    runtime = get_runtime_exchange_context()
+    service = str(runtime.get("service") or "unknown").upper()
+    env = "DEMO" if bool(runtime.get("sandbox")) else "LIVE"
+    asset = str(runtime.get("primary_asset") or "USDT")
+
+    equity = _to_float(rows[0].get("equity"))
+    blocked = [row for row in rows if row.get("state") == "blocked"]
+    watch = [row for row in rows if row.get("state") == "watch"]
+    tradable = [row for row in rows if row.get("state") == "tradable"]
+
+    def _fmt_row(row: dict[str, Any]) -> str:
+        return (
+            f"{row['symbol']} x{_to_float(row.get('risk_multiplier')):.2f} "
+            f"(L={_to_float(row.get('long_risk_multiplier')):.2f} / "
+            f"S={_to_float(row.get('short_risk_multiplier')):.2f})"
+        )
+
+    tradable_symbols = ", ".join(row["symbol"] for row in tradable[:7]) if tradable else "-"
+    lines = [
+        "\U0001F9EE <b>Min-Qty Risk Daily</b>",
+        f"<b>Env:</b> {service} {env}",
+        f"<b>Equity:</b> {equity:.2f} {asset} | <b>Window:</b> {days}d",
+        f"<b>Blocked ({len(blocked)}):</b> " + (" | ".join(_fmt_row(row) for row in blocked[:5]) if blocked else "-"),
+        f"<b>Watch ({len(watch)}):</b> " + (" | ".join(_fmt_row(row) for row in watch[:5]) if watch else "-"),
+        f"<b>Tradable ({len(tradable)}):</b> {tradable_symbols}",
+    ]
+    return "\n".join(lines)
+
+
 @shared_task
 def send_performance_report() -> str:
     config = resolve_report_config()
@@ -192,6 +227,22 @@ def send_performance_report() -> str:
     if sent:
         _mark_sent_slot(mode, slot_id)
     return f"performance_report:sent={1 if sent else 0}:window={window_minutes}m"
+
+
+@shared_task
+def send_min_qty_risk_report() -> str:
+    if not bool(getattr(settings, "MIN_QTY_RISK_REPORT_ENABLED", True)):
+        return "min_qty_risk_report:disabled"
+    if not bool(getattr(settings, "TELEGRAM_ENABLED", False)):
+        return "min_qty_risk_report:telegram_disabled"
+
+    message = _build_min_qty_risk_report_message(
+        max(1, int(getattr(settings, "MIN_QTY_RISK_REPORT_DAYS", 7) or 7))
+    )
+    if not message:
+        return "min_qty_risk_report:no_rows"
+    sent = send_telegram(message, parse_mode="HTML")
+    return f"min_qty_risk_report:sent={1 if sent else 0}"
 
 
 @shared_task

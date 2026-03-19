@@ -33,6 +33,7 @@ from execution.tasks import (
     _minimum_order_amount_from_error,
     _market_min_qty,
     _macro_high_impact_allows_entry,
+    _min_qty_dynamic_allowlist_state,
     _min_qty_risk_guard,
     _is_no_position_error,
     _load_enabled_instruments_and_latest_signals,
@@ -275,6 +276,15 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertEqual(cancelled, ["ro-1", "ro-2"])
         self.assertEqual(cancelled_again, [])
         self.assertEqual(adapter.cancelled, [("ro-1", "BTCUSDT"), ("ro-2", "BTCUSDT")])
+
+    @override_settings(
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+        MIN_QTY_DYNAMIC_ALLOWLIST_BLOCK_MULTIPLIER=3.0,
+    )
+    def test_min_qty_dynamic_allowlist_state_classifies_bands(self):
+        self.assertEqual(_min_qty_dynamic_allowlist_state(1.4), "tradable")
+        self.assertEqual(_min_qty_dynamic_allowlist_state(2.1), "watch")
+        self.assertEqual(_min_qty_dynamic_allowlist_state(3.0), "blocked")
 
     @override_settings(
         TP_PROGRESS_EARLY_EXIT_ENABLED=True,

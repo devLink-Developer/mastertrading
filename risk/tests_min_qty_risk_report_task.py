@@ -1,17 +1,16 @@
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
 from core.models import Instrument
 from execution.models import BalanceSnapshot
 from marketdata.models import Candle
-from risk.management.commands.min_qty_risk_report import Command
-from risk.models import RiskEvent
+from risk.tasks import send_min_qty_risk_report
 
 
-class MinQtyRiskReportCommandTest(TestCase):
+class MinQtyRiskReportTaskTest(TestCase):
     def setUp(self):
-        self.command = Command()
         self.inst = Instrument.objects.create(
             symbol="SOLUSDT",
             exchange="bingx",
@@ -50,14 +49,11 @@ class MinQtyRiskReportCommandTest(TestCase):
             notional_usdt=0,
             eff_leverage=0,
         )
-        RiskEvent.objects.create(
-            instrument=self.inst,
-            kind="min_qty_risk_guard",
-            severity=RiskEvent.Severity.WARN,
-            details_json={"risk_mult": 8.4},
-        )
 
     @override_settings(
+        TELEGRAM_ENABLED=True,
+        MIN_QTY_RISK_REPORT_ENABLED=True,
+        MIN_QTY_RISK_REPORT_DAYS=7,
         RISK_PER_TRADE_PCT=0.003,
         PER_INSTRUMENT_RISK={"SOLUSDT": 0.002},
         STOP_LOSS_PCT=0.007,
@@ -65,16 +61,15 @@ class MinQtyRiskReportCommandTest(TestCase):
         ATR_MULT_SL=1.5,
         MIN_QTY_RISK_GUARD_ENABLED=True,
         MIN_QTY_RISK_MULTIPLIER_MAX=3.0,
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+        MIN_QTY_DYNAMIC_ALLOWLIST_BLOCK_MULTIPLIER=3.0,
     )
-    def test_build_rows_reports_symbol_and_event_count(self):
-        rows = self.command._build_rows(days=7, symbol="SOLUSDT")
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertEqual(row["symbol"], "SOLUSDT")
-        self.assertEqual(row["event_count"], 1)
-        self.assertGreater(row["min_notional"], 90.0)
-        self.assertGreater(row["risk_multiplier"], 3.0)
-        self.assertTrue(row["blocked_now"])
-        self.assertEqual(row["state"], "blocked")
-        self.assertGreater(row["long_risk_multiplier"], 3.0)
-        self.assertGreater(row["short_risk_multiplier"], 3.0)
+    @patch("risk.tasks.send_telegram", return_value=True)
+    def test_send_min_qty_risk_report_sends_blocked_summary(self, send_mock):
+        result = send_min_qty_risk_report()
+        self.assertEqual(result, "min_qty_risk_report:sent=1")
+        self.assertEqual(send_mock.call_count, 1)
+        message = send_mock.call_args[0][0]
+        self.assertIn("Min-Qty Risk Daily", message)
+        self.assertIn("Blocked (1)", message)
+        self.assertIn("SOLUSDT", message)

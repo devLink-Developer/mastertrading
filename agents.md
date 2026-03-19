@@ -715,6 +715,28 @@ docker compose logs --tail=120 chatbot
   - esto no toca ordenes de entrada
   - solo barre stops/close orders colgados cuando ya no hay nada que reducir
 
+### 2026-03-19 update: allowlist dinamico por tamano de cuenta + reporte diario
+- Se agrego una clasificacion dinamica por `xRisk` (riesgo real forzado por `min_qty` vs riesgo objetivo):
+  - `tradable`
+  - `watch`
+  - `blocked`
+- Defaults:
+  - `MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED=true`
+  - `MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0`
+  - `MIN_QTY_DYNAMIC_ALLOWLIST_BLOCK_MULTIPLIER=3.0`
+- Runtime:
+  - `execution/tasks.py` ahora clasifica cada intento de entrada por `xRisk`
+  - `blocked` => no abre
+  - `watch` => deja traza en logs, pero no bloquea
+- Reporte:
+  - comando `python manage.py min_qty_risk_report --days 7`
+  - ahora muestra `state`, `long_xRisk`, `short_xRisk` y `worst_xRisk`
+  - tarea Celery nueva `risk.tasks.send_min_qty_risk_report`
+  - envio diario por Telegram con resumen `blocked/watch/tradable`
+- Objetivo:
+  - convertir el analisis de `min_qty` en una decision operativa reutilizable
+  - evitar que cuentas chicas/medianas sigan intentando simbolos estructuralmente desalineados con su equity
+
 ### 2026-03-10 update: NY open y sesgo suave por dia de semana
 - `signals/sessions.py` ahora modela `ny_open` como sub-sesion separada:
   - `ny_open`: 13:30-14:00 UTC
