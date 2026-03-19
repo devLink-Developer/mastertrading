@@ -39,8 +39,10 @@ from execution.tasks import (
     _log_operation,
     _normalize_order_qty,
     _actual_stop_risk_amount,
+    _cleanup_orphan_reduce_only_orders,
     _position_root_correlation,
     _position_origin_refs,
+    _order_is_reduce_only,
     _release_task_lock,
     _reconcile_sl,
     _resolve_signal_direction,
@@ -180,6 +182,25 @@ class _DummyAdapterAlignUp:
         return symbol
 
 
+class _DummyAdapterOpenOrders:
+    def __init__(self, orders_by_symbol: dict[str, list[dict]]):
+        self.orders_by_symbol = orders_by_symbol
+        self.cancelled: list[tuple[str, str]] = []
+
+    @staticmethod
+    def _map_symbol(symbol: str) -> str:
+        return symbol
+
+    def fetch_open_orders(self, symbol: str | None = None):
+        if symbol is None:
+            return []
+        return list(self.orders_by_symbol.get(symbol, []))
+
+    def cancel_order(self, order_id: str, symbol: str):
+        self.cancelled.append((str(order_id), symbol))
+        return {"id": order_id}
+
+
 class TaskHelpersTest(SimpleTestCase):
     def test_extract_fee_from_fees_list(self):
         fee = _extract_fee_usdt({"fees": [{"cost": 0.11}, {"cost": "0.04"}]})
@@ -225,6 +246,35 @@ class TaskHelpersTest(SimpleTestCase):
             "precision": {"amount": 1.0},
         }
         self.assertEqual(_market_min_qty(market, fallback=0.0, precision_mode=4), 1.0)
+
+    def test_order_is_reduce_only_reads_info_or_root_flag(self):
+        self.assertTrue(_order_is_reduce_only({"reduceOnly": True}))
+        self.assertTrue(_order_is_reduce_only({"info": {"reduceOnly": "true"}}))
+        self.assertFalse(_order_is_reduce_only({"info": {"reduceOnly": "false"}}))
+        self.assertFalse(_order_is_reduce_only({"id": "123"}))
+
+    @override_settings(
+        ORPHAN_REDUCE_ONLY_CLEANUP_ENABLED=True,
+        ORPHAN_REDUCE_ONLY_CLEANUP_INTERVAL_SECONDS=600,
+    )
+    def test_cleanup_orphan_reduce_only_orders_cancels_only_reduce_only(self):
+        redis_stub = _DummyRedis()
+        adapter = _DummyAdapterOpenOrders(
+            {
+                "BTCUSDT": [
+                    {"id": "ro-1", "reduceOnly": True},
+                    {"id": "ro-2", "info": {"reduceOnly": "true"}},
+                    {"id": "entry-1", "reduceOnly": False},
+                ]
+            }
+        )
+        with patch("execution.tasks._redis_client", return_value=redis_stub):
+            cancelled = _cleanup_orphan_reduce_only_orders(adapter, "BTCUSDT")
+            cancelled_again = _cleanup_orphan_reduce_only_orders(adapter, "BTCUSDT")
+
+        self.assertEqual(cancelled, ["ro-1", "ro-2"])
+        self.assertEqual(cancelled_again, [])
+        self.assertEqual(adapter.cancelled, [("ro-1", "BTCUSDT"), ("ro-2", "BTCUSDT")])
 
     @override_settings(
         TP_PROGRESS_EARLY_EXIT_ENABLED=True,

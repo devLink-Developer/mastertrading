@@ -79,6 +79,11 @@ MIN_QTY_RISK_MULTIPLIER_MAX = max(
     1.0,
     float(os.getenv("MIN_QTY_RISK_MULTIPLIER_MAX", "3.0")),
 )
+ORPHAN_REDUCE_ONLY_CLEANUP_ENABLED = os.getenv("ORPHAN_REDUCE_ONLY_CLEANUP_ENABLED", "true").lower() == "true"
+ORPHAN_REDUCE_ONLY_CLEANUP_INTERVAL_SECONDS = max(
+    60,
+    int(os.getenv("ORPHAN_REDUCE_ONLY_CLEANUP_INTERVAL_SECONDS", "600")),
+)
 ORDER_MARGIN_BUFFER_PCT = float(os.getenv("ORDER_MARGIN_BUFFER_PCT", "0.03"))  # reserve margin for fees/slippage
 ORDER_MARGIN_BUFFER_MAX_PCT = max(
     0.0,

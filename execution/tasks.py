@@ -1484,6 +1484,16 @@ def _min_qty_risk_guard(
     return risk_multiplier > max_multiplier, actual_risk_amount, risk_multiplier
 
 
+def _order_is_reduce_only(order_payload: dict | None) -> bool:
+    if not isinstance(order_payload, dict):
+        return False
+    info = order_payload.get("info") or {}
+    raw = info.get("reduceOnly", order_payload.get("reduceOnly"))
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"true", "1", "yes"}
+
+
 def _confidence_adjusted_entry_leverage(
     *,
     base_leverage: float,
@@ -2071,6 +2081,64 @@ def _cancel_stop_orders(adapter, symbol: str, stop_orders: list):
                 logger.info("Cancelled old SL stop-order %s for %s", order_id, symbol)
             except Exception as exc:
                 logger.warning("Failed to cancel stop-order %s for %s: %s", order_id, symbol, exc)
+
+
+def _cleanup_orphan_reduce_only_orders(
+    adapter,
+    symbol: str,
+    *,
+    force: bool = False,
+) -> list[str]:
+    """
+    Cancel stale reduce-only orders for a symbol when there is no open position.
+
+    This is especially important on BingX, where protective trigger orders can
+    remain open after the position has already been closed by TP/kill/manual
+    logic, leaving stale reduceOnly orders visible in the account UI.
+    """
+    if not bool(getattr(settings, "ORPHAN_REDUCE_ONLY_CLEANUP_ENABLED", True)):
+        return []
+
+    interval_seconds = max(
+        60,
+        int(getattr(settings, "ORPHAN_REDUCE_ONLY_CLEANUP_INTERVAL_SECONDS", 600) or 600),
+    )
+    client = _redis_client()
+    if client is not None and not force:
+        try:
+            cleanup_key = f"orphan_reduce_only_cleanup:{_norm_symbol(symbol)}"
+            acquired = client.set(cleanup_key, "1", nx=True, ex=interval_seconds)
+            if not acquired:
+                return []
+        except Exception:
+            pass
+
+    try:
+        orders = adapter.fetch_open_orders(symbol) or []
+    except Exception as exc:
+        logger.debug("Orphan reduce-only cleanup fetch failed for %s: %s", symbol, exc)
+        return []
+
+    cancelled: list[str] = []
+    for order in orders:
+        if not _order_is_reduce_only(order):
+            continue
+        order_id = order.get("id") or order.get("orderId") or (order.get("info") or {}).get("orderId")
+        if not order_id:
+            continue
+        try:
+            adapter.cancel_order(order_id, symbol)
+            cancelled.append(str(order_id))
+        except Exception as exc:
+            logger.warning("Failed to cancel orphan reduce-only order %s for %s: %s", order_id, symbol, exc)
+    if cancelled:
+        logger.warning(
+            "Cancelled %d orphan reduce-only order(s) for %s: %s",
+            len(cancelled),
+            symbol,
+            ",".join(cancelled),
+        )
+    return cancelled
 
 
 def _reconcile_sl(
@@ -3015,6 +3083,12 @@ def _sync_positions(
             },
         )
         touched.add(inst.id)
+
+    cleanup_candidates = list(
+        Instrument.objects.filter(enabled=True).exclude(id__in=touched).values_list("symbol", flat=True)
+    )
+    for symbol in cleanup_candidates:
+        _cleanup_orphan_reduce_only_orders(adapter, symbol)
 
     # Mark others as closed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â detect transitions and notify
     newly_closed = Position.objects.filter(is_open=True).exclude(instrument_id__in=touched)

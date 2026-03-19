@@ -693,6 +693,28 @@ docker compose logs --tail=120 chatbot
   - evitar shorts/longs carry-dominados fragiles
   - bloquear casos donde `carry` solo intenta imponerse contra un `trend` moderado/opuesto
 
+### 2026-03-19 update: limpiar `reduceOnly` huerfanas sin posicion
+- Se confirmo en prod que BingX puede dejar ordenes abiertas `reduceOnly` despues de que una posicion ya se cerro.
+- Caso real auditado:
+  - `BTCUSDT`, `DOGEUSDT`, `LINKUSDT`, `XRPUSDT`
+  - sin posiciones abiertas en DB ni exchange
+  - balance live `free == equity`, `notional = 0`, o sea no estaban reteniendo margen
+  - pero las ordenes seguian visibles en la UI como `open orders`
+- Causa raiz:
+  - `execution/tasks.py::_sync_positions()` marcaba la posicion cerrada
+  - pero no existia una limpieza general de ordenes `reduceOnly` huerfanas
+- Fix aplicado:
+  - helper `_cleanup_orphan_reduce_only_orders()`
+  - corre por simbolo en `_sync_positions()` para instrumentos sin posicion abierta en exchange
+  - cancela solo ordenes `reduceOnly`
+  - throttled por Redis para no golpear API en cada ciclo
+- Settings:
+  - `ORPHAN_REDUCE_ONLY_CLEANUP_ENABLED=true`
+  - `ORPHAN_REDUCE_ONLY_CLEANUP_INTERVAL_SECONDS=600`
+- Politica operativa:
+  - esto no toca ordenes de entrada
+  - solo barre stops/close orders colgados cuando ya no hay nada que reducir
+
 ### 2026-03-10 update: NY open y sesgo suave por dia de semana
 - `signals/sessions.py` ahora modela `ny_open` como sub-sesion separada:
   - `ny_open`: 13:30-14:00 UTC
