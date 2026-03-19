@@ -74,6 +74,11 @@ if not DEBUG and "*" in ALLOWED_HOSTS:
 
 # -- New: Risk-based position sizing --
 RISK_PER_TRADE_PCT = float(os.getenv("RISK_PER_TRADE_PCT", "0.0075"))  # 0.75% of equity risked per trade (was 1% — tighter risk per trade)
+MIN_QTY_RISK_GUARD_ENABLED = os.getenv("MIN_QTY_RISK_GUARD_ENABLED", "true").lower() == "true"
+MIN_QTY_RISK_MULTIPLIER_MAX = max(
+    1.0,
+    float(os.getenv("MIN_QTY_RISK_MULTIPLIER_MAX", "3.0")),
+)
 ORDER_MARGIN_BUFFER_PCT = float(os.getenv("ORDER_MARGIN_BUFFER_PCT", "0.03"))  # reserve margin for fees/slippage
 ORDER_MARGIN_BUFFER_MAX_PCT = max(
     0.0,

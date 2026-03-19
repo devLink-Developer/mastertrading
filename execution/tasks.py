@@ -1390,6 +1390,55 @@ def _risk_based_qty(
     return qty
 
 
+def _actual_stop_risk_amount(
+    *,
+    qty: float,
+    entry_price: float,
+    stop_distance_pct: float,
+    contract_size: float = 1.0,
+) -> float:
+    if qty <= 0 or entry_price <= 0 or stop_distance_pct <= 0 or contract_size <= 0:
+        return 0.0
+    stop_distance_abs = stop_distance_pct * entry_price
+    return abs(qty) * stop_distance_abs * contract_size
+
+
+def _min_qty_risk_guard(
+    *,
+    qty: float,
+    risk_qty: float,
+    min_qty: float,
+    entry_price: float,
+    stop_distance_pct: float,
+    contract_size: float,
+    target_risk_amount: float,
+) -> tuple[bool, float, float]:
+    """
+    Blocks entries when exchange-imposed minimum quantity forces realized stop risk
+    far above the intended risk budget.
+
+    Returns (blocked, actual_risk_amount, risk_multiplier).
+    """
+    if not bool(getattr(settings, "MIN_QTY_RISK_GUARD_ENABLED", True)):
+        return False, 0.0, 0.0
+    if min_qty <= 0 or qty <= 0 or risk_qty <= 0 or target_risk_amount <= 0:
+        return False, 0.0, 0.0
+    if qty <= risk_qty + 1e-12:
+        return False, 0.0, 0.0
+
+    actual_risk_amount = _actual_stop_risk_amount(
+        qty=qty,
+        entry_price=entry_price,
+        stop_distance_pct=stop_distance_pct,
+        contract_size=contract_size,
+    )
+    if actual_risk_amount <= 0:
+        return False, 0.0, 0.0
+    risk_multiplier = actual_risk_amount / target_risk_amount
+    max_multiplier = float(getattr(settings, "MIN_QTY_RISK_MULTIPLIER_MAX", 3.0) or 3.0)
+    return risk_multiplier > max_multiplier, actual_risk_amount, risk_multiplier
+
+
 def _confidence_adjusted_entry_leverage(
     *,
     base_leverage: float,
@@ -4645,6 +4694,7 @@ def _attempt_entry_open(
         precision_mode=precision_mode,
     )
     qty = _normalize_order_qty(adapter, symbol, qty)
+    risk_qty = qty
     if min_qty > 0 and qty < min_qty:
         qty = min_qty
 
@@ -4733,6 +4783,31 @@ def _attempt_entry_open(
         )
         qty = max_qty_margin
         notional_order = last_price * contract_size * qty
+
+    target_risk_amount = max(0.0, equity_usdt * effective_risk_pct)
+    min_qty_risk_blocked, actual_stop_risk_amount, actual_risk_mult = _min_qty_risk_guard(
+        qty=qty,
+        risk_qty=risk_qty,
+        min_qty=min_qty,
+        entry_price=last_price,
+        stop_distance_pct=stop_dist,
+        contract_size=contract_size,
+        target_risk_amount=target_risk_amount,
+    )
+    if min_qty_risk_blocked:
+        logger.info(
+            "Min-qty risk guard blocked %s: qty=%.10f risk_qty=%.10f min_qty=%.10f "
+            "risk_actual=%.5f risk_target=%.5f risk_mult=%.2f stop_pct=%.4f%%",
+            symbol,
+            qty,
+            risk_qty,
+            min_qty,
+            actual_stop_risk_amount,
+            target_risk_amount,
+            actual_risk_mult,
+            stop_dist * 100,
+        )
+        return 0, 0.0
 
     required_margin = notional_order / entry_leverage if entry_leverage else notional_order
     if required_margin > usable_margin:

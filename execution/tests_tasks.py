@@ -33,10 +33,12 @@ from execution.tasks import (
     _minimum_order_amount_from_error,
     _market_min_qty,
     _macro_high_impact_allows_entry,
+    _min_qty_risk_guard,
     _is_no_position_error,
     _load_enabled_instruments_and_latest_signals,
     _log_operation,
     _normalize_order_qty,
+    _actual_stop_risk_amount,
     _position_root_correlation,
     _position_origin_refs,
     _release_task_lock,
@@ -355,6 +357,51 @@ class TaskHelpersTest(SimpleTestCase):
             Exception('bingx {"code":101400,"msg":"The minimum order amount is 7 ADA.","data":{}}')
         )
         self.assertEqual(qty, 7.0)
+
+    def test_actual_stop_risk_amount_matches_expected_math(self):
+        risk = _actual_stop_risk_amount(
+            qty=1.0,
+            entry_price=90.24,
+            stop_distance_pct=0.012,
+            contract_size=1.0,
+        )
+        self.assertAlmostEqual(risk, 1.08288, places=8)
+
+    @override_settings(
+        MIN_QTY_RISK_GUARD_ENABLED=True,
+        MIN_QTY_RISK_MULTIPLIER_MAX=3.0,
+    )
+    def test_min_qty_risk_guard_blocks_when_lot_min_explodes_risk(self):
+        blocked, actual_risk, risk_mult = _min_qty_risk_guard(
+            qty=1.0,
+            risk_qty=0.12,
+            min_qty=1.0,
+            entry_price=90.24,
+            stop_distance_pct=0.0075,
+            contract_size=1.0,
+            target_risk_amount=0.08,
+        )
+        self.assertTrue(blocked)
+        self.assertGreater(actual_risk, 0.67)
+        self.assertGreater(risk_mult, 8.0)
+
+    @override_settings(
+        MIN_QTY_RISK_GUARD_ENABLED=True,
+        MIN_QTY_RISK_MULTIPLIER_MAX=3.0,
+    )
+    def test_min_qty_risk_guard_allows_normal_sizing(self):
+        blocked, actual_risk, risk_mult = _min_qty_risk_guard(
+            qty=0.4,
+            risk_qty=0.4,
+            min_qty=0.1,
+            entry_price=90.24,
+            stop_distance_pct=0.0075,
+            contract_size=1.0,
+            target_risk_amount=0.30,
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(actual_risk, 0.0)
+        self.assertEqual(risk_mult, 0.0)
 
     @override_settings(
         TP_SL_FEE_ADJUST_ENABLED=True,
