@@ -184,6 +184,12 @@ def _atr_pct_for_report(inst: Instrument, period: int = 14) -> float:
 class Command(BaseCommand):
     help = "Report minimum-lot forced risk vs target risk for enabled instruments."
 
+    def _build_rows(self, *, days: int, symbol: str = "") -> list[dict[str, Any]]:
+        """
+        Backward-compatible wrapper kept for existing tests/callers.
+        """
+        return build_min_qty_risk_rows(days=days, symbol=symbol)
+
     def add_arguments(self, parser):
         parser.add_argument("--days", type=int, default=7)
         parser.add_argument("--symbol", type=str, default="")
