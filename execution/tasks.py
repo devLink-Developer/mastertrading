@@ -2170,7 +2170,7 @@ def _cleanup_orphan_reduce_only_orders(
 
 def _reconcile_sl(
     adapter, symbol: str, side: str, current_qty: float,
-    entry_price: float, atr_pct: float | None,
+    entry_price: float, atr_pct: float | None, opened_at=None,
 ):
     """
     Verify that a protective SL stop-order exists on the exchange
@@ -2222,7 +2222,11 @@ def _reconcile_sl(
                 has_duplicate_stops,
             )
             _cancel_stop_orders(adapter, symbol, stop_orders)
-            _place_sl_order(adapter, symbol, side, abs(current_qty), sl_price)
+            placed = _place_sl_order(adapter, symbol, side, abs(current_qty), sl_price)
+            if placed is not None:
+                _remember_protective_stop_price(symbol, opened_at, entry_price, sl_price)
+        elif selected_stop > 0:
+            _remember_protective_stop_price(symbol, opened_at, entry_price, selected_stop)
         return  # SL exists and is aligned enough or was replaced
 
     if exists:
@@ -2233,7 +2237,9 @@ def _reconcile_sl(
         "SL stop-order missing for %s (side=%s entry=%.4f); placing at %.4f",
         symbol, side, entry_price, sl_price,
     )
-    _place_sl_order(adapter, symbol, side, abs(current_qty), sl_price)
+    placed = _place_sl_order(adapter, symbol, side, abs(current_qty), sl_price)
+    if placed is not None:
+        _remember_protective_stop_price(symbol, opened_at, entry_price, sl_price)
 
 
 def _position_state_key(symbol: str, opened_at, entry_price: float) -> str:
@@ -2248,6 +2254,48 @@ def _position_state_key(symbol: str, opened_at, entry_price: float) -> str:
         except Exception:
             pass
     return f"{safe_symbol}:{round(float(entry_price or 0.0), 6)}"
+
+
+def _trail_state_ttl_seconds() -> int:
+    return max(
+        60,
+        int(getattr(settings, "TRAILING_STATE_TTL_SECONDS", 172800) or 172800),
+    )
+
+
+def _trail_stop_price_key(state_key: str) -> str:
+    return f"trail:stop_price:{state_key}"
+
+
+def _remember_protective_stop_price(symbol: str, opened_at, entry_price: float, stop_price: float) -> None:
+    stop_price_val = max(0.0, float(stop_price or 0.0))
+    if stop_price_val <= 0 or entry_price <= 0:
+        return
+    client = _redis_client()
+    if client is None:
+        return
+    state_key = _position_state_key(symbol, opened_at, entry_price)
+    try:
+        client.set(
+            _trail_stop_price_key(state_key),
+            str(stop_price_val),
+            ex=_trail_state_ttl_seconds(),
+        )
+    except Exception:
+        pass
+
+
+def _load_protective_stop_price(symbol: str, opened_at, entry_price: float) -> float:
+    if entry_price <= 0:
+        return 0.0
+    client = _redis_client()
+    if client is None:
+        return 0.0
+    state_key = _position_state_key(symbol, opened_at, entry_price)
+    try:
+        return max(0.0, _to_float(client.get(_trail_stop_price_key(state_key))))
+    except Exception:
+        return 0.0
 
 
 def _origin_signal_id_from_correlation(correlation_id: str) -> int | None:
@@ -2467,10 +2515,7 @@ def _check_trailing_stop(
     state_key = _position_state_key(symbol, opened_at, entry_price)
 
     client = _redis_client()
-    trail_state_ttl = max(
-        60,
-        int(getattr(settings, "TRAILING_STATE_TTL_SECONDS", 172800) or 172800),
-    )
+    trail_state_ttl = _trail_state_ttl_seconds()
     sl_min_move_pct = max(
         0.0,
         float(getattr(settings, "TRAILING_SL_MIN_MOVE_PCT", 0.0002) or 0.0002),
@@ -2631,7 +2676,9 @@ def _check_trailing_stop(
                         min_move_pct = sl_min_move_pct
 
                         if not exists:
-                            _place_sl_order(adapter, symbol, side, abs(current_qty), be_price)
+                            placed = _place_sl_order(adapter, symbol, side, abs(current_qty), be_price)
+                            if placed is not None:
+                                _remember_protective_stop_price(symbol, opened_at, entry_price, be_price)
                             logger.info(
                                 "BE SL placed %s side=%s stop=%.4f (R=%.2f age=%s window=%s)",
                                 symbol,
@@ -2649,13 +2696,17 @@ def _check_trailing_stop(
                                 should_update = be_price < cur * (1 - min_move_pct)
                             if should_update:
                                 _cancel_stop_orders(adapter, symbol, stop_orders)
-                                _place_sl_order(adapter, symbol, side, abs(current_qty), be_price)
+                                placed = _place_sl_order(adapter, symbol, side, abs(current_qty), be_price)
+                                if placed is not None:
+                                    _remember_protective_stop_price(symbol, opened_at, entry_price, be_price)
                                 logger.info(
                                     "BE SL updated %s side=%s stop=%.4f prev=%.4f (R=%.2f age=%s window=%s)",
                                     symbol, side, be_price, cur, max_r,
                                     f"{be_age_min:.1f}min" if be_age_min is not None else "n/a",
                                     be_window_min if be_window_min > 0 else "off",
                                 )
+                            elif cur > 0:
+                                _remember_protective_stop_price(symbol, opened_at, entry_price, cur)
                     except Exception as exc:
                         logger.debug("BE SL update failed for %s: %s", symbol, exc)
 
@@ -2716,7 +2767,9 @@ def _check_trailing_stop(
         min_move_pct = sl_min_move_pct
 
         if not exists:
-            _place_sl_order(adapter, symbol, side, abs(current_qty), trail_sl)
+            placed = _place_sl_order(adapter, symbol, side, abs(current_qty), trail_sl)
+            if placed is not None:
+                _remember_protective_stop_price(symbol, opened_at, entry_price, trail_sl)
             logger.info("Trailing SL placed %s side=%s stop=%.4f (hwm=%.4f%%)", symbol, side, trail_sl, max_fav * 100)
         elif cur > 0 and stop_orders:
             should_update = False
@@ -2726,11 +2779,15 @@ def _check_trailing_stop(
                 should_update = trail_sl < cur * (1 - min_move_pct) and trail_sl > last_price
             if should_update:
                 _cancel_stop_orders(adapter, symbol, stop_orders)
-                _place_sl_order(adapter, symbol, side, abs(current_qty), trail_sl)
+                placed = _place_sl_order(adapter, symbol, side, abs(current_qty), trail_sl)
+                if placed is not None:
+                    _remember_protective_stop_price(symbol, opened_at, entry_price, trail_sl)
                 logger.info(
                     "Trailing SL updated %s side=%s stop=%.4f prev=%.4f (hwm=%.4f%%)",
                     symbol, side, trail_sl, cur, max_fav * 100,
                 )
+            else:
+                _remember_protective_stop_price(symbol, opened_at, entry_price, cur)
     except Exception as exc:
         logger.debug("Trailing SL update failed for %s: %s", symbol, exc)
         return False, 0.0
@@ -2862,6 +2919,7 @@ def _log_operation(
                 f"trail:max_fav:{state_key}",
                 f"trail:max_adv:{state_key}",
                 f"trail:sl_pct:{state_key}",
+                _trail_stop_price_key(state_key),
                 f"trail:partial_done:{state_key}",
             ):
                 client.delete(key)
@@ -2911,6 +2969,7 @@ def _classify_exchange_close(
     exit_price: float = 0.0,
     sl_pct_hint: float | None = None,
     tp_pct_hint: float | None = None,
+    protective_stop_price_hint: float | None = None,
 ) -> str:
     """
     Best-effort classification of WHY a position disappeared from the exchange.
@@ -3004,6 +3063,19 @@ def _classify_exchange_close(
         stop_trigger = -max(min_band, sl_ref * stop_scale)
         tp_trigger = max(min_band, tp_ref * tp_scale)
         breakeven_band = max(min_band, sl_ref * breakeven_scale)
+
+        protective_stop = max(0.0, _to_float(protective_stop_price_hint))
+        if protective_stop > 0:
+            stop_gap_pct = abs(protective_stop - entry_price) / entry_price
+            stop_fill_band_pct = max(min_band, stop_gap_pct * max(stop_scale, 0.25))
+            if pos_side == "buy":
+                hit_protective_stop = exit_price <= protective_stop * (1 + stop_fill_band_pct)
+            else:
+                hit_protective_stop = exit_price >= protective_stop * (1 - stop_fill_band_pct)
+            if hit_protective_stop:
+                if -breakeven_band <= pnl_pct <= breakeven_band:
+                    return "near_breakeven"
+                return "exchange_stop"
 
         if pnl_pct <= stop_trigger:
             return "exchange_stop"
@@ -3212,6 +3284,7 @@ def _sync_positions(
                 entry,
                 atr_pct=atr_for_close,
             )
+            protective_stop_price_hint = _load_protective_stop_price(sym, opened_at, entry)
             sub_reason = _classify_exchange_close(
                 adapter,
                 sym,
@@ -3221,10 +3294,11 @@ def _sync_positions(
                 exit_price=last,
                 sl_pct_hint=sl_pct_hint,
                 tp_pct_hint=tp_pct_hint,
+                protective_stop_price_hint=protective_stop_price_hint,
             )
             logger.info(
-                "exchange_close sub-reason for %s: %s (entry=%.4f exit=%.4f liq_est=%.4f)",
-                sym, sub_reason, entry, last, liq_est,
+                "exchange_close sub-reason for %s: %s (entry=%.4f exit=%.4f liq_est=%.4f stop_hint=%.4f)",
+                sym, sub_reason, entry, last, liq_est, protective_stop_price_hint,
             )
 
             if sub_reason == "bot_close_missed":
@@ -5103,7 +5177,9 @@ def _attempt_entry_open(
                 abs(fill_price - last_price) / last_price * 100 if last_price else 0,
             )
 
-        _place_sl_order(adapter, symbol, side, float(qty), sl_price)
+        placed = _place_sl_order(adapter, symbol, side, float(qty), sl_price)
+        if placed is not None:
+            _remember_protective_stop_price(symbol, order.opened_at, fill_price or last_price, sl_price)
         if not allow_scale_entry:
             _increment_daily_trade_count()
 
@@ -5337,7 +5413,7 @@ def _manage_open_position(
     )
 
     if entry_price and abs(current_qty) > 0:
-        _reconcile_sl(adapter, symbol, pos_side, current_qty, entry_price, atr)
+        _reconcile_sl(adapter, symbol, pos_side, current_qty, entry_price, atr, pos_opened_at)
 
     # Trailing stop check (runs before regular TP/SL).
     if last and entry_price:

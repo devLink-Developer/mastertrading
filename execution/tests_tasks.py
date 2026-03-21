@@ -37,12 +37,14 @@ from execution.tasks import (
     _min_qty_risk_guard,
     _is_no_position_error,
     _load_enabled_instruments_and_latest_signals,
+    _load_protective_stop_price,
     _log_operation,
     _normalize_order_qty,
     _actual_stop_risk_amount,
     _cleanup_orphan_reduce_only_orders,
     _position_root_correlation,
     _position_origin_refs,
+    _remember_protective_stop_price,
     _order_is_reduce_only,
     _release_task_lock,
     _reconcile_sl,
@@ -253,6 +255,14 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertTrue(_order_is_reduce_only({"info": {"reduceOnly": "true"}}))
         self.assertFalse(_order_is_reduce_only({"info": {"reduceOnly": "false"}}))
         self.assertFalse(_order_is_reduce_only({"id": "123"}))
+
+    def test_protective_stop_price_roundtrip_uses_position_state_key(self):
+        opened_at = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+        redis_stub = _DummyRedis()
+        with patch("execution.tasks._redis_client", return_value=redis_stub):
+            _remember_protective_stop_price("ETHUSDT", opened_at, 2000.0, 2010.5)
+            loaded = _load_protective_stop_price("ETHUSDT", opened_at, 2000.0)
+        self.assertAlmostEqual(loaded, 2010.5, places=8)
 
     @override_settings(
         ORPHAN_REDUCE_ONLY_CLEANUP_ENABLED=True,
@@ -1352,6 +1362,30 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertEqual(reason, "near_breakeven")
 
     @override_settings(
+        EXCHANGE_CLOSE_CLASSIFY_STOP_SCALE=0.35,
+        EXCHANGE_CLOSE_CLASSIFY_TP_SCALE=0.35,
+        EXCHANGE_CLOSE_CLASSIFY_MIN_BAND_PCT=0.0015,
+        EXCHANGE_CLOSE_CLASSIFY_BREAKEVEN_SCALE=0.20,
+        STOP_LOSS_PCT=0.015,
+        TAKE_PROFIT_PCT=0.02,
+        MIN_SL_PCT=0.012,
+    )
+    def test_classify_exchange_close_uses_cached_protective_stop_hint(self):
+        adapter = _DummyAdapter()
+        reason = _classify_exchange_close(
+            adapter=adapter,
+            symbol="ETHUSDT",
+            pos_side="sell",
+            entry_price=100.0,
+            liq_price_est=0.0,
+            exit_price=100.33,  # +0.33% against short, below generic stop band
+            sl_pct_hint=0.012,
+            tp_pct_hint=0.02,
+            protective_stop_price_hint=100.25,
+        )
+        self.assertEqual(reason, "exchange_stop")
+
+    @override_settings(
         MACRO_HIGH_IMPACT_FILTER_ENABLED=True,
         MACRO_HIGH_IMPACT_UTC_HOURS={13, 14},
         MACRO_HIGH_IMPACT_WEEKDAYS={0, 1, 2, 3, 4},
@@ -1544,6 +1578,7 @@ class LatestSignalSelectionTest(TestCase):
         redis_stub.set(f"trail:max_fav:{state_key}", "0.04")
         redis_stub.set(f"trail:max_adv:{state_key}", "0.01")
         redis_stub.set(f"trail:sl_pct:{state_key}", "0.02")
+        redis_stub.set(f"trail:stop_price:{state_key}", "99.5")
         redis_stub.set(f"trail:partial_done:{state_key}", "1")
 
         with patch("execution.tasks._redis_client", return_value=redis_stub):
@@ -1568,6 +1603,7 @@ class LatestSignalSelectionTest(TestCase):
         self.assertIsNone(redis_stub.get(f"trail:max_fav:{state_key}"))
         self.assertIsNone(redis_stub.get(f"trail:max_adv:{state_key}"))
         self.assertIsNone(redis_stub.get(f"trail:sl_pct:{state_key}"))
+        self.assertIsNone(redis_stub.get(f"trail:stop_price:{state_key}"))
         self.assertIsNone(redis_stub.get(f"trail:partial_done:{state_key}"))
 
     @override_settings(ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False)
