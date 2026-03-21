@@ -1513,3 +1513,28 @@ Conclusion operativa:
 - Criterio operativo:
   - empezar por `transition + balanced`
   - no ampliar a `tactical_long` ni a `bear_weak` sin nueva evidencia
+
+### 2026-03-21 update: auditoria de estructura de sesion para `ny_open/london buy`
+- Se agrego comando:
+  - `python manage.py audit_session_structure_gate --days 14 --sessions ny_open,london --side buy`
+- Archivo:
+  - `risk/management/commands/audit_session_structure_gate.py`
+- Mide por trade real:
+  - `session_progress`
+  - `tp_extension_pct`
+  - `tp_extension_vs_session_range`
+  - barrera de `previous-day high/low`
+  - follow-through de los primeros `2m`
+- Hallazgo en prod:
+  - `rortigoza`: el trade malo `ETHUSDT ny_open buy` de `2026-03-16` aparecio como caso claro de chase:
+    - `session_progress=0.9008`
+    - `tp_extension_pct=0.5304%`
+    - `tp_extension_vs_session_range=0.4800`
+    - `recommended_bias=balanced`, `btc_lead_state=transition`
+  - `eudy`: el `ETHUSDT ny_open buy` perdedor del mismo dia tambien mostro estructura fragil:
+    - `session_progress=0.7624`
+    - `tp_extension_vs_session_range=0.3384`
+    - `recommended_bias=balanced`, `btc_lead_state=transition`
+- Lectura operativa:
+  - el gate live `balanced + transition` ya deberia capturar el caso `ETH ny_open buy` observado en ambos stacks
+  - la capa de `session structure` todavia conviene usarla como auditoria/replay, no como regla live adicional, hasta juntar mas muestra
