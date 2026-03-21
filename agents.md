@@ -757,6 +757,18 @@ docker compose logs --tail=120 chatbot
   - no tocar SL global por intuicion
   - usar replay dirigido para familias de cierre protectivo (`uptrend_short_kill`, `downtrend_long_kill`) antes de cambiar timing
 
+### 2026-03-21 update: replay `stop-aware` para `uptrend_short_kill`
+- Se agrego `python manage.py audit_uptrend_short_kill_variants`.
+- Objetivo:
+  - evaluar variantes de gracia (`15/30/45/60m`) despues de `uptrend_short_kill`
+  - pero contando si en el medio el precio hubiera tocado el stop duro reconstruido
+- Leccion importante:
+  - el replay ingenuo de "esperar 60m y ver si recupera" puede ser demasiado optimista
+  - antes de recomendar mas paciencia, hay que validar si la posicion seguia viva sin pegar el stop
+- Politica:
+  - usar esta herramienta antes de relajar `uptrend_short_kill`
+  - si una variante mejora solo porque ignora un stop intermedio, no es una mejora real
+
 ### 2026-03-10 update: NY open y sesgo suave por dia de semana
 - `signals/sessions.py` ahora modela `ny_open` como sub-sesion separada:
   - `ny_open`: 13:30-14:00 UTC
