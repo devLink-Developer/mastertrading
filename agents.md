@@ -1490,3 +1490,26 @@ Conclusion operativa:
   - para `ny_open`, usar primero replay sobre trades reales de prod
   - solo si el replay y la muestra reciente convergen, pasar a cambio de runtime
   - no bloquear `ETH` por simbolo sin evidencia estable; preferir gates contextuales por `session + lead_state + recommended_bias`
+
+### 2026-03-21 update: gate live para `ny_open long` en contexto debil
+- Se agrego un gate de entrada chico y reversible en `execution/tasks.py`:
+  - helper `_ny_open_weak_long_precheck()`
+  - corre dentro del pipeline de apertura antes del ML gate
+- Intencion:
+  - bloquear `long` en `ny_open` cuando el contexto de BTC siga demasiado ambiguo para una apertura agresiva
+  - evitar repetir entradas tipo `ETH ny_open buy` que en live mostraron poco desarrollo favorable
+- Politica por default:
+  - solo aplica en `session=ny_open`
+  - solo a `signal_direction=long`
+  - `microvol` queda exento
+- Superficie configurable:
+  - `NY_OPEN_WEAK_LONG_BLOCK_ENABLED`
+  - `NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES`
+  - `NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES`
+- Configuracion inicial recomendada:
+  - `NY_OPEN_WEAK_LONG_BLOCK_ENABLED=true`
+  - `NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES=transition`
+  - `NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES=balanced`
+- Criterio operativo:
+  - empezar por `transition + balanced`
+  - no ampliar a `tactical_long` ni a `bear_weak` sin nueva evidencia

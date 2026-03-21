@@ -828,9 +828,35 @@ def _parse_session_set(raw: str) -> set[str]:
     return {v for v in values if v in allowed}
 
 
+def _parse_lower_set(raw: str) -> set[str]:
+    txt = (raw or "").strip()
+    if not txt:
+        return set()
+    values: list[str] = []
+    if txt.startswith("["):
+        try:
+            parsed = _json.loads(txt)
+            if isinstance(parsed, list):
+                values = [str(x).strip().lower() for x in parsed if str(x).strip()]
+        except Exception:
+            values = []
+    if not values:
+        values = [x.strip().lower() for x in txt.split(",") if x.strip()]
+    return {v for v in values if v}
+
+
 WEEKDAY_CONTEXT_ENABLED = os.getenv("WEEKDAY_CONTEXT_ENABLED", "true").lower() == "true"
 ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS = _parse_session_set(
     os.getenv("ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS", "ny_open")
+)
+NY_OPEN_WEAK_LONG_BLOCK_ENABLED = os.getenv(
+    "NY_OPEN_WEAK_LONG_BLOCK_ENABLED", "false"
+).lower() == "true"
+NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES = _parse_lower_set(
+    os.getenv("NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES", "transition")
+)
+NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES = _parse_lower_set(
+    os.getenv("NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES", "balanced")
 )
 
 

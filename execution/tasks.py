@@ -50,6 +50,7 @@ from signals.models import Signal
 from signals.runtime_overrides import (
     get_runtime_bool,
     get_runtime_int,
+    get_runtime_override,
     get_runtime_str_list,
 )
 from marketdata.models import Candle
@@ -4159,6 +4160,52 @@ def _btc_lead_directional_risk_mult(
     return 1.0, False, "neutral"
 
 
+def _runtime_lower_set(name: str, default: set[str] | list[str] | tuple[str, ...]) -> set[str]:
+    val = get_runtime_override(name, default)
+    if isinstance(val, str):
+        items = [part.strip().lower() for part in val.split(",") if part.strip()]
+    elif isinstance(val, (list, tuple, set)):
+        items = [str(part).strip().lower() for part in val if str(part).strip()]
+    else:
+        items = [str(part).strip().lower() for part in default if str(part).strip()]
+    return {item for item in items if item}
+
+
+def _ny_open_weak_long_precheck(
+    *,
+    strategy_name: str,
+    signal_direction: str,
+    current_session: str,
+    btc_lead_state: str,
+    btc_recommended_bias: str,
+) -> tuple[bool, str]:
+    if _strategy_is_microvol(strategy_name):
+        return True, "microvol_exempt"
+    if str(current_session or "").strip().lower() != "ny_open":
+        return True, "n/a"
+    if str(signal_direction or "").strip().lower() != "long":
+        return True, "n/a"
+    if not get_runtime_bool(
+        "NY_OPEN_WEAK_LONG_BLOCK_ENABLED",
+        bool(getattr(settings, "NY_OPEN_WEAK_LONG_BLOCK_ENABLED", False)),
+    ):
+        return True, "disabled"
+
+    lead_state = str(btc_lead_state or "transition").strip().lower()
+    rec_bias = str(btc_recommended_bias or "balanced").strip().lower()
+    blocked_leads = _runtime_lower_set(
+        "NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES",
+        getattr(settings, "NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES", {"transition"}),
+    )
+    blocked_biases = _runtime_lower_set(
+        "NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES",
+        getattr(settings, "NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES", {"balanced"}),
+    )
+    if lead_state in blocked_leads and rec_bias in blocked_biases:
+        return False, f"ny_open_weak_long_context:{lead_state}:{rec_bias}"
+    return True, "ok"
+
+
 def _operation_regime_snapshot(inst: Instrument) -> dict[str, str]:
     snapshot = {
         "monthly_regime": "",
@@ -4482,6 +4529,23 @@ def _attempt_entry_open(
             btc_lead_state,
             btc_recommended_bias,
             btc_lead_reason,
+        )
+        return 0, 0.0
+
+    ny_open_ok, ny_open_reason = _ny_open_weak_long_precheck(
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        current_session=current_session,
+        btc_lead_state=btc_lead_state,
+        btc_recommended_bias=btc_recommended_bias,
+    )
+    if not ny_open_ok:
+        logger.info(
+            "NY open weak-long context blocked entry on %s: lead=%s bias=%s reason=%s",
+            inst.symbol,
+            btc_lead_state,
+            btc_recommended_bias,
+            ny_open_reason,
         )
         return 0, 0.0
 

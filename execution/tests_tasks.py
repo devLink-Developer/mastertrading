@@ -35,6 +35,7 @@ from execution.tasks import (
     _macro_high_impact_allows_entry,
     _min_qty_dynamic_allowlist_state,
     _min_qty_risk_guard,
+    _ny_open_weak_long_precheck,
     _is_no_position_error,
     _load_enabled_instruments_and_latest_signals,
     _load_protective_stop_price,
@@ -1158,6 +1159,54 @@ class TaskHelpersTest(SimpleTestCase):
         )
         self.assertTrue(ok)
         self.assertEqual(reason, "ok")
+
+    @override_settings(
+        NY_OPEN_WEAK_LONG_BLOCK_ENABLED=True,
+        NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES={"transition"},
+        NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES={"balanced"},
+    )
+    def test_ny_open_weak_long_precheck_blocks_balanced_transition_long(self):
+        ok, reason = _ny_open_weak_long_precheck(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            current_session="ny_open",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+        )
+        self.assertFalse(ok)
+        self.assertIn("ny_open_weak_long_context", reason)
+
+    @override_settings(
+        NY_OPEN_WEAK_LONG_BLOCK_ENABLED=True,
+        NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES={"transition"},
+        NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES={"balanced"},
+    )
+    def test_ny_open_weak_long_precheck_allows_microvol(self):
+        ok, reason = _ny_open_weak_long_precheck(
+            strategy_name="mod_microvol_long",
+            signal_direction="long",
+            current_session="ny_open",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "microvol_exempt")
+
+    @override_settings(
+        NY_OPEN_WEAK_LONG_BLOCK_ENABLED=True,
+        NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES={"transition"},
+        NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES={"balanced"},
+    )
+    def test_ny_open_weak_long_precheck_allows_non_matching_context(self):
+        ok, reason = _ny_open_weak_long_precheck(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            current_session="ny",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "n/a")
 
     @override_settings(
         REGIME_DIRECTIONAL_PENALTY_ENABLED=False,
