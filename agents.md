@@ -1472,3 +1472,21 @@ Conclusion operativa:
 - Intencion:
   - evitar casos como `SOLUSDT` donde el minimo de `1` contrato puede transformar un trade de riesgo pequeno en una perdida de ~1% del capital
   - mantener tolerancia a pequenas desviaciones normales, pero frenar overshoot grosero de riesgo
+
+### 2026-03-21 update: `ny_open buy` se audita mejor con replay de trades reales
+- Para la hipotesis de endurecer `buy` en `ny_open`, el backtest clasico no es suficiente por si solo:
+  - los reportes `reports/ny_open_hypotheses*.json` mostraron que el motor no estaba reproduciendo casi nada de `BTC/ETH ny_open buy`
+  - eso hace que una penalizacion simple en backtest pueda dar `0 cambios` aunque live ya haya mostrado el patron
+- Se agrego comando de replay sobre `OperationReport` reales:
+  - `python manage.py audit_ny_open_buy_context --days 30`
+  - `python manage.py audit_ny_open_buy_context --days 30 --symbol ETHUSDT`
+- Archivo:
+  - `risk/management/commands/audit_ny_open_buy_context.py`
+- Variantes evaluadas por el comando:
+  - `block_ny_open_buy_balanced_transition`
+  - `block_ny_open_buy_balanced`
+  - `block_ny_open_buy_weak_long_context`
+- Politica derivada:
+  - para `ny_open`, usar primero replay sobre trades reales de prod
+  - solo si el replay y la muestra reciente convergen, pasar a cambio de runtime
+  - no bloquear `ETH` por simbolo sin evidencia estable; preferir gates contextuales por `session + lead_state + recommended_bias`
