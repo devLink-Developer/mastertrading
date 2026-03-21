@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "MasterTrading"
+  short_description: "Repositorio, trading logic, deploys y reglas operativas de MasterTrading"
+  default_prompt: "Use esta skill para trabajar en el repo MasterTrading, respetando su flujo de trading, sus stacks y sus guardrails operativos."

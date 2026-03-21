@@ -40,7 +40,11 @@ backups/*.tar
 .vscode/
 .continue/
 .agent/
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/mastertrading/
+!.agents/skills/mastertrading/**
 
 # OS files
 .DS_Store
