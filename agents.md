@@ -737,6 +737,26 @@ docker compose logs --tail=120 chatbot
   - convertir el analisis de `min_qty` en una decision operativa reutilizable
   - evitar que cuentas chicas/medianas sigan intentando simbolos estructuralmente desalineados con su equity
 
+### 2026-03-21 update: auditoria de perdidas recientes + mejor trazabilidad de `exchange_close`
+- Auditoria de los ultimos 5 dias:
+  - la mayoria de las perdidas fueron reales
+  - el grupo que mas valor tiene para replay dirigido es `uptrend_short_kill` en shorts
+  - aflojar stops globalmente empeora el agregado reciente; no es la direccion correcta
+- Se detecto un bug de diagnostico, no de PnL:
+  - algunos `exchange_close` terminaban como `close_sub_reason=unknown`
+  - causa raiz: `_classify_exchange_close()` podia quedar ciego cuando el cierre venia de un stop ya movido por breakeven/trailing y el exchange no devolvia el fill de forma clara
+- Fix aplicado en codigo:
+  - `execution/tasks.py` ahora persiste el ultimo `protective stop price` efectivo por posicion en Redis
+  - `_sync_positions()` reutiliza ese `stop_hint` al clasificar un `exchange_close`
+  - con eso, un cierre por stop protector ya no deberia caer tan facil en `unknown`
+- Herramienta nueva:
+  - `python manage.py audit_recent_losses --days 5 --post-minutes 60`
+  - re-juega las perdidas recientes con velas `1m`
+  - resume `bug_candidate`, `timing_candidate`, `real_loss_stop`, `real_loss_stop_late_recovery`, etc.
+- Politica derivada:
+  - no tocar SL global por intuicion
+  - usar replay dirigido para familias de cierre protectivo (`uptrend_short_kill`, `downtrend_long_kill`) antes de cambiar timing
+
 ### 2026-03-10 update: NY open y sesgo suave por dia de semana
 - `signals/sessions.py` ahora modela `ny_open` como sub-sesion separada:
   - `ny_open`: 13:30-14:00 UTC
