@@ -43,7 +43,7 @@
 | adapters | Wrappers exchange (KuCoin, BingX) con retry |
 
 ### Instrumentos activos
-BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, DOGEUSDT, ADAUSDT, LINKUSDT
+BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT, DOGEUSDT, ADAUSDT, LINKUSDT, ENAUSDT
 
 ### Timeframes
 - LTF = 5 minutos (señales) / 1 minuto (backtest alta fidelidad)
@@ -736,6 +736,24 @@ docker compose logs --tail=120 chatbot
 - Objetivo:
   - convertir el analisis de `min_qty` en una decision operativa reutilizable
   - evitar que cuentas chicas/medianas sigan intentando simbolos estructuralmente desalineados con su equity
+
+### 2026-03-21 update: evaluacion y alta conservadora de `ENAUSDT`
+- Se evaluo `ENAUSDT` contra `FARTCOINUSDT` en BingX perp con tres criterios:
+  - `xRisk` / `min_qty` para cuentas `rortigoza` y `eudy`
+  - microestructura reciente (`spread`, ATR corto, ADX 1h, trendiness intradia)
+  - contexto de liquidez/market cap
+- Hallazgos:
+  - `ENAUSDT` y `FARTCOINUSDT` son operables por sizing; no sufren el problema estructural de `ETHUSDT` o `SOLUSDT` en cuentas chicas
+  - `ENAUSDT` muestra comportamiento mas ordenado que `FARTCOINUSDT` en la foto reciente
+  - `FARTCOINUSDT` se parece mas a un memecoin choppy; no se recomienda para allocator live core
+- Decision:
+  - incorporar `ENAUSDT` al proyecto y al universo multi-estrategia
+  - arrancarlo con tier `alt` (mas conservador) en vez de `mid`
+  - no habilitar `ENAUSDT` para `microvol` ni `grid` por default
+  - mantener cautela por eventos de unlock/tokenomics de ENA; no tratarlo como un `ETH` chico
+- Nota operativa:
+  - al pasar de 7 a 8 simbolos habilitados, `LIVE_GRADUAL_MAX_SYMBOLS_PER_MODULE` debe subir a `8`
+  - si se deja en `7`, el rollout gradual no agrega `ENAUSDT`: desplaza a otro simbolo por orden alfabetico
 
 ### 2026-03-21 update: auditoria de perdidas recientes + mejor trazabilidad de `exchange_close`
 - Auditoria de los ultimos 5 dias:

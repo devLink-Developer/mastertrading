@@ -10,11 +10,12 @@ DEFAULT = [
     {"symbol": "DOGEUSDT", "base": "DOGE", "quote": "USDT"},
     {"symbol": "ADAUSDT", "base": "ADA", "quote": "USDT"},
     {"symbol": "LINKUSDT", "base": "LINK", "quote": "USDT"},
+    {"symbol": "ENAUSDT", "base": "ENA", "quote": "USDT"},
 ]
 
 
 class Command(BaseCommand):
-    help = "Seed default top instruments for Binance Futures"
+    help = "Seed default perpetual instruments for the current exchange runtime"
 
     def handle(self, *args, **options):
         created = 0
@@ -22,7 +23,7 @@ class Command(BaseCommand):
             inst, is_created = Instrument.objects.get_or_create(
                 symbol=item["symbol"],
                 defaults={
-                    "exchange": "binance",
+                    "exchange": "bingx",
                     "base": item["base"],
                     "quote": item["quote"],
                     "kind": Instrument.InstrumentKind.PERP,
