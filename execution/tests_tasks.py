@@ -1573,6 +1573,98 @@ class OperationReportFeeNetTest(TestCase):
         op = OperationReport.objects.get(instrument=inst)
         self.assertEqual(op.outcome, OperationReport.Outcome.LOSS)
 
+    @override_settings(ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False)
+    def test_log_operation_upgrades_existing_report_for_same_position(self):
+        inst = Instrument.objects.create(
+            symbol="SOLUSDT",
+            exchange="bingx",
+            base="SOL",
+            quote="USDT",
+        )
+        opened_at = dj_tz.now().replace(microsecond=0)
+
+        _log_operation(
+            inst=inst,
+            side="sell",
+            qty=1.0,
+            entry_price=100.0,
+            exit_price=100.4,
+            reason="exchange_close",
+            signal_id="10",
+            correlation_id="10-SOLUSDT",
+            leverage=5.0,
+            fee_usdt=0.0,
+            opened_at=opened_at,
+            contract_size=1.0,
+            close_sub_reason="unknown",
+        )
+        _log_operation(
+            inst=inst,
+            side="sell",
+            qty=1.0,
+            entry_price=100.0,
+            exit_price=101.0,
+            reason="sl",
+            signal_id="10",
+            correlation_id="10-SOLUSDT",
+            leverage=5.0,
+            fee_usdt=0.0,
+            opened_at=opened_at,
+            contract_size=1.0,
+        )
+
+        self.assertEqual(OperationReport.objects.filter(instrument=inst).count(), 1)
+        op = OperationReport.objects.get(instrument=inst)
+        self.assertEqual(op.reason, "sl")
+        self.assertEqual(op.close_sub_reason, "")
+        self.assertAlmostEqual(float(op.exit_price), 101.0, places=8)
+
+    @override_settings(ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False)
+    def test_log_operation_does_not_downgrade_definitive_close_to_exchange_close(self):
+        inst = Instrument.objects.create(
+            symbol="ADAUSDT",
+            exchange="bingx",
+            base="ADA",
+            quote="USDT",
+        )
+        opened_at = dj_tz.now().replace(microsecond=0)
+
+        _log_operation(
+            inst=inst,
+            side="buy",
+            qty=1.0,
+            entry_price=100.0,
+            exit_price=100.2,
+            reason="stale_cleanup",
+            signal_id="11",
+            correlation_id="11-ADAUSDT",
+            leverage=5.0,
+            fee_usdt=0.0,
+            opened_at=opened_at,
+            contract_size=1.0,
+        )
+        _log_operation(
+            inst=inst,
+            side="buy",
+            qty=1.0,
+            entry_price=100.0,
+            exit_price=99.7,
+            reason="exchange_close",
+            signal_id="11",
+            correlation_id="11-ADAUSDT",
+            leverage=5.0,
+            fee_usdt=0.0,
+            opened_at=opened_at,
+            contract_size=1.0,
+            close_sub_reason="unknown",
+        )
+
+        self.assertEqual(OperationReport.objects.filter(instrument=inst).count(), 1)
+        op = OperationReport.objects.get(instrument=inst)
+        self.assertEqual(op.reason, "stale_cleanup")
+        self.assertEqual(op.close_sub_reason, "")
+        self.assertAlmostEqual(float(op.exit_price), 100.2, places=8)
+
 
 class LatestSignalSelectionTest(TestCase):
     def test_allocator_mode_includes_microvol_direct_signal(self):

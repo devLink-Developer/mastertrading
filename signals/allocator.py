@@ -6,6 +6,8 @@ from typing import Iterable
 
 from django.conf import settings
 
+from .runtime_overrides import get_runtime_dict
+
 from .modules.common import direction_to_sign, normalize_score, sign_to_direction
 
 
@@ -550,7 +552,10 @@ def resolve_symbol_allocation(
     tentative_direction = "long" if net_score > 0 else "short" if net_score < 0 else "flat"
     if tentative_direction in {"long", "short"}:
         direction_ctx_mult, direction_ctx_key = _context_direction_float_override(
-            getattr(settings, "ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT", {}),
+            get_runtime_dict(
+                "ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT",
+                getattr(settings, "ALLOCATOR_DIRECTION_SCORE_MULT_BY_CONTEXT", {}),
+            ),
             symbol=symbol,
             session_name=session_name,
             direction=tentative_direction,

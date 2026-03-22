@@ -91,6 +91,20 @@ def get_runtime_override(name: str, default: Any = None) -> Any:
     return overrides.get(key, default)
 
 
+def get_runtime_dict(name: str, default: dict[str, Any] | None = None) -> dict[str, Any]:
+    val = get_runtime_override(name, default if default is not None else {})
+    if isinstance(val, dict):
+        return dict(val)
+    if isinstance(val, str):
+        try:
+            payload = json.loads(val)
+        except Exception:
+            return dict(default or {})
+        if isinstance(payload, dict):
+            return dict(payload)
+    return dict(default or {})
+
+
 def get_runtime_bool(name: str, default: bool) -> bool:
     val = get_runtime_override(name, default)
     if isinstance(val, bool):

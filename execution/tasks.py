@@ -2882,37 +2882,80 @@ def _log_operation(
 
     regime_snapshot = _operation_regime_snapshot(inst)
 
-    OperationReport.objects.create(
+    existing_op = None
+    identity_qs = OperationReport.objects.filter(
         instrument=inst,
         side=side,
-        qty=qty,
-        entry_price=entry_price,
-        exit_price=exit_price,
-        pnl_abs=pnl_abs,
-        pnl_pct=pnl_pct,
-        notional_usdt=notional,
-        margin_used_usdt=margin_used,
-        fee_usdt=fee_val,
-        leverage=leverage or 0,
-        equity_before=equity_before,
-        equity_after=equity_after,
         mode=settings.MODE,
-        opened_at=opened_at,
-        outcome=outcome,
-        reason=reason,
-        close_sub_reason=close_sub_reason,
-        signal_id=str(signal_id or ""),
-        correlation_id=correlation_id or "",
-        mfe_r=mfe_r,
-        mae_r=mae_r,
-        mfe_capture_ratio=mfe_capture_ratio,
-        monthly_regime=str(regime_snapshot.get("monthly_regime", "") or ""),
-        weekly_regime=str(regime_snapshot.get("weekly_regime", "") or ""),
-        daily_regime=str(regime_snapshot.get("daily_regime", "") or ""),
-        btc_lead_state=str(regime_snapshot.get("btc_lead_state", "") or ""),
-        recommended_bias=str(regime_snapshot.get("recommended_bias", "") or ""),
-        closed_at=dj_tz.now(),
     )
+    if correlation_id:
+        identity_qs = identity_qs.filter(correlation_id=correlation_id)
+    elif signal_id:
+        identity_qs = identity_qs.filter(signal_id=str(signal_id or ""))
+    if opened_at is not None:
+        identity_qs = identity_qs.filter(opened_at=opened_at)
+    else:
+        identity_qs = identity_qs.filter(opened_at__isnull=True)
+    existing_op = identity_qs.order_by("-closed_at", "-id").first()
+
+    incoming_priority = _operation_reason_priority(reason, close_sub_reason)
+    existing_priority = (
+        _operation_reason_priority(existing_op.reason, existing_op.close_sub_reason)
+        if existing_op is not None else -1
+    )
+
+    if existing_op is not None and incoming_priority < existing_priority:
+        logger.info(
+            "Skipping lower-priority OperationReport update for %s corr=%s existing=%s:%s incoming=%s:%s",
+            inst.symbol,
+            correlation_id or "",
+            existing_op.reason,
+            existing_op.close_sub_reason,
+            reason,
+            close_sub_reason,
+        )
+        return existing_op
+
+    report_payload = {
+        "qty": qty,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "pnl_abs": pnl_abs,
+        "pnl_pct": pnl_pct,
+        "notional_usdt": notional,
+        "margin_used_usdt": margin_used,
+        "fee_usdt": fee_val,
+        "leverage": leverage or 0,
+        "equity_before": equity_before,
+        "equity_after": equity_after,
+        "mode": settings.MODE,
+        "opened_at": opened_at,
+        "outcome": outcome,
+        "reason": reason,
+        "close_sub_reason": close_sub_reason,
+        "signal_id": str(signal_id or ""),
+        "correlation_id": correlation_id or "",
+        "mfe_r": mfe_r,
+        "mae_r": mae_r,
+        "mfe_capture_ratio": mfe_capture_ratio,
+        "monthly_regime": str(regime_snapshot.get("monthly_regime", "") or ""),
+        "weekly_regime": str(regime_snapshot.get("weekly_regime", "") or ""),
+        "daily_regime": str(regime_snapshot.get("daily_regime", "") or ""),
+        "btc_lead_state": str(regime_snapshot.get("btc_lead_state", "") or ""),
+        "recommended_bias": str(regime_snapshot.get("recommended_bias", "") or ""),
+        "closed_at": dj_tz.now(),
+    }
+
+    if existing_op is None:
+        OperationReport.objects.create(
+            instrument=inst,
+            side=side,
+            **report_payload,
+        )
+    else:
+        for field_name, value in report_payload.items():
+            setattr(existing_op, field_name, value)
+        existing_op.save()
     try:
         client = _redis_client()
         if client is not None:
@@ -2927,6 +2970,35 @@ def _log_operation(
     except Exception:
         pass
     _queue_ml_retrain_after_operation(inst.symbol, settings.MODE, reason)
+
+
+def _operation_reason_priority(reason_text: str, sub_reason_text: str) -> int:
+    reason_norm = str(reason_text or "").strip().lower()
+    sub_reason_norm = str(sub_reason_text or "").strip().lower()
+    if reason_norm == "exchange_close":
+        if sub_reason_norm == "unknown":
+            return 10
+        if sub_reason_norm == "near_breakeven":
+            return 20
+        if sub_reason_norm in {"exchange_stop", "exchange_tp_limit", "likely_liquidation"}:
+            return 30
+        if sub_reason_norm == "bot_close_missed":
+            return 5
+        return 15
+    if reason_norm in {
+        "tp",
+        "sl",
+        "trailing_stop",
+        "signal_flip",
+        "stale_cleanup",
+        "microvol_timeout",
+        "uptrend_short_kill",
+        "downtrend_long_kill",
+        "tp_progress_exit",
+        "ai_tp_early_exit",
+    }:
+        return 100
+    return 80
 
 
 def _log_balance(equity: float, free: float, eff_lev: float, notional: float, note: str = ""):
