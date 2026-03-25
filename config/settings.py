@@ -858,6 +858,21 @@ NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES = _parse_lower_set(
 NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES = _parse_lower_set(
     os.getenv("NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES", "balanced")
 )
+WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED = os.getenv(
+    "WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED", "false"
+).lower() == "true"
+WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES = _parse_lower_set(
+    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES", "bear_confirmed")
+)
+WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES = _parse_lower_set(
+    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES", "bear_weak")
+)
+WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES = _parse_lower_set(
+    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES", "transition")
+)
+WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES = _parse_lower_set(
+    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES", "balanced")
+)
 
 
 def _parse_symbol_set(raw: str) -> set[str]:

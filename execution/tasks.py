@@ -4278,6 +4278,55 @@ def _ny_open_weak_long_precheck(
     return True, "ok"
 
 
+def _weak_long_bear_weak_precheck(
+    *,
+    strategy_name: str,
+    signal_direction: str,
+    monthly_regime: str,
+    daily_regime: str,
+    btc_lead_state: str,
+    btc_recommended_bias: str,
+) -> tuple[bool, str]:
+    if _strategy_is_microvol(strategy_name):
+        return True, "microvol_exempt"
+    if str(signal_direction or "").strip().lower() != "long":
+        return True, "n/a"
+    if not get_runtime_bool(
+        "WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED",
+        bool(getattr(settings, "WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED", False)),
+    ):
+        return True, "disabled"
+
+    month = str(monthly_regime or "").strip().lower()
+    day = str(daily_regime or "").strip().lower()
+    lead_state = str(btc_lead_state or "transition").strip().lower()
+    rec_bias = str(btc_recommended_bias or "balanced").strip().lower()
+    blocked_months = _runtime_lower_set(
+        "WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES",
+        getattr(settings, "WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES", {"bear_confirmed"}),
+    )
+    blocked_days = _runtime_lower_set(
+        "WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES",
+        getattr(settings, "WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES", {"bear_weak"}),
+    )
+    blocked_leads = _runtime_lower_set(
+        "WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES",
+        getattr(settings, "WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES", {"transition"}),
+    )
+    blocked_biases = _runtime_lower_set(
+        "WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES",
+        getattr(settings, "WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES", {"balanced"}),
+    )
+    if (
+        month in blocked_months
+        and day in blocked_days
+        and lead_state in blocked_leads
+        and rec_bias in blocked_biases
+    ):
+        return False, f"weak_long_bear_weak:{month}:{day}:{lead_state}:{rec_bias}"
+    return True, "ok"
+
+
 def _operation_regime_snapshot(inst: Instrument) -> dict[str, str]:
     snapshot = {
         "monthly_regime": "",
@@ -4460,6 +4509,7 @@ def _attempt_entry_open(
     regime_bias_by_symbol: dict[str, str],
     regime_adx_min: float,
     market_regime_adx: float | None,
+    mtf_symbol_snapshot: dict[str, Any],
     btc_lead_state: str,
     btc_recommended_bias: str,
     allow_scale_entry: bool,
@@ -4618,6 +4668,26 @@ def _attempt_entry_open(
             btc_lead_state,
             btc_recommended_bias,
             ny_open_reason,
+        )
+        return 0, 0.0
+
+    weak_long_ok, weak_long_reason = _weak_long_bear_weak_precheck(
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        monthly_regime=str(mtf_symbol_snapshot.get("monthly_regime", "") or ""),
+        daily_regime=str(mtf_symbol_snapshot.get("daily_regime", "") or ""),
+        btc_lead_state=btc_lead_state,
+        btc_recommended_bias=btc_recommended_bias,
+    )
+    if not weak_long_ok:
+        logger.info(
+            "Weak-long bear-weak context blocked entry on %s: month=%s day=%s lead=%s bias=%s reason=%s",
+            inst.symbol,
+            mtf_symbol_snapshot.get("monthly_regime", ""),
+            mtf_symbol_snapshot.get("daily_regime", ""),
+            btc_lead_state,
+            btc_recommended_bias,
+            weak_long_reason,
         )
         return 0, 0.0
 
@@ -6587,6 +6657,7 @@ def execute_orders():
             regime_bias_by_symbol=_regime_bias_by_symbol,
             regime_adx_min=_regime_adx_min,
             market_regime_adx=_market_regime_adx,
+            mtf_symbol_snapshot=_mtf_snapshot_by_symbol.get(inst.symbol, {}),
             btc_lead_state=_btc_lead_state,
             btc_recommended_bias=_btc_recommended_bias,
             allow_scale_entry=allow_scale_entry,
