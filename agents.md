@@ -1556,3 +1556,32 @@ Conclusion operativa:
 - Lectura operativa:
   - el gate live `balanced + transition` ya deberia capturar el caso `ETH ny_open buy` observado en ambos stacks
   - la capa de `session structure` todavia conviene usarla como auditoria/replay, no como regla live adicional, hasta juntar mas muestra
+
+### 2026-03-25 update: weak-long `bear_weak` gate
+- Auditoria 5d en prod mostro un patron repetido de longs perdedores:
+  - `monthly_regime=bear_confirmed`
+  - `btc_lead_state=transition`
+  - `recommended_bias=balanced`
+  - `daily_regime=bear_weak`
+- En esa submuestra:
+  - `rortigoza`: `6` trades, `0` wins, neto `-0.20632`
+  - `eudy`: `7` trades, `1` win pequeno, neto `-0.05988`
+- Los `downtrend_long_kill` al minuto no parecieron bug:
+  - casi todos fueron `alloc_long`
+  - `mfe_r=0`
+  - la senal de entrada tenia segundos de antiguedad, pero los winners buenos tambien entraban rapido, asi que un gate por edad de senal NO fue buen candidato
+- Decisión:
+  - agregar un gate reversible para bloquear `long` no-microvol cuando coinciden:
+    - `monthly in bear_confirmed`
+    - `daily in bear_weak`
+    - `btc_lead_state in transition`
+    - `recommended_bias in balanced`
+- Settings nuevos:
+  - `WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED`
+  - `WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES`
+  - `WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES`
+  - `WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES`
+  - `WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES`
+- Política operativa:
+  - `microvol` queda exento
+  - mantener el gate detrás de flag para rollback rápido si empieza a podar winners útiles
