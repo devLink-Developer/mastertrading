@@ -1585,3 +1585,34 @@ Conclusion operativa:
 - Política operativa:
   - `microvol` queda exento
   - mantener el gate detrás de flag para rollback rápido si empieza a podar winners útiles
+
+### 2026-03-30 update: marketdata pile-up / TimeLimitExceeded storm
+- Se investigo el spam de Telegram con errores recurrentes `TimeLimitExceeded(300)` en:
+  - `marketdata.tasks.fetch_instrument_data`
+  - `signals.tasks.run_carry_engine`
+  - `signals.tasks.run_portfolio_allocator`
+  - `execution.tasks.execute_orders`
+- Hallazgo principal en prod:
+  - el problema arrancaba en `worker-data`
+  - `fetch_instrument_data` podia tardar `~261s` por simbolo durante ventanas de degradacion de BingX / catch-up
+  - el dispatcher `fetch_ohlcv_and_funding` tenia lock de solo `50s`
+  - cuando una tanda de instrumentos seguia corriendo mas de `50s`, beat volvia a fan-out y encolaba otra ola de `fetch_instrument_data`
+  - eso apilaba tareas duplicadas por simbolo y terminaba arrastrando tambien al worker de trading por backlog / stale data
+- Fix aplicado:
+  - `marketdata/tasks.py`
+    - lock Redis por instrumento: `lock:marketdata:instrument:{id}`
+    - release token-safe al finalizar cada fetch
+    - el dispatcher ahora chequea si hay algun fetch de instrumento activo antes de volver a fan-out
+  - settings nuevos:
+    - `MARKETDATA_DISPATCH_LOCK_SECONDS` (default `50`)
+    - `MARKETDATA_INSTRUMENT_LOCK_SECONDS` (default `330`)
+- Cobertura:
+  - `marketdata/tests_tasks.py`
+    - skip del dispatcher cuando hay instrument fetch activo
+    - skip de `fetch_instrument_data` cuando el lock del simbolo ya esta tomado
+- Resultado observado post deploy en prod:
+  - `worker-data` volvio a duraciones sanas (`~4s` a `15s` por simbolo)
+  - el dispatcher ahora loguea `instrument fetch still active` en vez de fan-out duplicado
+  - no se volvieron a ver timeouts inmediatos tras el redeploy
+- Commit:
+  - `aadfa4e` `Prevent duplicate marketdata fetch pileups`
