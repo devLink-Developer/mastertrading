@@ -877,6 +877,20 @@ WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES = _parse_lower_set(
     os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES", "balanced")
 )
 
+# --- Cross-symbol directional correlation guard ---
+CROSS_SYMBOL_CORR_GUARD_ENABLED = os.getenv(
+    "CROSS_SYMBOL_CORR_GUARD_ENABLED", "true"
+).lower() == "true"
+CROSS_SYMBOL_CORR_GUARD_MAX_SAME_DIR = int(
+    os.getenv("CROSS_SYMBOL_CORR_GUARD_MAX_SAME_DIR", "4")
+)
+CROSS_SYMBOL_CORR_GUARD_RISK_REDUCTION = float(
+    os.getenv("CROSS_SYMBOL_CORR_GUARD_RISK_REDUCTION", "0.15")
+)
+CROSS_SYMBOL_CORR_GUARD_RISK_FLOOR = float(
+    os.getenv("CROSS_SYMBOL_CORR_GUARD_RISK_FLOOR", "0.40")
+)
+
 
 def _parse_symbol_set(raw: str) -> set[str]:
     return set(_parse_symbol_list(raw))
@@ -909,6 +923,30 @@ MODULE_TREND_EMA20_PULLBACK_TOLERANCE_PCT = max(
 )
 MODULE_ADX_RANGE_MAX = float(os.getenv("MODULE_ADX_RANGE_MAX", "18.0"))
 MODULE_MEANREV_Z_ENTRY = float(os.getenv("MODULE_MEANREV_Z_ENTRY", "1.2"))
+
+# --- Hurst exponent for meanrev ---
+MODULE_MEANREV_HURST_ENABLED = os.getenv(
+    "MODULE_MEANREV_HURST_ENABLED", "true"
+).lower() == "true"
+MODULE_MEANREV_HURST_MAX = float(os.getenv("MODULE_MEANREV_HURST_MAX", "0.55"))
+
+# --- Volume confirmation ---
+MODULE_TREND_VOLUME_CONFIRM_ENABLED = os.getenv(
+    "MODULE_TREND_VOLUME_CONFIRM_ENABLED", "true"
+).lower() == "true"
+MODULE_TREND_VOLUME_MIN_RATIO = float(
+    os.getenv("MODULE_TREND_VOLUME_MIN_RATIO", "0.8")
+)
+MODULE_TREND_VOLUME_STRONG_RATIO = float(
+    os.getenv("MODULE_TREND_VOLUME_STRONG_RATIO", "1.5")
+)
+SMC_VOLUME_CONFIRM_ENABLED = os.getenv(
+    "SMC_VOLUME_CONFIRM_ENABLED", "true"
+).lower() == "true"
+SMC_VOLUME_MIN_RATIO = float(
+    os.getenv("SMC_VOLUME_MIN_RATIO", "1.0")
+)
+
 MODULE_CARRY_FUNDING_MULT = float(os.getenv("MODULE_CARRY_FUNDING_MULT", "1.8"))
 MODULE_SYMBOL_WARMUP_BARS = int(os.getenv("MODULE_SYMBOL_WARMUP_BARS", "300"))
 MODULE_IMPULSE_FILTER_ENABLED = os.getenv("MODULE_IMPULSE_FILTER_ENABLED", "true").lower() == "true"

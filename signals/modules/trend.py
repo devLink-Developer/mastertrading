@@ -94,6 +94,29 @@ def detect(
 
     ema_gap = abs(ema20 - ema50) / ema50
     raw = 0.30 + min(0.40, ema_gap * 20.0) + min(0.30, max(0.0, adx - trend_min) / 60.0)
+
+    # --- Volume confirmation ---
+    vol_ratio = None
+    vol_boost = 0.0
+    vol_penalty = 0.0
+    if bool(getattr(settings, "MODULE_TREND_VOLUME_CONFIRM_ENABLED", True)):
+        try:
+            vols = df_ltf["volume"].astype(float)
+            if len(vols) >= 20 and vols.iloc[-1] > 0:
+                vol_sma = float(vols.tail(20).mean())
+                if vol_sma > 0:
+                    vol_ratio = float(vols.iloc[-1] / vol_sma)
+                    vol_min = float(getattr(settings, "MODULE_TREND_VOLUME_MIN_RATIO", 0.8))
+                    vol_strong = float(getattr(settings, "MODULE_TREND_VOLUME_STRONG_RATIO", 1.5))
+                    if vol_ratio < vol_min:
+                        vol_penalty = min(0.10, (vol_min - vol_ratio) * 0.15)
+                        raw = max(0.0, raw - vol_penalty)
+                    elif vol_ratio >= vol_strong:
+                        vol_boost = min(0.08, (vol_ratio - vol_strong) * 0.06)
+                        raw = min(1.0, raw + vol_boost)
+        except Exception:
+            pass
+
     confidence = normalize_score(raw)
     reasons = {
         "session": session,
@@ -105,6 +128,12 @@ def detect(
         "ema_gap_pct": round(ema_gap * 100, 4),
         "ema20_pullback_tolerance_pct": round(pullback_tol * 100, 4),
     }
+    if vol_ratio is not None:
+        reasons["volume_ratio"] = round(vol_ratio, 4)
+        if vol_boost > 0:
+            reasons["volume_boost"] = round(vol_boost, 4)
+        if vol_penalty > 0:
+            reasons["volume_penalty"] = round(vol_penalty, 4)
     if impulse_details:
         reasons["impulse_guard"] = impulse_details
     if bounce_info:

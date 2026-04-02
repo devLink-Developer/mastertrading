@@ -538,6 +538,7 @@ def _compute_score(conditions: dict) -> float:
         "funding_ok": 0.10,            # Funding not adverse
         "choch_bonus": 0.05,           # CHoCH (reversal) gets bonus vs BOS
         "htf_adx_strong": 0.05,        # ADX > 25 on HTF = strong trend bonus
+        "volume_confirmed": 0.05,      # LTF volume above SMA confirms move
     }
 
     score = 0.0
@@ -900,6 +901,22 @@ def _detect_signal(
     conditions["htf_adx_strong"] = bool(htf_adx_val is not None and htf_adx_val > 25)
     if ema_confluence_enabled and ema_aligned is not None:
         conditions["ema_confluence"] = ema_aligned
+
+    # --- Volume confirmation on LTF ---
+    smc_vol_ratio = None
+    if bool(getattr(settings, "SMC_VOLUME_CONFIRM_ENABLED", True)):
+        try:
+            smc_vols = df_ltf["volume"].astype(float)
+            if len(smc_vols) >= 20 and smc_vols.iloc[-1] > 0:
+                smc_vol_sma = float(smc_vols.tail(20).mean())
+                if smc_vol_sma > 0:
+                    smc_vol_ratio = float(smc_vols.iloc[-1] / smc_vol_sma)
+                    explain["smc_volume_ratio"] = round(smc_vol_ratio, 4)
+                    conditions["volume_confirmed"] = smc_vol_ratio >= float(
+                        getattr(settings, "SMC_VOLUME_MIN_RATIO", 1.0)
+                    )
+        except Exception:
+            pass
 
     score = _compute_score(conditions)
     if ema_confluence_enabled and ema_aligned is not None:

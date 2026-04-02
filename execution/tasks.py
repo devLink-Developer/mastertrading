@@ -4330,6 +4330,72 @@ def _weak_long_bear_weak_precheck(
     return True, "ok"
 
 
+def _cross_symbol_correlation_guard(
+    *,
+    inst: Instrument,
+    signal_direction: str,
+    positions_snapshot: list[dict],
+    equity_usdt: float,
+) -> tuple[float, str]:
+    """Return (risk_mult, reason) based on same-direction open positions.
+
+    When multiple correlated crypto assets are open in the same direction,
+    effective portfolio risk is higher than the sum of independent bets.
+    This guard reduces risk for new entries that add to directional
+    concentration.
+
+    Returns:
+        risk_mult: 1.0 (no reduction) down to the configured floor.
+        reason: human-readable explanation or empty string.
+    """
+    if not bool(getattr(settings, "CROSS_SYMBOL_CORR_GUARD_ENABLED", True)):
+        return 1.0, ""
+
+    max_same_direction = max(1, int(
+        getattr(settings, "CROSS_SYMBOL_CORR_GUARD_MAX_SAME_DIR", 4) or 4
+    ))
+    risk_reduction_per_pos = max(0.0, min(0.5,
+        float(getattr(settings, "CROSS_SYMBOL_CORR_GUARD_RISK_REDUCTION", 0.15) or 0.15),
+    ))
+    risk_floor = max(0.10, min(1.0,
+        float(getattr(settings, "CROSS_SYMBOL_CORR_GUARD_RISK_FLOOR", 0.40) or 0.40),
+    ))
+
+    direction = str(signal_direction or "").strip().lower()
+    if direction not in ("long", "short"):
+        return 1.0, ""
+
+    same_dir_count = 0
+    for pos in (positions_snapshot or []):
+        pos_symbol = str(pos.get("symbol") or pos.get("info", {}).get("symbol") or "")
+        # Skip self
+        if inst.symbol and inst.symbol.upper() in pos_symbol.upper():
+            continue
+        pos_side_raw = str(pos.get("side") or "").strip().lower()
+        pos_qty = float(pos.get("contracts") or pos.get("contractSize") or 0)
+        if pos_qty == 0:
+            continue
+        # Determine position direction
+        if pos_side_raw == "long" or (pos_side_raw == "" and pos_qty > 0):
+            pos_dir = "long"
+        elif pos_side_raw == "short" or (pos_side_raw == "" and pos_qty < 0):
+            pos_dir = "short"
+        else:
+            continue
+        if pos_dir == direction:
+            same_dir_count += 1
+
+    if same_dir_count == 0:
+        return 1.0, ""
+
+    if same_dir_count >= max_same_direction:
+        return 0.0, f"max_same_dir:{same_dir_count}>={max_same_direction}"
+
+    mult = max(risk_floor, 1.0 - (same_dir_count * risk_reduction_per_pos))
+    reason = f"corr_guard:{same_dir_count}_same_{direction},risk_mult={mult:.2f}"
+    return mult, reason
+
+
 def _operation_regime_snapshot(inst: Instrument) -> dict[str, str]:
     snapshot = {
         "monthly_regime": "",
@@ -4544,6 +4610,7 @@ def _attempt_entry_open(
     account_owner_id: int | None,
     account_alias: str,
     account_service: str,
+    positions_snapshot: list[dict] | None = None,
 ) -> tuple[int, float]:
     if not can_open:
         return 0, 0.0
@@ -4691,6 +4758,20 @@ def _attempt_entry_open(
             btc_lead_state,
             btc_recommended_bias,
             weak_long_reason,
+        )
+        return 0, 0.0
+
+    # --- Cross-symbol correlation guard ---
+    corr_risk_mult, corr_reason = _cross_symbol_correlation_guard(
+        inst=inst,
+        signal_direction=signal_direction,
+        positions_snapshot=positions_snapshot or [],
+        equity_usdt=equity_usdt,
+    )
+    if corr_risk_mult <= 0.0:
+        logger.info(
+            "Cross-symbol correlation guard blocked entry on %s %s: %s",
+            inst.symbol, signal_direction, corr_reason,
         )
         return 0, 0.0
 
@@ -5030,7 +5111,15 @@ def _attempt_entry_open(
 
     inst_risk_pct = _volatility_adjusted_risk(inst.symbol, atr, inst_risk_pct)
     effective_risk_pct = inst_risk_pct * effective_risk_mult
-    
+
+    # Cross-symbol directional concentration risk reduction
+    if corr_risk_mult < 1.0:
+        effective_risk_pct *= corr_risk_mult
+        logger.info(
+            "Cross-symbol corr guard risk reduction on %s: mult=%.2f (%s)",
+            inst.symbol, corr_risk_mult, corr_reason,
+        )
+
     # Optional Fractional Kelly Risk Boost (disabled by default via feature flag)
     if getattr(settings, "CONFIDENCE_RISK_BOOST_ENABLED", False):
         try:
@@ -6741,6 +6830,7 @@ def execute_orders():
             account_owner_id=account_owner_id,
             account_alias=account_alias,
             account_service=account_service,
+            positions_snapshot=positions_snapshot,
         )
         placed += placed_delta
         cycle_notional_added += cycle_notional_delta

@@ -166,6 +166,71 @@ def _loss_cluster_score(returns: list[float]) -> float:
     return _clamp(max_streak / max(1, n), 0.0, 1.0)
 
 
+def _compute_regime_fit(
+    *,
+    module: str,
+    returns_trending: dict[str, list[float]],
+    returns_non_trending: dict[str, list[float]],
+    min_regime_trades: int = 5,
+) -> float:
+    """Score how well *module* performs in the current HMM regime.
+
+    Uses the daily_regime field from OperationReport to partition historical
+    trades into trending (bull/bear_confirmed) and non-trending (transition,
+    bear_weak, etc.).  Then looks up the current HMM state via Redis cache
+    and returns a multiplier in [0.5, 1.5]:
+        >1.0 → module performs better in the current regime
+        <1.0 → module performs worse in the current regime
+         1.0 → insufficient data or regime unavailable
+    """
+    trending_arr = returns_trending.get(module, [])
+    non_trending_arr = returns_non_trending.get(module, [])
+    if len(trending_arr) < min_regime_trades and len(non_trending_arr) < min_regime_trades:
+        return 1.0
+
+    # Determine current dominant regime from HMM cache (most symbols share BTC regime)
+    current_label = ""
+    if bool(getattr(settings, "HMM_REGIME_ENABLED", False)):
+        try:
+            from signals.regime import get_cached_regime
+            cached = get_cached_regime("BTCUSDT")
+            if cached:
+                current_label = str(cached.get("label", "") or "").strip().lower()
+        except Exception:
+            pass
+
+    if current_label not in ("trending", "choppy"):
+        return 1.0
+
+    # Compute mean return for each regime partition
+    mean_trending = float(np.mean(trending_arr)) if len(trending_arr) >= min_regime_trades else None
+    mean_non_trending = float(np.mean(non_trending_arr)) if len(non_trending_arr) >= min_regime_trades else None
+
+    if current_label == "trending":
+        current_mean = mean_trending
+        other_mean = mean_non_trending
+    else:
+        current_mean = mean_non_trending
+        other_mean = mean_trending
+
+    if current_mean is None:
+        return 1.0
+
+    # Reward modules that do better in the current regime than in the other
+    if other_mean is not None and other_mean != 0:
+        ratio = current_mean / abs(other_mean) if abs(other_mean) > 1e-9 else 1.0
+        # ratio > 1 → better in current regime, ratio < 1 → worse
+        fit = 0.5 + 0.5 * _clamp(ratio, 0.0, 2.0)
+    elif current_mean > 0:
+        fit = 1.2  # positive in current regime, no comparison data → mild boost
+    elif current_mean < 0:
+        fit = 0.8  # negative in current regime → mild penalty
+    else:
+        fit = 1.0
+
+    return _clamp(fit, 0.5, 1.5)
+
+
 def _max_drawdown_pct(returns: list[float]) -> float:
     if not returns:
         return 0.0
@@ -380,7 +445,7 @@ def _collect_module_metrics(
     reports = list(
         OperationReport.objects.filter(closed_at__gte=cutoff)
         .order_by("closed_at")
-        .values("pnl_pct", "closed_at", "signal_id")
+        .values("pnl_pct", "closed_at", "signal_id", "daily_regime")
     )
     if not reports:
         return {}, {"trade_count": 0, "reason": "no_reports"}
@@ -397,6 +462,10 @@ def _collect_module_metrics(
 
     module_returns: dict[str, list[float]] = {m: [] for m in MODULE_ORDER}
     module_day_returns: dict[str, dict[str, float]] = {m: defaultdict(float) for m in MODULE_ORDER}
+    # Regime-partitioned returns for regime_fit computation
+    _TRENDING_REGIMES = {"bull_confirmed", "bear_confirmed"}
+    module_returns_trending: dict[str, list[float]] = {m: [] for m in MODULE_ORDER}
+    module_returns_non_trending: dict[str, list[float]] = {m: [] for m in MODULE_ORDER}
     today_key = dj_tz.now().date().isoformat()
     module_today_pnl: dict[str, float] = {m: 0.0 for m in MODULE_ORDER}
     total_attrib = 0
@@ -409,9 +478,15 @@ def _collect_module_metrics(
         if not shares:
             continue
         day_key = rep["closed_at"].date().isoformat() if rep.get("closed_at") else ""
+        daily_regime = str(rep.get("daily_regime") or "").strip().lower()
+        is_trending_trade = daily_regime in _TRENDING_REGIMES
         for module, share in shares.items():
             attrib = ret * _clamp(share, 0.0, 1.0)
             module_returns[module].append(attrib)
+            if is_trending_trade:
+                module_returns_trending[module].append(attrib)
+            elif daily_regime:  # only count if regime was actually recorded
+                module_returns_non_trending[module].append(attrib)
             if day_key:
                 module_day_returns[module][day_key] += attrib
                 if day_key == today_key:
@@ -489,7 +564,12 @@ def _collect_module_metrics(
             stdev=stdev,
             profit_factor=pf,
             loss_cluster=_loss_cluster_score(arr),
-            regime_fit=1.0,  # Reserved for next cycle when regime-fit attribution is wired.
+            regime_fit=_compute_regime_fit(
+                module=module,
+                returns_trending=module_returns_trending,
+                returns_non_trending=module_returns_non_trending,
+                min_regime_trades=max(3, int(getattr(settings, "META_ALLOCATOR_REGIME_FIT_MIN_TRADES", 5) or 5)),
+            ),
             corr_penalty=float(corr_penalties.get(module, 1.0)),
             max_dd_pct=max_dd_pct,
             today_pnl_pct=today_pnl_pct,

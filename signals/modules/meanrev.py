@@ -13,6 +13,54 @@ from .common import (
 )
 
 
+def _hurst_rs(prices: np.ndarray, max_lag: int = 80) -> float | None:
+    """Rescaled-range (R/S) Hurst exponent estimate.
+
+    H < 0.5 → mean-reverting series (good for meanrev)
+    H ≈ 0.5 → random walk
+    H > 0.5 → trending / persistent (bad for meanrev)
+
+    Uses log-prices to compute returns, then R/S at multiple lag sizes.
+    """
+    if len(prices) < 40:
+        return None
+    log_p = np.log(prices.astype(np.float64))
+    returns = np.diff(log_p)
+    n = len(returns)
+    if n < 20:
+        return None
+
+    lags = []
+    rs_values = []
+    lag = 10
+    while lag <= min(max_lag, n // 2):
+        rs_list = []
+        num_chunks = n // lag
+        for i in range(num_chunks):
+            chunk = returns[i * lag: (i + 1) * lag]
+            mean_c = chunk.mean()
+            dev = np.cumsum(chunk - mean_c)
+            r = dev.max() - dev.min()
+            s = chunk.std(ddof=1)
+            if s > 1e-12:
+                rs_list.append(r / s)
+        if rs_list:
+            lags.append(lag)
+            rs_values.append(np.mean(rs_list))
+        lag = int(lag * 1.5) if lag < 20 else lag + 10
+
+    if len(lags) < 3:
+        return None
+
+    log_lags = np.log(np.array(lags, dtype=np.float64))
+    log_rs = np.log(np.array(rs_values, dtype=np.float64))
+    # Simple OLS slope = Hurst exponent
+    A = np.vstack([log_lags, np.ones(len(log_lags))]).T
+    result = np.linalg.lstsq(A, log_rs, rcond=None)
+    h = float(result[0][0])
+    return max(0.0, min(1.0, h))
+
+
 def detect(
     df_ltf: pd.DataFrame,
     df_htf: pd.DataFrame,
@@ -51,6 +99,15 @@ def detect(
     if not direction:
         return None
 
+    # --- Hurst exponent gate ---
+    hurst_enabled = bool(getattr(settings, "MODULE_MEANREV_HURST_ENABLED", True))
+    hurst_value = None
+    if hurst_enabled and len(closes) >= 100:
+        hurst_value = _hurst_rs(closes.values, max_lag=min(80, len(closes) // 2))
+    hurst_max = float(getattr(settings, "MODULE_MEANREV_HURST_MAX", 0.55))
+    if hurst_enabled and hurst_value is not None and hurst_value > hurst_max:
+        return None
+
     impulse_details: dict = {}
     if bool(getattr(settings, "MODULE_MEANREV_IMPULSE_BLOCK_ENABLED", True)):
         state = impulse_bar_state(
@@ -85,6 +142,9 @@ def detect(
             return None
 
     raw = normalize_score(min(1.0, abs(z) / max(2.5, z_entry + 0.8)))
+    # Boost score when Hurst confirms mean-reversion (H < 0.45)
+    if hurst_value is not None and hurst_value < 0.45:
+        raw = min(1.0, raw * 1.10)
     reasons = {
         "session": session,
         "adx_htf": round(float(adx_htf), 4),
@@ -93,6 +153,8 @@ def detect(
         "ema20": round(float(ema.iloc[-1]), 6),
         "last": round(float(closes.iloc[-1]), 6),
     }
+    if hurst_value is not None:
+        reasons["hurst"] = round(hurst_value, 4)
     if impulse_details:
         reasons["impulse_guard"] = impulse_details
     if bounce_info:
