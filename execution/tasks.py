@@ -1953,12 +1953,23 @@ def _tactical_exit_profile(side: str, recommended_bias: str | None) -> dict[str,
     }
 
 
+def _resolve_regime_label(symbol: str) -> str:
+    """Return HMM regime label for *symbol* or empty string on miss."""
+    try:
+        from signals.regime import get_cached_regime
+        info = get_cached_regime(symbol)
+        return (info or {}).get("label", "")
+    except Exception:
+        return ""
+
+
 def _compute_tp_sl_prices(
     side: str,
     entry_price: float,
     atr_pct: float | None,
     recommended_bias: str | None = "",
     strategy_name: str = "",
+    regime_label: str = "",
 ):
     """
     Compute TP and SL prices based on ATR or defaults.
@@ -1982,6 +1993,17 @@ def _compute_tp_sl_prices(
     tp_floor = float(getattr(settings, "TAKE_PROFIT_MIN_PCT", 0.0) or 0.0)
     tp_floor = max(0.0, tp_floor)
     tp_pct = max(tp_floor, tp_pct * tp_mult)
+
+    # ── Regime-adaptive TP/SL ──
+    if regime_label and getattr(settings, "REGIME_DYNAMIC_TPSL_ENABLED", True):
+        if regime_label == "trending":
+            _r_tp = float(getattr(settings, "REGIME_TP_TRENDING_MULT", 1.15) or 1.15)
+            tp_pct *= max(1.0, min(_r_tp, 1.50))
+        elif regime_label == "choppy":
+            _r_tp = float(getattr(settings, "REGIME_TP_CHOPPY_MULT", 0.85) or 0.85)
+            _r_sl = float(getattr(settings, "REGIME_SL_CHOPPY_MULT", 1.10) or 1.10)
+            tp_pct *= max(0.50, min(_r_tp, 1.0))
+            sl_pct *= max(1.0, min(_r_sl, 1.30))
 
     # Fast-exit mode for high-volatility phases: reduce TP distance to secure gains sooner.
     if (
@@ -4396,6 +4418,63 @@ def _cross_symbol_correlation_guard(
     return mult, reason
 
 
+def _volume_delta_check(
+    symbol: str,
+    signal_direction: str,
+) -> tuple[bool, float, str]:
+    """Volume-delta imbalance confirmation for entries.
+
+    Uses recent 1-minute candle buy/sell pressure as order-flow proxy.
+    Returns (ok, score_bonus, reason).
+    """
+    if not bool(getattr(settings, "VOLUME_DELTA_GATE_ENABLED", True)):
+        return True, 0.0, ""
+
+    direction = str(signal_direction or "").strip().lower()
+    if direction not in ("long", "short"):
+        return True, 0.0, ""
+
+    try:
+        from signals.modules.common import volume_delta_imbalance
+        from marketdata.models import Candle
+        from core.models import Instrument as Inst
+
+        inst = Inst.objects.filter(symbol=symbol).first()
+        if not inst:
+            return True, 0.0, ""
+
+        lookback = max(10, int(getattr(settings, "VOLUME_DELTA_LOOKBACK", 20) or 20))
+        qs = Candle.objects.filter(instrument=inst, timeframe="1m").order_by("-ts")[:lookback]
+        if qs.count() < lookback:
+            return True, 0.0, ""
+
+        import pandas as pd
+        rows = list(qs.values("open", "high", "low", "close", "volume"))
+        rows.reverse()
+        df = pd.DataFrame(rows)
+        info = volume_delta_imbalance(df, lookback=lookback)
+        if not info:
+            return True, 0.0, ""
+
+        imb = float(info.get("imbalance", 0))
+        min_imb = float(getattr(settings, "VOLUME_DELTA_MIN_IMBALANCE", 0.10) or 0.10)
+
+        # Check alignment: long needs positive imbalance, short needs negative
+        aligned = (direction == "long" and imb > 0) or (direction == "short" and imb < 0)
+        opposed = (direction == "long" and imb < -min_imb) or (direction == "short" and imb > min_imb)
+
+        if opposed and bool(getattr(settings, "VOLUME_DELTA_BLOCK_OPPOSED", False)):
+            return False, 0.0, f"vol_delta_opposed:{imb:.3f}_vs_{direction}"
+
+        bonus = 0.0
+        if aligned and abs(imb) >= min_imb:
+            bonus = min(0.05, abs(imb) * 0.10)
+
+        return True, bonus, f"vol_delta:{imb:.3f}"
+    except Exception:
+        return True, 0.0, ""
+
+
 def _operation_regime_snapshot(inst: Instrument) -> dict[str, str]:
     snapshot = {
         "monthly_regime": "",
@@ -4772,6 +4851,18 @@ def _attempt_entry_open(
         logger.info(
             "Cross-symbol correlation guard blocked entry on %s %s: %s",
             inst.symbol, signal_direction, corr_reason,
+        )
+        return 0, 0.0
+
+    # --- Volume delta imbalance check ---
+    vd_ok, vd_bonus, vd_reason = _volume_delta_check(
+        symbol=inst.symbol,
+        signal_direction=signal_direction,
+    )
+    if not vd_ok:
+        logger.info(
+            "Volume delta gate blocked entry on %s %s: %s",
+            inst.symbol, signal_direction, vd_reason,
         )
         return 0, 0.0
 
@@ -5412,6 +5503,7 @@ def _attempt_entry_open(
         atr,
         recommended_bias=btc_recommended_bias,
         strategy_name=strategy_name,
+        regime_label=_resolve_regime_label(symbol),
     )
     base_correlation_id = _safe_correlation_id(f"{sig.id}-{inst.symbol}")
     correlation_id = base_correlation_id
@@ -5468,6 +5560,7 @@ def _attempt_entry_open(
                 atr,
                 recommended_bias=btc_recommended_bias,
                 strategy_name=strategy_name,
+                regime_label=_resolve_regime_label(symbol),
             )
             logger.info(
                 "SL/TP recalculated with fill_price=%.4f (last=%.4f slippage=%.4f%%)",

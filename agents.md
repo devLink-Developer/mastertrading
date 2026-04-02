@@ -1643,3 +1643,99 @@ Conclusion operativa:
   - `SESSION_RISK_MULTIPLIER[overlap]` bajado de 1.0 a 0.85
   - `NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES` expandido a `transition,bear_confirmed`
 - Commit: `7b190c2`
+
+### 2026-04-02 update: TIER1 quant improvements (regime_fit + corr guard + Hurst + vol confirm)
+- Basado en investigacion de modelos cuantitativos usados por AQR, Two Sigma, Renaissance, Man Group.
+- 4 mejoras implementadas y desplegadas en ambos stacks:
+
+#### 1. regime_fit dinámico en meta-allocator
+- `signals/meta_allocator.py`:
+  - `_compute_regime_fit(module_name, returns_trending, returns_non_trending)` reemplaza el `regime_fit=1.0` hardcoded
+  - Particiona trades historicos por `daily_regime`: trending (`bull_confirmed` / `bear_confirmed`) vs non-trending
+  - Lee estado HMM actual de BTCUSDT via `get_cached_regime`
+  - Retorna multiplicador [0.5, 1.5]: >1 si el modulo rinde mejor en el regimen actual, <1 si rinde peor
+  - Fallback a 1.0 si datos insuficientes o regimen no disponible
+
+#### 2. Cross-symbol correlation guard
+- `execution/tasks.py`:
+  - `_cross_symbol_correlation_guard()` verifica cuantas posiciones abiertas van en la misma direccion
+  - Si hay muchas posiciones same-direction, reduce risk_pct (gradualmente)
+  - Si alcanza `CROSS_SYMBOL_CORR_GUARD_MAX_SAME_DIR`, bloquea la entrada
+  - Se inserta entre `weak_long_bear_weak` y ML filter en `_attempt_entry_open`
+- Settings:
+  - `CROSS_SYMBOL_CORR_GUARD_ENABLED=true`
+  - `CROSS_SYMBOL_CORR_GUARD_MAX_SAME_DIR=4`
+  - `CROSS_SYMBOL_CORR_GUARD_RISK_REDUCTION=0.15` (por cada posicion same-dir)
+  - `CROSS_SYMBOL_CORR_GUARD_RISK_FLOOR=0.40`
+
+#### 3. Hurst exponent gate para meanrev
+- `signals/modules/meanrev.py`:
+  - `_hurst_rs(prices, max_lag)`: estimacion de Hurst via R/S (rescaled range)
+  - H < 0.5 → series mean-reverting (bueno para meanrev)
+  - H > 0.5 → series trending (malo para meanrev)
+  - Gate: si `H > HURST_MAX` (default 0.55), bloquea senal meanrev
+  - Boost: si H < 0.45, score × 1.10
+- Settings:
+  - `MODULE_MEANREV_HURST_ENABLED=true`
+  - `MODULE_MEANREV_HURST_MAX=0.55`
+
+#### 4. Volume confirmation para trend y SMC
+- `signals/modules/trend.py`:
+  - Volume ratio = vol[-1] / SMA(vol, 20)
+  - Si ratio < 0.8: penaliza score (-0.10 max)
+  - Si ratio > 1.5: boost score (+0.08 max)
+  - `MODULE_TREND_VOLUME_CONFIRM_ENABLED=true`
+  - `MODULE_TREND_VOLUME_MIN_RATIO=0.8`
+  - `MODULE_TREND_VOLUME_STRONG_RATIO=1.5`
+- `signals/tasks.py` (SMC):
+  - `volume_confirmed` como condicion de scoring (peso 0.05)
+  - `SMC_VOLUME_CONFIRM_ENABLED=true`
+  - `SMC_VOLUME_MIN_RATIO=1.0`
+
+- Commit: `e846ef1`
+
+### 2026-04-02 update: TIER2 quant improvements (regime TP/SL + O-U half-life + Kalman trend + volume delta)
+- Continuation of quant improvement roadmap. Four TIER 2/3 items implemented:
+
+#### 1. Regime-adaptive TP/SL
+- `execution/tasks.py`:
+  - `_resolve_regime_label(symbol)` fetches HMM regime from Redis cache (lazy import, fail-safe)
+  - `_compute_tp_sl_prices()` now accepts `regime_label` parameter
+  - Trending regime: TP widened by `REGIME_TP_TRENDING_MULT` (default 1.15x)
+  - Choppy regime: TP tightened by `REGIME_TP_CHOPPY_MULT` (default 0.85x), SL widened by `REGIME_SL_CHOPPY_MULT` (default 1.10x)
+  - Applied at main entry (L5421) and fill-price recalc (L5485)
+  - Other call sites use default empty string (backward compatible)
+- Settings: `REGIME_DYNAMIC_TPSL_ENABLED`, `REGIME_TP_TRENDING_MULT`, `REGIME_TP_CHOPPY_MULT`, `REGIME_SL_CHOPPY_MULT`
+
+#### 2. Ornstein-Uhlenbeck half-life for meanrev
+- `signals/modules/meanrev.py`:
+  - `_ou_half_life(prices)` estimates mean-reversion speed via AR(1) on demeaned log-prices
+  - half_life = -log(2)/log(phi), where phi is AR(1) coefficient
+  - Gate: blocks if half_life > `MODULE_MEANREV_OU_MAX_BARS` (default 60 bars = too slow to revert)
+  - Boost: score × 1.08 if half_life < 20 bars (fast reversion)
+  - Inserted after Hurst gate, before impulse guard
+  - Reports `ou_half_life` in signal reasons
+- Settings: `MODULE_MEANREV_OU_ENABLED`, `MODULE_MEANREV_OU_MAX_BARS`
+
+#### 3. Kalman filter trend estimation
+- `signals/modules/trend.py`:
+  - `_kalman_smooth(prices)` scalar Kalman filter on price series
+  - R = measurement noise from returns variance, Q = R × q_ratio
+  - When EMA direction is ambiguous (ema20/ema50 unclear), Kalman slope provides fallback
+  - Kalman slope > `MODULE_TREND_KALMAN_SLOPE_MIN` (default 0.003) + price above ema50 → long
+  - Alignment boost: +0.05 score when Kalman confirms EMA direction
+  - Reports `kalman_level` and `kalman_boost` in signal reasons
+- Settings: `MODULE_TREND_KALMAN_ENABLED`, `MODULE_TREND_KALMAN_Q_RATIO`, `MODULE_TREND_KALMAN_SLOPE_MIN`
+
+#### 4. Volume delta imbalance gate
+- `signals/modules/common.py`:
+  - `volume_delta_imbalance(df, lookback)`: buy/sell pressure proxy from candle data
+  - delta_i = volume_i × sign(close_i - open_i), imbalance = Σ(delta)/Σ(volume)
+  - Returns imbalance [-1, +1] and buy_ratio
+- `execution/tasks.py`:
+  - `_volume_delta_check(symbol, signal_direction)`: entry gate using 1m candles
+  - When `VOLUME_DELTA_BLOCK_OPPOSED=true`: blocks entries against strong volume pressure
+  - Score bonus (up to 0.05) when volume pressure aligns with entry direction
+  - Inserted after cross-symbol correlation guard, before ML filter
+- Settings: `VOLUME_DELTA_GATE_ENABLED`, `VOLUME_DELTA_LOOKBACK`, `VOLUME_DELTA_MIN_IMBALANCE`, `VOLUME_DELTA_BLOCK_OPPOSED`
+- Note: uses candle-based proxy (not OrderBookSnapshot), works immediately with existing data

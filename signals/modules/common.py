@@ -328,3 +328,39 @@ def emit_signal(
 
 def now_utc():
     return dj_tz.now()
+
+
+def volume_delta_imbalance(
+    df: "pd.DataFrame",
+    lookback: int = 20,
+) -> dict | None:
+    """Volume-weighted buying/selling pressure proxy from candle data.
+
+    delta_i = volume_i * sign(close_i - open_i)
+    imbalance = sum(delta) / sum(volume) over *lookback* bars.
+
+    Returns dict with 'imbalance' in [-1, +1] and 'buy_ratio', or None.
+    Positive imbalance → net buying pressure → favours long.
+    Negative imbalance → net selling pressure → favours short.
+    """
+    if df is None or df.empty or len(df) < lookback:
+        return None
+    try:
+        tail = df.tail(lookback)
+        closes = tail["close"].astype(float).values
+        opens = tail["open"].astype(float).values
+        volumes = tail["volume"].astype(float).values
+        total_vol = volumes.sum()
+        if total_vol <= 0:
+            return None
+        signs = np.sign(closes - opens)
+        delta = (volumes * signs).sum()
+        imbalance = float(delta / total_vol)
+        buy_vol = float(volumes[signs > 0].sum())
+        buy_ratio = buy_vol / total_vol
+        return {
+            "imbalance": round(max(-1.0, min(1.0, imbalance)), 4),
+            "buy_ratio": round(buy_ratio, 4),
+        }
+    except Exception:
+        return None

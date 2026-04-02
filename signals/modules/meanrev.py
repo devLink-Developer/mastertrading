@@ -13,6 +13,28 @@ from .common import (
 )
 
 
+def _ou_half_life(prices: np.ndarray) -> float | None:
+    """Ornstein-Uhlenbeck half-life via AR(1) on demeaned log-prices.
+
+    half_life = -log(2) / log(phi)  where phi is the AR(1) coefficient.
+    Returns bars to half-reversion, or None if estimation fails / non-stationary.
+    """
+    if len(prices) < 40:
+        return None
+    log_p = np.log(prices.astype(np.float64))
+    demeaned = log_p - log_p.mean()
+    y = demeaned[1:]
+    x = demeaned[:-1]
+    if x.std() < 1e-12:
+        return None
+    # OLS:  y = phi * x + eps
+    phi = float(np.dot(x, y) / np.dot(x, x))
+    if phi <= 0 or phi >= 1.0:
+        return None
+    hl = -np.log(2) / np.log(phi)
+    return max(1.0, float(hl))
+
+
 def _hurst_rs(prices: np.ndarray, max_lag: int = 80) -> float | None:
     """Rescaled-range (R/S) Hurst exponent estimate.
 
@@ -108,6 +130,15 @@ def detect(
     if hurst_enabled and hurst_value is not None and hurst_value > hurst_max:
         return None
 
+    # --- Ornstein-Uhlenbeck half-life gate ---
+    ou_enabled = bool(getattr(settings, "MODULE_MEANREV_OU_ENABLED", True))
+    ou_half_life = None
+    if ou_enabled and len(closes) >= 60:
+        ou_half_life = _ou_half_life(closes.values[-120:])
+    ou_max_bars = float(getattr(settings, "MODULE_MEANREV_OU_MAX_BARS", 60))
+    if ou_enabled and ou_half_life is not None and ou_half_life > ou_max_bars:
+        return None
+
     impulse_details: dict = {}
     if bool(getattr(settings, "MODULE_MEANREV_IMPULSE_BLOCK_ENABLED", True)):
         state = impulse_bar_state(
@@ -145,6 +176,9 @@ def detect(
     # Boost score when Hurst confirms mean-reversion (H < 0.45)
     if hurst_value is not None and hurst_value < 0.45:
         raw = min(1.0, raw * 1.10)
+    # Boost score when O-U half-life is fast (< 20 bars)
+    if ou_half_life is not None and ou_half_life < 20:
+        raw = min(1.0, raw * 1.08)
     reasons = {
         "session": session,
         "adx_htf": round(float(adx_htf), 4),
@@ -155,6 +189,8 @@ def detect(
     }
     if hurst_value is not None:
         reasons["hurst"] = round(hurst_value, 4)
+    if ou_half_life is not None:
+        reasons["ou_half_life"] = round(ou_half_life, 2)
     if impulse_details:
         reasons["impulse_guard"] = impulse_details
     if bounce_info:

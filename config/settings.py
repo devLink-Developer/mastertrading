@@ -891,6 +891,12 @@ CROSS_SYMBOL_CORR_GUARD_RISK_FLOOR = float(
     os.getenv("CROSS_SYMBOL_CORR_GUARD_RISK_FLOOR", "0.40")
 )
 
+# --- Volume delta imbalance gate ---
+VOLUME_DELTA_GATE_ENABLED = os.getenv("VOLUME_DELTA_GATE_ENABLED", "true").lower() == "true"
+VOLUME_DELTA_LOOKBACK = int(os.getenv("VOLUME_DELTA_LOOKBACK", "20"))
+VOLUME_DELTA_MIN_IMBALANCE = float(os.getenv("VOLUME_DELTA_MIN_IMBALANCE", "0.10"))
+VOLUME_DELTA_BLOCK_OPPOSED = os.getenv("VOLUME_DELTA_BLOCK_OPPOSED", "false").lower() == "true"
+
 
 def _parse_symbol_set(raw: str) -> set[str]:
     return set(_parse_symbol_list(raw))
@@ -930,6 +936,12 @@ MODULE_MEANREV_HURST_ENABLED = os.getenv(
 ).lower() == "true"
 MODULE_MEANREV_HURST_MAX = float(os.getenv("MODULE_MEANREV_HURST_MAX", "0.55"))
 
+# --- Ornstein-Uhlenbeck half-life ---
+MODULE_MEANREV_OU_ENABLED = os.getenv(
+    "MODULE_MEANREV_OU_ENABLED", "true"
+).lower() == "true"
+MODULE_MEANREV_OU_MAX_BARS = float(os.getenv("MODULE_MEANREV_OU_MAX_BARS", "60"))
+
 # --- Volume confirmation ---
 MODULE_TREND_VOLUME_CONFIRM_ENABLED = os.getenv(
     "MODULE_TREND_VOLUME_CONFIRM_ENABLED", "true"
@@ -946,6 +958,13 @@ SMC_VOLUME_CONFIRM_ENABLED = os.getenv(
 SMC_VOLUME_MIN_RATIO = float(
     os.getenv("SMC_VOLUME_MIN_RATIO", "1.0")
 )
+
+# --- Kalman filter for trend ---
+MODULE_TREND_KALMAN_ENABLED = os.getenv(
+    "MODULE_TREND_KALMAN_ENABLED", "true"
+).lower() == "true"
+MODULE_TREND_KALMAN_Q_RATIO = float(os.getenv("MODULE_TREND_KALMAN_Q_RATIO", "0.01"))
+MODULE_TREND_KALMAN_SLOPE_MIN = float(os.getenv("MODULE_TREND_KALMAN_SLOPE_MIN", "0.003"))
 
 MODULE_CARRY_FUNDING_MULT = float(os.getenv("MODULE_CARRY_FUNDING_MULT", "1.8"))
 MODULE_SYMBOL_WARMUP_BARS = int(os.getenv("MODULE_SYMBOL_WARMUP_BARS", "300"))
@@ -1278,6 +1297,12 @@ HMM_REGIME_LABEL_MEMORY_TTL_HOURS = max(
     1,
     int(os.getenv("HMM_REGIME_LABEL_MEMORY_TTL_HOURS", "168")),
 )
+
+# --- Regime-adaptive TP/SL ---
+REGIME_DYNAMIC_TPSL_ENABLED = os.getenv("REGIME_DYNAMIC_TPSL_ENABLED", "true").lower() == "true"
+REGIME_TP_TRENDING_MULT = max(1.0, min(1.50, float(os.getenv("REGIME_TP_TRENDING_MULT", "1.15"))))
+REGIME_TP_CHOPPY_MULT = max(0.50, min(1.0, float(os.getenv("REGIME_TP_CHOPPY_MULT", "0.85"))))
+REGIME_SL_CHOPPY_MULT = max(1.0, min(1.30, float(os.getenv("REGIME_SL_CHOPPY_MULT", "1.10"))))
 
 # --- GARCH Volatility Forecasting ---
 GARCH_ENABLED = os.getenv("GARCH_ENABLED", "false").lower() == "true"
