@@ -342,7 +342,7 @@ SESSION_RISK_MULTIPLIER={"asia":0.70,"london":1.0,"ny":0.90,"overlap":1.0,"dead"
 
 ### No implementado
 1. ~~Monte Carlo ni cálculo formal de riesgo de ruina~~ → IMPLEMENTADO (monte_carlo command)
-2. Purged CV/embargo ni White's Reality Check
+2. ~~Purged CV/embargo ni White's Reality Check~~ → IMPLEMENTADO (backtest/statistical_validation.py)
 3. ~~HMM/Markov/GARCH productivos (solo filtros ADX/ATR)~~ → HMM IMPLEMENTADO (signals/regime.py)
 4. Microestructura: OrderBookSnapshot existe pero sin uso operativo (OI/CVD/order imbalance)
 5. ~~Backtest y live no son 100% isomorfos~~ → 1m bars implementado, signal_flip gap reducido 35×
@@ -1739,3 +1739,20 @@ Conclusion operativa:
   - Inserted after cross-symbol correlation guard, before ML filter
 - Settings: `VOLUME_DELTA_GATE_ENABLED`, `VOLUME_DELTA_LOOKBACK`, `VOLUME_DELTA_MIN_IMBALANCE`, `VOLUME_DELTA_BLOCK_OPPOSED`
 - Note: uses candle-based proxy (not OrderBookSnapshot), works immediately with existing data
+
+### 2026-04-02 update: Purged K-Fold CV + White's Reality Check (SPA)
+- Completa los 9/9 items de la investigacion quant
+- `backtest/statistical_validation.py`:
+  - `purged_kfold_cv(trades, n_folds, embargo_pct, embargo_days)` → `PurgedCVResult`
+  - Chronological splitting + embargo purge at train/test boundary
+  - Per-fold and aggregate metrics: PnL, WR, Sharpe, max DD, expectancy
+  - Deflated Sharpe Ratio p-value (Bailey & López de Prado)
+  - Train-test gap as overfitting indicator
+  - `whites_reality_check(strategy_returns, n_bootstrap, block_size)` → `SPAResult`
+  - Stationary bootstrap (Politis & Romano)
+  - H0: no strategy beats zero benchmark
+  - RC p-value + Hansen's consistent p-value
+  - Per-strategy t-stats
+- Management command: `python manage.py validate_strategy --days 30 --spa --json reports/validation.json`
+  - Supports `--source live|backtest`, `--folds`, `--embargo-days`, `--symbol`
+  - Groups by strategy for SPA test
