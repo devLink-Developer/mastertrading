@@ -50,6 +50,12 @@ backups/*.tar
 .DS_Store
 Thumbs.db
 
-# Misc local binaries
+# Node (ssh2 deploy scripts)
+node_modules/
+package-lock.json
+
+# Misc local binaries / temp scripts
 Antigravity.exe
 tmp_last_op.py
+tmp_*.js
+tmp_*.json
