@@ -1529,6 +1529,7 @@ def _confidence_adjusted_entry_leverage(
     sig_score: float,
     ml_prob: float | None,
     ml_enabled: bool,
+    signal_direction: str = "",
 ) -> tuple[float, str]:
     """
     Optional leverage boost for high-confidence entries.
@@ -1537,6 +1538,8 @@ def _confidence_adjusted_entry_leverage(
     base = max(1.0, float(base_leverage or 1.0))
     if not bool(getattr(settings, "CONFIDENCE_LEVERAGE_BOOST_ENABLED", False)):
         return base, "disabled"
+    if signal_direction == "long" and not bool(getattr(settings, "CONFIDENCE_LEVERAGE_LONG_ENABLED", False)):
+        return base, "long_boost_disabled"
     strategy_txt = str(strategy_name or "").strip().lower()
     is_allocator = strategy_txt.startswith("alloc_")
     is_microvol = _strategy_is_microvol(strategy_txt)
@@ -4967,6 +4970,7 @@ def _attempt_entry_open(
         sig_score=sig_score,
         ml_prob=ml_prob,
         ml_enabled=ml_entry_filter_enabled,
+        signal_direction=signal_direction,
     )
     if entry_leverage > float(leverage or 0):
         logger.info(
