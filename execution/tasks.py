@@ -5530,6 +5530,13 @@ def _manage_open_position(
     account_owner_id: int | None,
     account_alias: str,
     account_service: str,
+    # Flip pre-validation context (optional for backward compat)
+    flip_can_open: bool = True,
+    flip_macro_block: bool = False,
+    flip_regime_blocked: bool = False,
+    flip_session_dead: bool = False,
+    flip_score_too_low: bool = False,
+    flip_btc_lead_blocked: bool = False,
 ) -> tuple[bool, bool, str, int]:
     """
     Manage an already-open exchange position.
@@ -6247,6 +6254,29 @@ def _manage_open_position(
                 )
                 return True, allow_scale_entry, scale_parent_correlation, scale_add_index
 
+        # ── Pre-validate that the new entry can pass critical gates ──────
+        # Avoid closing a position for a flip that will be rejected downstream.
+        _flip_block_reason = ""
+        if not flip_can_open:
+            _flip_block_reason = "can_open=false"
+        elif flip_macro_block:
+            _flip_block_reason = "macro_high_impact"
+        elif flip_regime_blocked:
+            _flip_block_reason = "regime_adx_gate"
+        elif flip_session_dead:
+            _flip_block_reason = "session_dead_zone"
+        elif flip_score_too_low:
+            _flip_block_reason = "score_too_low"
+        elif flip_btc_lead_blocked:
+            _flip_block_reason = "btc_lead_blocked"
+        if _flip_block_reason:
+            logger.info(
+                "Signal flip BLOCKED on %s: new entry would fail gate (%s); keeping position",
+                symbol,
+                _flip_block_reason,
+            )
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
         close_side = "sell" if current_qty > 0 else "buy"
         close_qty = abs(current_qty)
         try:
@@ -6636,6 +6666,24 @@ def execute_orders():
             account_owner_id=account_owner_id,
             account_alias=account_alias,
             account_service=account_service,
+            # Flip pre-validation: pass lightweight gate results so flip
+            # does NOT close the current position when the new entry would
+            # be immediately rejected downstream.
+            flip_can_open=can_open and not signal_expired,
+            flip_macro_block=(
+                macro_active
+                and macro_block_entries
+                and not _macro_high_impact_allows_entry(strategy_name=strategy_name, symbol=inst.symbol)
+            ),
+            flip_regime_blocked=(inst.symbol in _regime_blocked_symbols),
+            flip_session_dead=(session_policy_enabled and session_dead_zone_block and is_dead_session(current_session)),
+            flip_score_too_low=(
+                _to_float(getattr(sig, "score", 0.0))
+                < (session_min_score if session_policy_enabled else settings.EXECUTION_MIN_SIGNAL_SCORE)
+            ),
+            flip_btc_lead_blocked=_btc_lead_directional_risk_mult(
+                inst.symbol, signal_direction, _btc_lead_state, _btc_recommended_bias,
+            )[1],
         )
         if skip_symbol:
             continue

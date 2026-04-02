@@ -93,7 +93,7 @@ def detect(
             return None  # price dumping too hard to long
 
     ema_gap = abs(ema20 - ema50) / ema50
-    raw = 0.50 + min(0.35, ema_gap * 35.0) + min(0.15, max(0.0, adx - trend_min) / 100.0)
+    raw = 0.30 + min(0.40, ema_gap * 20.0) + min(0.30, max(0.0, adx - trend_min) / 60.0)
     confidence = normalize_score(raw)
     reasons = {
         "session": session,
