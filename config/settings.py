@@ -897,6 +897,14 @@ VOLUME_DELTA_LOOKBACK = int(os.getenv("VOLUME_DELTA_LOOKBACK", "20"))
 VOLUME_DELTA_MIN_IMBALANCE = float(os.getenv("VOLUME_DELTA_MIN_IMBALANCE", "0.10"))
 VOLUME_DELTA_BLOCK_OPPOSED = os.getenv("VOLUME_DELTA_BLOCK_OPPOSED", "false").lower() == "true"
 
+# --- Symbol Heat Guard (progressive risk scaling on losing streaks) ---
+SYMBOL_HEAT_GUARD_ENABLED = os.getenv("SYMBOL_HEAT_GUARD_ENABLED", "false").lower() == "true"
+SYMBOL_HEAT_GUARD_WINDOW = int(os.getenv("SYMBOL_HEAT_GUARD_WINDOW", "7"))
+SYMBOL_HEAT_GUARD_WR_NEUTRAL = float(os.getenv("SYMBOL_HEAT_GUARD_WR_NEUTRAL", "0.50"))
+SYMBOL_HEAT_GUARD_WR_FLOOR = float(os.getenv("SYMBOL_HEAT_GUARD_WR_FLOOR", "0.25"))
+SYMBOL_HEAT_GUARD_MIN_RISK_MULT = float(os.getenv("SYMBOL_HEAT_GUARD_MIN_RISK_MULT", "0.35"))
+SYMBOL_HEAT_GUARD_MIN_TRADES = int(os.getenv("SYMBOL_HEAT_GUARD_MIN_TRADES", "3"))
+
 
 def _parse_symbol_set(raw: str) -> set[str]:
     return set(_parse_symbol_list(raw))

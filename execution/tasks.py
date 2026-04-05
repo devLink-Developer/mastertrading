@@ -4418,6 +4418,74 @@ def _cross_symbol_correlation_guard(
     return mult, reason
 
 
+# ---------------------------------------------------------------------------
+# Symbol heat guard — progressive risk scaling based on recent performance
+# ---------------------------------------------------------------------------
+
+def _symbol_heat_guard(symbol: str) -> tuple[float, str]:
+    """Return (risk_mult, reason) based on recent trade outcomes for *symbol*.
+
+    Instead of hard-blocking entries on a losing symbol, this progressively
+    reduces risk so the bot can still participate when the symbol recovers
+    while limiting damage during losing streaks.
+
+    Returns:
+        risk_mult: 1.0 (no reduction) down to the configured floor.
+        reason: human-readable explanation or empty string.
+    """
+    if not bool(getattr(settings, "SYMBOL_HEAT_GUARD_ENABLED", False)):
+        return 1.0, ""
+
+    window = max(3, int(getattr(settings, "SYMBOL_HEAT_GUARD_WINDOW", 7) or 7))
+    wr_neutral = max(0.10, min(1.0,
+        float(getattr(settings, "SYMBOL_HEAT_GUARD_WR_NEUTRAL", 0.50) or 0.50),
+    ))
+    wr_floor = max(0.0, min(wr_neutral,
+        float(getattr(settings, "SYMBOL_HEAT_GUARD_WR_FLOOR", 0.25) or 0.25),
+    ))
+    min_risk_mult = max(0.10, min(1.0,
+        float(getattr(settings, "SYMBOL_HEAT_GUARD_MIN_RISK_MULT", 0.35) or 0.35),
+    ))
+
+    from execution.models import OperationReport
+    from core.models import Instrument
+
+    try:
+        inst = Instrument.objects.filter(symbol=symbol, enabled=True).first()
+        if inst is None:
+            return 1.0, ""
+
+        recent = list(
+            OperationReport.objects.filter(instrument=inst)
+            .order_by("-closed_at")
+            .values_list("pnl_abs", flat=True)[:window]
+        )
+    except Exception:
+        return 1.0, ""
+
+    if len(recent) < max(3, int(getattr(settings, "SYMBOL_HEAT_GUARD_MIN_TRADES", 3) or 3)):
+        return 1.0, ""
+
+    wins = sum(1 for pnl in recent if float(pnl) > 0)
+    wr = wins / len(recent)
+
+    if wr >= wr_neutral:
+        return 1.0, ""
+
+    if wr <= wr_floor:
+        return min_risk_mult, (
+            f"heat_guard:{symbol},wr={wr:.0%}({wins}/{len(recent)}),mult={min_risk_mult:.2f}"
+        )
+
+    # Linear interpolation between wr_floor → wr_neutral
+    ratio = (wr - wr_floor) / (wr_neutral - wr_floor)
+    mult = min_risk_mult + ratio * (1.0 - min_risk_mult)
+    mult = round(max(min_risk_mult, min(1.0, mult)), 4)
+    return mult, (
+        f"heat_guard:{symbol},wr={wr:.0%}({wins}/{len(recent)}),mult={mult:.2f}"
+    )
+
+
 def _volume_delta_check(
     symbol: str,
     signal_direction: str,
@@ -5209,6 +5277,15 @@ def _attempt_entry_open(
         logger.info(
             "Cross-symbol corr guard risk reduction on %s: mult=%.2f (%s)",
             inst.symbol, corr_risk_mult, corr_reason,
+        )
+
+    # Symbol heat guard — progressive risk reduction on losing streaks
+    heat_mult, heat_reason = _symbol_heat_guard(inst.symbol)
+    if heat_mult < 1.0:
+        effective_risk_pct *= heat_mult
+        logger.info(
+            "Symbol heat guard risk reduction on %s: mult=%.2f (%s)",
+            inst.symbol, heat_mult, heat_reason,
         )
 
     # Optional Fractional Kelly Risk Boost (disabled by default via feature flag)
