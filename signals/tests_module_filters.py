@@ -236,8 +236,8 @@ class ModuleImpulseFiltersTest(SimpleTestCase):
         self.assertIn("tp_price_hint", out)
         # SL should be below the weekly low
         self.assertLess(out["sl_price_hint"], 100.0)
-        # TP should be near the weekly high
-        self.assertGreater(out["tp_price_hint"], 108.0)
+        # TP should be near the weekly high (last 7d high = 107.0)
+        self.assertGreater(out["tp_price_hint"], 105.0)
         # Reasons should contain MTF info
         self.assertIn("mtf", out["reasons"])
         self.assertTrue(out["reasons"]["mtf_enabled"])
