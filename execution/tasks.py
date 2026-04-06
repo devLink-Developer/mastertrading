@@ -4351,11 +4351,17 @@ def _weak_long_bear_weak_precheck(
         and lead_state in blocked_leads
         and rec_bias in blocked_biases
     ):
+        adx_override_enabled = get_runtime_bool(
+            "WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_ENABLED",
+            bool(getattr(settings, "WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_ENABLED", False)),
+        )
         adx_override_min = float(
             getattr(settings, "WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN", 35.0)
         )
         trend_dir = str(trend_context_direction or "").strip().lower()
         if (
+            adx_override_enabled
+            and
             symbol_adx_1h >= adx_override_min > 0
             and trend_dir == "long"
             and bool(trend_context_is_strong)
@@ -4366,6 +4372,26 @@ def _weak_long_bear_weak_precheck(
             )
         return False, f"weak_long_bear_weak:{month}:{day}:{lead_state}:{rec_bias}"
     return True, "ok"
+
+
+def _corr_guard_positions_snapshot(
+    base_positions: list[dict] | None,
+    pending_entries: list[dict] | None = None,
+) -> list[dict]:
+    """Merge exchange positions with same-cycle pending entries for corr guard checks."""
+    merged = list(base_positions or [])
+    for entry in pending_entries or []:
+        side_txt = str(entry.get("side") or "").strip().lower()
+        if side_txt not in {"long", "short"}:
+            continue
+        merged.append(
+            {
+                "symbol": str(entry.get("symbol") or ""),
+                "side": side_txt,
+                "contracts": float(entry.get("contracts") or 1.0),
+            }
+        )
+    return merged
 
 
 def _cross_symbol_correlation_guard(
@@ -6925,6 +6951,7 @@ def execute_orders():
         positions_snapshot = adapter.fetch_positions()
     except Exception:
         positions_snapshot = []
+    cycle_pending_corr_entries: list[dict[str, Any]] = []
 
     # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ 1. Sync positions for admin visibility ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _sync_positions(adapter, positions=positions_snapshot, balance_assets=balance_assets)
@@ -7143,6 +7170,10 @@ def execute_orders():
         if skip_symbol:
             continue
         # 3h. Open new position (extracted helper to keep loop orchestration-focused).
+        corr_positions_snapshot = _corr_guard_positions_snapshot(
+            positions_snapshot,
+            cycle_pending_corr_entries,
+        )
         placed_delta, cycle_notional_delta = _attempt_entry_open(
             adapter=adapter,
             inst=inst,
@@ -7196,10 +7227,18 @@ def execute_orders():
             account_owner_id=account_owner_id,
             account_alias=account_alias,
             account_service=account_service,
-            positions_snapshot=positions_snapshot,
+            positions_snapshot=corr_positions_snapshot,
         )
         placed += placed_delta
         cycle_notional_added += cycle_notional_delta
+        if placed_delta > 0 and signal_direction in {"long", "short"}:
+            cycle_pending_corr_entries.append(
+                {
+                    "symbol": symbol,
+                    "side": signal_direction,
+                    "contracts": 1.0,
+                }
+            )
 
     _release_task_lock(lock_client, lock_key, lock_token)
     return f"orders_placed={placed}"
