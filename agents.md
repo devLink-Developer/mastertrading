@@ -1756,3 +1756,120 @@ Conclusion operativa:
 - Management command: `python manage.py validate_strategy --days 30 --spa --json reports/validation.json`
   - Supports `--source live|backtest`, `--folds`, `--embargo-days`, `--symbol`
   - Groups by strategy for SPA test
+
+### 2026-04-03 update: bot parado por acumulacion de gates restrictivos
+- Diagnostico:
+  - el bot corria y emitia senales (allocator 8/ciclo, carry activo, trend activo en London/NY)
+  - pero `orders_placed=0` en muchas horas
+  - causa principal: `MARKET_REGIME_ADX_MIN=17.0` bloqueaba 5/8 simbolos
+    - BTC(15.1), ETH(15.6), SOL(16.3), DOGE(11.8), ADA(12.4) todos < 17
+    - solo ENA(32.3), LINK(17.3), XRP(18.4) pasaban
+    - pero esos 3 tenian `alloc_flat` → no habia trade posible
+  - causa secundaria: en Asia session, solo `carry` emitia → con `MIN_MODULES_ACTIVE=2`, carry solo = flat
+  - causa terciaria: la combinacion de gates nuevos (Hurst, O-U, volume confirm, corr guard, weak_long blocks, long penalty 0.85, score min 0.60) reduce la frecuencia general
+- Fix aplicado:
+  - `MARKET_REGIME_ADX_MIN=14.0` en ambos stacks
+  - requirio `docker compose up -d` (no `restart`) para que Docker relea `.env`
+- Resultado:
+  - solo DOGE(11.0) y ADA(12.1) quedan bloqueados
+  - BTC, ETH, SOL, LINK, XRP, ENA pasan el gate
+  - el bot deberia retomar trades normales durante London/NY cuando trend vuelve a emitir
+- Leccion:
+  - `docker compose restart` NO recarga `.env` — hay que usar `up -d` para recrear el container
+  - apilar muchos gates restrictivos sin monitorear la frecuencia resultante puede dejar el bot inactivo
+  - en mercados bear/choppy con ADX bajo, el regime gate es el cuello de botella principal
+
+### 2026-04-05 update: symbol heat guard — reduccion progresiva de riesgo por simbolo
+- Diagnostico de 7 dias (Mar 29 → Abr 5):
+  - PRE_7d (Mar 22-29): 73 trades, WR=70%, PnL=+2.14, PF=3.20, avg_lev=8.6x
+  - POST_7d (Mar 29-Abr 5): 40 trades, WR=45%, PnL=-0.98, PF=0.53, avg_lev=7.1x
+  - shorts pasaron de 86% WR a 52% WR
+  - el 2026-04-03 15:27-15:29 hubo 3 stops correlados (ETH/ADA/LINK) = -0.28 USDT en una subida rapida
+- HMM/GARCH operativos pero insuficientes:
+  - HMM tardo 7 dias en pasar de `trending` a `choppy` (timeline: Abr 4 18:00 trending → Abr 5 12:00 choppy)
+  - solo reduce riesgo 30% (×0.70), nunca bloquea
+  - GARCH: ETHUSDT dropeado por persistence=1.000; los demas producen forecasts validos
+- Soluciones de cap duro descartadas:
+  - el usuario rechazo bajar `CROSS_SYMBOL_CORR_GUARD_MAX_SAME_DIR` 4→3, `CONFIDENCE_LEVERAGE_MAX` 10→7 y activar `VOLUME_DELTA_BLOCK_OPPOSED`
+  - razon correcta: "tambien limita ganancias" — bloquear entradas globalmente poda los periodos buenos
+- Solucion implementada: **Symbol Heat Guard**
+  - archivo: `execution/tasks.py` → helper `_symbol_heat_guard(symbol)`
+  - ubicacion en pipeline: despues de `_cross_symbol_correlation_guard`, antes de Fractional Kelly boost
+  - logica:
+    - consulta ultimos N trades del simbolo (via OperationReport)
+    - calcula WR rolling
+    - si `WR >= WR_NEUTRAL` (0.50): risk_mult = 1.0 (sin cambio)
+    - si `WR <= WR_FLOOR` (0.25): risk_mult = MIN_RISK_MULT (0.35)
+    - entre floor y neutral: interpolacion lineal
+    - si menos de `MIN_TRADES` (3): sin reduccion (datos insuficientes)
+  - es auto-correctivo: cuando el simbolo vuelve a ganar, el riesgo se restaura solo
+  - nunca bloquea: siempre permite al menos 35% del riesgo normal
+- Settings:
+  - `SYMBOL_HEAT_GUARD_ENABLED=true` (activado en ambos stacks)
+  - `SYMBOL_HEAT_GUARD_WINDOW=7`
+  - `SYMBOL_HEAT_GUARD_WR_NEUTRAL=0.50`
+  - `SYMBOL_HEAT_GUARD_WR_FLOOR=0.25`
+  - `SYMBOL_HEAT_GUARD_MIN_RISK_MULT=0.35`
+  - `SYMBOL_HEAT_GUARD_MIN_TRADES=3`
+- Tests: 9/9 pasan (2 unit + 7 DB) en `execution/tests_symbol_heat_guard.py`
+- Commit: `e0b30e9`
+- Politica operativa:
+  - complementa al HMM (que es lento) con una capa reactiva per-simbolo
+  - no reemplaza el HMM ni el GARCH — los tres actuan como capas independientes
+  - el multiplicador se aplica sobre `effective_risk_pct`, antes del sizing final
+
+### 2026-04-06 update: weak_long gate bloqueaba 100% de longs durante pump
+- Diagnostico:
+  - 726 `alloc_long` con scores altos (BTC=0.85, LINK=0.76) en 12h, `orders_placed=0`
+  - `WEAK_LONG_BEAR_WEAK_BLOCK` capturaba todo: `monthly=bear_confirmed, daily=transition, lead=transition, bias=balanced`
+  - `DAILY_REGIMES` incluia `transition` ademas de `bear_weak`, demasiado amplio
+- Fix aplicado:
+  - `WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES` revertido a solo `bear_weak`
+  - nuevo parametro `symbol_adx_1h` en `_weak_long_bear_weak_precheck()`
+  - cuando ADX 1h >= `WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN` (default 35.0), el gate deja pasar
+  - logica: si ADX es fuerte, la tendencia es real aunque el macro sea oso
+- Commit: `e97f657`
+
+### 2026-04-06 update: grid MTF range — niveles semanales/mensuales + SL/TP estructurales
+- Se reescribio `signals/modules/grid.py` para usar rangos de precio reales de 1d candles:
+  - `_fetch_daily_candles(symbol, lookback)`: auto-fetch de velas `1d` via `latest_candles`
+  - `_compute_mtf_ranges(df_d1, last_price)`: calcula weekly (7d) y monthly (30d) high/low
+  - Zona de compra: precio en el 15% inferior del rango semanal (`MODULE_GRID_BUY_ZONE_PCT`)
+  - Zona de venta: precio en el 15% superior del rango semanal (`MODULE_GRID_SELL_ZONE_PCT`)
+  - Bollinger z-score como confirmacion secundaria (threshold relajado en modo MTF)
+- SL/TP estructurales:
+  - Long: SL debajo del weekly low (+ buffer 0.3%), TP cerca del weekly high
+  - Short: SL encima del weekly high (+ buffer 0.3%), TP cerca del weekly low
+  - Signal payload lleva `sl_price_hint` y `tp_price_hint`
+  - `execution/tasks.py` respeta los hints para grid, overrideando el SL/TP basado en ATR
+  - Hook en ambas computaciones: entrada inicial y recalculo por fill price
+- Fallback:
+  - si `MODULE_GRID_MTF_RANGE_ENABLED=false` o no hay datos 1d, cae al rango original de 5m
+- Settings nuevos:
+  - `MODULE_GRID_MTF_RANGE_ENABLED=true`
+  - `MODULE_GRID_D1_LOOKBACK=45`
+  - `MODULE_GRID_BUY_ZONE_PCT=0.15`
+  - `MODULE_GRID_SELL_ZONE_PCT=0.15`
+  - `MODULE_GRID_SL_BUFFER_PCT=0.003`
+  - `MODULE_GRID_TP_BUFFER_PCT=0.002`
+- Tests: nuevo test MTF con mock de daily candles, 1/1 ok
+- Commit: `3f6a61a` + `4012a61`
+
+### 2026-04-06 update: flat signal timeout — cierre automatico de posiciones huerfanas
+- Se detecto que 4 posiciones long (BTC, XRP, DOGE, LINK) quedaron abiertas indefinidamente:
+  - allocator emitia `alloc_flat` en cada ciclo
+  - `signal_flip` solo cierra cuando hay senal opuesta (long vs short), no cuando es flat
+  - el path de `signal_direction == "flat"` solo logueaba "manage-only" y retornaba sin cerrar
+- Fix implementado: `flat_signal_timeout` basado en Redis
+  - `_track_flat_signal(symbol)`: registra primera observacion de flat en Redis, retorna segundos transcurridos
+  - `_clear_flat_signal(symbol)`: limpia el tracker cuando la senal vuelve a ser direccional
+  - cuando `flat_seconds >= FLAT_SIGNAL_TIMEOUT_MINUTES * 60`: cierre market con `reduceOnly`
+  - logging, `OperationReport`, y notificacion Telegram con `reason=flat_signal_timeout`
+- Settings:
+  - `FLAT_SIGNAL_TIMEOUT_ENABLED=true` (default)
+  - `FLAT_SIGNAL_TIMEOUT_MINUTES=10` (default)
+- Resultado en prod:
+  - 4 posiciones cerradas exitosamente despues de 10.6-10.7 min de flat continuo
+  - PnL de cierre: BTC -0.80%, DOGE -0.73%, LINK -0.87%, XRP -0.89%
+- El tracker se auto-corrige: si la senal vuelve a long/short, el timer se limpia y la posicion no se toca
+- Commit: `64dc885`

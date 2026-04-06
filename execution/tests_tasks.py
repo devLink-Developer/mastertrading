@@ -26,6 +26,7 @@ from execution.tasks import (
     _compute_tp_sl_prices,
     _extract_trigger_price,
     _extract_fee_usdt,
+    _grid_structural_sl_tp_hints,
     _is_insufficient_margin_error,
     _ml_entry_filter_model_path,
     _ml_entry_filter_min_prob,
@@ -1265,6 +1266,74 @@ class TaskHelpersTest(SimpleTestCase):
         )
         self.assertTrue(ok)
         self.assertEqual(reason, "ok")
+
+    @override_settings(
+        WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED=True,
+        WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES={"bear_confirmed"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES={"bear_weak"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES={"transition"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES={"balanced"},
+        WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN=35.0,
+    )
+    def test_weak_long_bear_weak_precheck_allows_adx_override_only_with_strong_long_trend(self):
+        ok, reason = _weak_long_bear_weak_precheck(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            monthly_regime="bear_confirmed",
+            daily_regime="bear_weak",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            symbol_adx_1h=41.0,
+            trend_context_direction="long",
+            trend_context_is_strong=True,
+        )
+        self.assertTrue(ok)
+        self.assertIn("adx_override", reason)
+
+    @override_settings(
+        WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED=True,
+        WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES={"bear_confirmed"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES={"bear_weak"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES={"transition"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES={"balanced"},
+        WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN=35.0,
+    )
+    def test_weak_long_bear_weak_precheck_still_blocks_when_adx_lacks_long_confirmation(self):
+        ok, reason = _weak_long_bear_weak_precheck(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            monthly_regime="bear_confirmed",
+            daily_regime="bear_weak",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            symbol_adx_1h=41.0,
+            trend_context_direction="short",
+            trend_context_is_strong=True,
+        )
+        self.assertFalse(ok)
+        self.assertIn("weak_long_bear_weak", reason)
+
+    def test_grid_structural_sl_tp_hints_use_directionally_valid_stop_distance(self):
+        sl_hint, tp_hint, stop_dist = _grid_structural_sl_tp_hints(
+            strategy_name="mod_grid_long",
+            sig_payload={"sl_price_hint": 95.0, "tp_price_hint": 108.0},
+            side="buy",
+            entry_price=100.0,
+        )
+        self.assertEqual(sl_hint, 95.0)
+        self.assertEqual(tp_hint, 108.0)
+        self.assertAlmostEqual(stop_dist, 0.05, places=6)
+
+    def test_grid_structural_sl_tp_hints_reject_invalid_long_stop_above_entry(self):
+        sl_hint, tp_hint, stop_dist = _grid_structural_sl_tp_hints(
+            strategy_name="mod_grid_long",
+            sig_payload={"sl_price_hint": 101.0, "tp_price_hint": 108.0},
+            side="buy",
+            entry_price=100.0,
+        )
+        self.assertEqual(sl_hint, 0.0)
+        self.assertEqual(tp_hint, 108.0)
+        self.assertEqual(stop_dist, 0.0)
 
     @override_settings(
         REGIME_DIRECTIONAL_PENALTY_ENABLED=False,

@@ -4312,6 +4312,8 @@ def _weak_long_bear_weak_precheck(
     btc_lead_state: str,
     btc_recommended_bias: str,
     symbol_adx_1h: float = 0.0,
+    trend_context_direction: str = "",
+    trend_context_is_strong: bool = False,
 ) -> tuple[bool, str]:
     if _strategy_is_microvol(strategy_name):
         return True, "microvol_exempt"
@@ -4352,8 +4354,16 @@ def _weak_long_bear_weak_precheck(
         adx_override_min = float(
             getattr(settings, "WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN", 35.0)
         )
-        if symbol_adx_1h >= adx_override_min > 0:
-            return True, f"adx_override:{symbol_adx_1h:.1f}>={adx_override_min:.0f}"
+        trend_dir = str(trend_context_direction or "").strip().lower()
+        if (
+            symbol_adx_1h >= adx_override_min > 0
+            and trend_dir == "long"
+            and bool(trend_context_is_strong)
+        ):
+            return True, (
+                f"adx_override:{symbol_adx_1h:.1f}>={adx_override_min:.0f}"
+                f":{trend_dir}:strong"
+            )
         return False, f"weak_long_bear_weak:{month}:{day}:{lead_state}:{rec_bias}"
     return True, "ok"
 
@@ -4463,11 +4473,45 @@ def _clear_flat_signal(symbol: str) -> None:
         pass
 
 
+def _grid_structural_sl_tp_hints(
+    *,
+    strategy_name: str,
+    sig_payload: dict[str, Any] | None,
+    side: str,
+    entry_price: float,
+) -> tuple[float, float, float]:
+    """Return validated grid SL/TP hints plus stop distance pct for sizing."""
+    if "grid" not in str(strategy_name or "").strip().lower():
+        return 0.0, 0.0, 0.0
+    if not isinstance(sig_payload, dict):
+        return 0.0, 0.0, 0.0
+    if entry_price <= 0:
+        return 0.0, 0.0, 0.0
+
+    sl_hint = _to_float(sig_payload.get("sl_price_hint"))
+    tp_hint = _to_float(sig_payload.get("tp_price_hint"))
+    side_txt = str(side or "").strip().lower()
+
+    if side_txt == "buy":
+        if sl_hint >= entry_price:
+            sl_hint = 0.0
+        if 0 < tp_hint <= entry_price:
+            tp_hint = 0.0
+    elif side_txt == "sell":
+        if 0 < sl_hint <= entry_price:
+            sl_hint = 0.0
+        if tp_hint >= entry_price:
+            tp_hint = 0.0
+
+    stop_dist_pct = abs(entry_price - sl_hint) / entry_price if sl_hint > 0 else 0.0
+    return sl_hint, tp_hint, stop_dist_pct
+
+
 # ---------------------------------------------------------------------------
 # Symbol heat guard — progressive risk scaling based on recent performance
 # ---------------------------------------------------------------------------
 
-def _symbol_heat_guard(symbol: str) -> tuple[float, str]:
+def _symbol_heat_guard(symbol: str, side: str = "") -> tuple[float, str]:
     """Return (risk_mult, reason) based on recent trade outcomes for *symbol*.
 
     Instead of hard-blocking entries on a losing symbol, this progressively
@@ -4500,11 +4544,11 @@ def _symbol_heat_guard(symbol: str) -> tuple[float, str]:
         if inst is None:
             return 1.0, ""
 
-        recent = list(
-            OperationReport.objects.filter(instrument=inst)
-            .order_by("-closed_at")
-            .values_list("pnl_abs", flat=True)[:window]
-        )
+        op_qs = OperationReport.objects.filter(instrument=inst)
+        side_txt = str(side or "").strip().lower()
+        if side_txt in {"buy", "sell"}:
+            op_qs = op_qs.filter(side=side_txt)
+        recent = list(op_qs.order_by("-closed_at").values_list("pnl_abs", flat=True)[:window])
     except Exception:
         return 1.0, ""
 
@@ -4519,7 +4563,7 @@ def _symbol_heat_guard(symbol: str) -> tuple[float, str]:
 
     if wr <= wr_floor:
         return min_risk_mult, (
-            f"heat_guard:{symbol},wr={wr:.0%}({wins}/{len(recent)}),mult={min_risk_mult:.2f}"
+            f"heat_guard:{symbol}:{side_txt or 'all'},wr={wr:.0%}({wins}/{len(recent)}),mult={min_risk_mult:.2f}"
         )
 
     # Linear interpolation between wr_floor → wr_neutral
@@ -4527,7 +4571,7 @@ def _symbol_heat_guard(symbol: str) -> tuple[float, str]:
     mult = min_risk_mult + ratio * (1.0 - min_risk_mult)
     mult = round(max(min_risk_mult, min(1.0, mult)), 4)
     return mult, (
-        f"heat_guard:{symbol},wr={wr:.0%}({wins}/{len(recent)}),mult={mult:.2f}"
+        f"heat_guard:{symbol}:{side_txt or 'all'},wr={wr:.0%}({wins}/{len(recent)}),mult={mult:.2f}"
     )
 
 
@@ -4941,6 +4985,18 @@ def _attempt_entry_open(
         btc_lead_state=btc_lead_state,
         btc_recommended_bias=btc_recommended_bias,
         symbol_adx_1h=regime_adx_by_symbol.get(inst.symbol, 0.0),
+        trend_context_direction=(
+            str(
+                ((sig_payload or {}).get("reasons", {}) or {})
+                .get("trend_context", {})
+                .get("direction", "")
+            )
+            .strip()
+            .lower()
+        ),
+        trend_context_is_strong=bool(
+            (((sig_payload or {}).get("reasons", {}) or {}).get("trend_context", {}) or {}).get("is_strong")
+        ),
     )
     if not weak_long_ok:
         logger.info(
@@ -5326,7 +5382,7 @@ def _attempt_entry_open(
         )
 
     # Symbol heat guard — progressive risk reduction on losing streaks
-    heat_mult, heat_reason = _symbol_heat_guard(inst.symbol)
+    heat_mult, heat_reason = _symbol_heat_guard(inst.symbol, side=side)
     if heat_mult < 1.0:
         effective_risk_pct *= heat_mult
         logger.info(
@@ -5386,7 +5442,15 @@ def _attempt_entry_open(
     elif lev_set_reason not in {"cached", "ok"}:
         logger.info("Leverage set status on %s: %s", inst.symbol, lev_set_reason)
 
+    grid_sl_hint, grid_tp_hint, grid_stop_dist = _grid_structural_sl_tp_hints(
+        strategy_name=strategy_name,
+        sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+        side=side,
+        entry_price=last_price,
+    )
     stop_dist = float(sl_pct or 0.0) if atr is not None else 0.0
+    if grid_stop_dist > 0:
+        stop_dist = grid_stop_dist
     min_atr_for_entry = float(getattr(settings, "MIN_ATR_FOR_ENTRY", 0.003) or 0.003)
     if atr is not None and atr < min_atr_for_entry:
         logger.info(
@@ -5629,15 +5693,12 @@ def _attempt_entry_open(
         regime_label=_resolve_regime_label(symbol),
     )
     # --- Grid structural SL/TP override ---
-    if "grid" in strategy_name.lower() and isinstance(sig_payload, dict):
-        _grid_sl = _to_float(sig_payload.get("sl_price_hint"))
-        _grid_tp = _to_float(sig_payload.get("tp_price_hint"))
-        if _grid_sl and _grid_sl > 0:
-            sl_price = _grid_sl
-            logger.info("Grid SL override: sl_price=%.6f (structural)", sl_price)
-        if _grid_tp and _grid_tp > 0:
-            tp_price = _grid_tp
-            logger.info("Grid TP override: tp_price=%.6f (structural)", tp_price)
+    if grid_sl_hint > 0:
+        sl_price = grid_sl_hint
+        logger.info("Grid SL override: sl_price=%.6f (structural)", sl_price)
+    if grid_tp_hint > 0:
+        tp_price = grid_tp_hint
+        logger.info("Grid TP override: tp_price=%.6f (structural)", tp_price)
     base_correlation_id = _safe_correlation_id(f"{sig.id}-{inst.symbol}")
     correlation_id = base_correlation_id
     parent_correlation_id = base_correlation_id
@@ -5696,13 +5757,16 @@ def _attempt_entry_open(
                 regime_label=_resolve_regime_label(symbol),
             )
             # --- Grid structural SL/TP override (fill recalc) ---
-            if "grid" in strategy_name.lower() and isinstance(sig_payload, dict):
-                _grid_sl = _to_float(sig_payload.get("sl_price_hint"))
-                _grid_tp = _to_float(sig_payload.get("tp_price_hint"))
-                if _grid_sl and _grid_sl > 0:
-                    sl_price = _grid_sl
-                if _grid_tp and _grid_tp > 0:
-                    tp_price = _grid_tp
+            fill_grid_sl_hint, fill_grid_tp_hint, _ = _grid_structural_sl_tp_hints(
+                strategy_name=strategy_name,
+                sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+                side=side,
+                entry_price=fill_price,
+            )
+            if fill_grid_sl_hint > 0:
+                sl_price = fill_grid_sl_hint
+            if fill_grid_tp_hint > 0:
+                tp_price = fill_grid_tp_hint
             logger.info(
                 "SL/TP recalculated with fill_price=%.4f (last=%.4f slippage=%.4f%%)",
                 fill_price,

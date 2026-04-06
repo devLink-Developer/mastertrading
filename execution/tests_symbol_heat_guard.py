@@ -34,7 +34,7 @@ class SymbolHeatGuardDBTests(TestCase):
             enabled=True,
         )
 
-    def _create_reports(self, symbol_inst, pnl_list):
+    def _create_reports(self, symbol_inst, pnl_list, *, side="sell"):
         """Create OperationReport entries with given PnLs (most recent first)."""
         from django.utils import timezone
         from datetime import timedelta
@@ -44,7 +44,7 @@ class SymbolHeatGuardDBTests(TestCase):
         for i, pnl in enumerate(pnl_list):
             OperationReport.objects.create(
                 instrument=symbol_inst,
-                side="sell",
+                side=side,
                 qty=1,
                 entry_price=100,
                 exit_price=100 + float(pnl),
@@ -169,3 +169,19 @@ class SymbolHeatGuardDBTests(TestCase):
         self._create_reports(self.inst, [0.1, 0.1, 0.1, 0.1, -0.1, -0.1, -0.1])
         mult2, _ = _symbol_heat_guard("TESTUSDT")
         self.assertEqual(mult2, 1.0)
+
+    @override_settings(
+        SYMBOL_HEAT_GUARD_ENABLED=True,
+        SYMBOL_HEAT_GUARD_WINDOW=7,
+        SYMBOL_HEAT_GUARD_WR_NEUTRAL=0.50,
+        SYMBOL_HEAT_GUARD_WR_FLOOR=0.25,
+        SYMBOL_HEAT_GUARD_MIN_RISK_MULT=0.35,
+        SYMBOL_HEAT_GUARD_MIN_TRADES=3,
+    )
+    def test_side_filter_uses_only_matching_direction(self):
+        self._create_reports(self.inst, [-0.1] * 7, side="sell")
+        self._create_reports(self.inst, [0.1] * 7, side="buy")
+        sell_mult, _ = _symbol_heat_guard("TESTUSDT", side="sell")
+        buy_mult, _ = _symbol_heat_guard("TESTUSDT", side="buy")
+        self.assertEqual(sell_mult, 0.35)
+        self.assertEqual(buy_mult, 1.0)
