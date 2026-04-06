@@ -876,6 +876,9 @@ WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES = _parse_lower_set(
 WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES = _parse_lower_set(
     os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES", "balanced")
 )
+WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN = float(
+    os.getenv("WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN", "35.0")
+)
 
 # --- Cross-symbol directional correlation guard ---
 CROSS_SYMBOL_CORR_GUARD_ENABLED = os.getenv(

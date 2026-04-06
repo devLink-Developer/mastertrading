@@ -4311,6 +4311,7 @@ def _weak_long_bear_weak_precheck(
     daily_regime: str,
     btc_lead_state: str,
     btc_recommended_bias: str,
+    symbol_adx_1h: float = 0.0,
 ) -> tuple[bool, str]:
     if _strategy_is_microvol(strategy_name):
         return True, "microvol_exempt"
@@ -4348,6 +4349,11 @@ def _weak_long_bear_weak_precheck(
         and lead_state in blocked_leads
         and rec_bias in blocked_biases
     ):
+        adx_override_min = float(
+            getattr(settings, "WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN", 35.0)
+        )
+        if symbol_adx_1h >= adx_override_min > 0:
+            return True, f"adx_override:{symbol_adx_1h:.1f}>={adx_override_min:.0f}"
         return False, f"weak_long_bear_weak:{month}:{day}:{lead_state}:{rec_bias}"
     return True, "ok"
 
@@ -4895,6 +4901,7 @@ def _attempt_entry_open(
         daily_regime=str(mtf_symbol_snapshot.get("daily_regime", "") or ""),
         btc_lead_state=btc_lead_state,
         btc_recommended_bias=btc_recommended_bias,
+        symbol_adx_1h=regime_adx_by_symbol.get(inst.symbol, 0.0),
     )
     if not weak_long_ok:
         logger.info(
