@@ -4425,6 +4425,45 @@ def _cross_symbol_correlation_guard(
 
 
 # ---------------------------------------------------------------------------
+# Flat-signal timeout — close positions when signal stays flat too long
+# ---------------------------------------------------------------------------
+
+def _flat_signal_since_key(symbol: str) -> str:
+    return f"flat_signal_since:{symbol}"
+
+
+def _track_flat_signal(symbol: str) -> float:
+    """Record the first time we see a flat signal for *symbol*.
+
+    Returns seconds since the first flat observation, or 0 on error/first call.
+    """
+    client = _redis_client()
+    if client is None:
+        return 0.0
+    key = _flat_signal_since_key(symbol)
+    now_ts = dj_tz.now().timestamp()
+    try:
+        existing = client.get(key)
+        if existing:
+            return max(0.0, now_ts - float(existing))
+        client.set(key, str(now_ts), ex=86400)
+        return 0.0
+    except Exception:
+        return 0.0
+
+
+def _clear_flat_signal(symbol: str) -> None:
+    """Clear flat signal tracker when the signal is no longer flat."""
+    client = _redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(_flat_signal_since_key(symbol))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Symbol heat guard — progressive risk scaling based on recent performance
 # ---------------------------------------------------------------------------
 
@@ -5857,6 +5896,10 @@ def _manage_open_position(
     pos_side = "buy" if current_qty > 0 else "sell"
     pos_direction = "long" if current_qty > 0 else "short"
 
+    # Clear flat-signal timeout tracker when signal is directional again.
+    if signal_direction in {"long", "short"}:
+        _clear_flat_signal(symbol)
+
     # Use the actual entry leverage stored in the opening Order (may be boosted above adapter.leverage).
     # This ensures _log_operation reports the real leverage used, not the adapter default.
     try:
@@ -6618,7 +6661,71 @@ def _manage_open_position(
             return True, allow_scale_entry, scale_parent_correlation, scale_add_index
 
     if signal_direction == "flat":
-        logger.info("Flat signal on %s with open qty=%s; manage-only", symbol, current_qty)
+        # -- Flat-signal timeout: close position if flat persists too long --
+        flat_timeout_enabled = bool(getattr(settings, "FLAT_SIGNAL_TIMEOUT_ENABLED", True))
+        flat_timeout_minutes = max(1.0, float(getattr(settings, "FLAT_SIGNAL_TIMEOUT_MINUTES", 10)))
+        if flat_timeout_enabled and last and entry_price and abs(current_qty) > 0:
+            flat_seconds = _track_flat_signal(symbol)
+            flat_minutes = flat_seconds / 60.0
+            if flat_minutes >= flat_timeout_minutes:
+                close_side = "sell" if current_qty > 0 else "buy"
+                close_qty = abs(current_qty)
+                trade_side = "buy" if current_qty > 0 else "sell"
+                pnl_flat = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+                pnl_abs_flat = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+                dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+                logger.info(
+                    "Flat signal timeout on %s: flat for %.1f min (threshold %.1f min), closing pnl=%.4f%%",
+                    symbol,
+                    flat_minutes,
+                    flat_timeout_minutes,
+                    pnl_flat * 100,
+                )
+                try:
+                    close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
+                    close_fee = _extract_fee_usdt(close_resp)
+                    _log_operation(
+                        inst,
+                        trade_side,
+                        close_qty,
+                        entry_price,
+                        last,
+                        reason="flat_signal_timeout",
+                        signal_id=origin_signal_id,
+                        correlation_id=origin_correlation_id,
+                        leverage=leverage,
+                        equity_before=equity_usdt,
+                        equity_after=None,
+                        fee_usdt=close_fee,
+                        opened_at=pos_opened_at,
+                        contract_size=contract_size,
+                    )
+                    notify_trade_closed(
+                        inst.symbol,
+                        "flat_signal_timeout",
+                        pnl_flat,
+                        pnl_abs=pnl_abs_flat,
+                        entry_price=entry_price,
+                        exit_price=last,
+                        qty=close_qty,
+                        equity_before=equity_usdt,
+                        duration_min=dur_min,
+                        side=trade_side,
+                        leverage=leverage,
+                        strategy_name=position_strategy_name,
+                        active_modules=_signal_active_modules(position_sig_payload, position_strategy_name),
+                    )
+                    _mark_position_closed(inst)
+                    _clear_flat_signal(symbol)
+                except Exception as exc:
+                    if _is_no_position_error(exc):
+                        _mark_position_closed(inst)
+                        _clear_flat_signal(symbol)
+                    else:
+                        logger.warning("Flat signal timeout close failed %s: %s", symbol, exc)
+                return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+        else:
+            logger.info("Flat signal on %s with open qty=%s; manage-only", symbol, current_qty)
         return True, allow_scale_entry, scale_parent_correlation, scale_add_index
 
     same_side_signal = (

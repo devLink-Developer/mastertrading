@@ -119,6 +119,10 @@ BTC_VOL_RISK_MULT = max(0.0, min(1.0, float(os.getenv("BTC_VOL_RISK_MULT", "0.75
 SIGNAL_TTL_SECONDS = int(os.getenv("SIGNAL_TTL_SECONDS", "300"))  # 5 min, stale signals are ignored
 SIGNAL_DEDUP_SECONDS = int(os.getenv("SIGNAL_DEDUP_SECONDS", "120"))  # prevent duplicate same-direction signals
 
+# -- Flat signal timeout: close positions when signal stays flat --
+FLAT_SIGNAL_TIMEOUT_ENABLED = os.getenv("FLAT_SIGNAL_TIMEOUT_ENABLED", "true").lower() == "true"
+FLAT_SIGNAL_TIMEOUT_MINUTES = max(1.0, float(os.getenv("FLAT_SIGNAL_TIMEOUT_MINUTES", "10")))
+
 # -- New: Trailing stop / partial close --
 TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"
 TRAILING_STOP_ACTIVATION_R = float(os.getenv("TRAILING_STOP_ACTIVATION_R", "1.5"))  # activate trail after 1.5R (was 2.5 — start trailing sooner to protect gains)
