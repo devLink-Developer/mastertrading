@@ -1019,6 +1019,12 @@ MODULE_GRID_ALLOWED_SESSIONS = _parse_session_set(
 MODULE_GRID_ALLOWED_SYMBOLS = _parse_symbol_set(
     os.getenv("MODULE_GRID_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
 )
+MODULE_GRID_MTF_RANGE_ENABLED = os.getenv("MODULE_GRID_MTF_RANGE_ENABLED", "true").lower() == "true"
+MODULE_GRID_D1_LOOKBACK = max(7, int(os.getenv("MODULE_GRID_D1_LOOKBACK", "45")))
+MODULE_GRID_BUY_ZONE_PCT = max(0.0, min(0.5, float(os.getenv("MODULE_GRID_BUY_ZONE_PCT", "0.15"))))
+MODULE_GRID_SELL_ZONE_PCT = max(0.0, min(0.5, float(os.getenv("MODULE_GRID_SELL_ZONE_PCT", "0.15"))))
+MODULE_GRID_SL_BUFFER_PCT = max(0.0, float(os.getenv("MODULE_GRID_SL_BUFFER_PCT", "0.003")))
+MODULE_GRID_TP_BUFFER_PCT = max(0.0, float(os.getenv("MODULE_GRID_TP_BUFFER_PCT", "0.002")))
 MODULE_MICROVOL_ALLOWED_SESSIONS = _parse_session_set(
     os.getenv("MODULE_MICROVOL_ALLOWED_SESSIONS", "london,overlap,ny_open,ny")
 )

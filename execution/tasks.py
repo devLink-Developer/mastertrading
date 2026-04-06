@@ -5589,6 +5589,16 @@ def _attempt_entry_open(
         strategy_name=strategy_name,
         regime_label=_resolve_regime_label(symbol),
     )
+    # --- Grid structural SL/TP override ---
+    if "grid" in strategy_name.lower() and isinstance(sig_payload, dict):
+        _grid_sl = _to_float(sig_payload.get("sl_price_hint"))
+        _grid_tp = _to_float(sig_payload.get("tp_price_hint"))
+        if _grid_sl and _grid_sl > 0:
+            sl_price = _grid_sl
+            logger.info("Grid SL override: sl_price=%.6f (structural)", sl_price)
+        if _grid_tp and _grid_tp > 0:
+            tp_price = _grid_tp
+            logger.info("Grid TP override: tp_price=%.6f (structural)", tp_price)
     base_correlation_id = _safe_correlation_id(f"{sig.id}-{inst.symbol}")
     correlation_id = base_correlation_id
     parent_correlation_id = base_correlation_id
@@ -5646,6 +5656,14 @@ def _attempt_entry_open(
                 strategy_name=strategy_name,
                 regime_label=_resolve_regime_label(symbol),
             )
+            # --- Grid structural SL/TP override (fill recalc) ---
+            if "grid" in strategy_name.lower() and isinstance(sig_payload, dict):
+                _grid_sl = _to_float(sig_payload.get("sl_price_hint"))
+                _grid_tp = _to_float(sig_payload.get("tp_price_hint"))
+                if _grid_sl and _grid_sl > 0:
+                    sl_price = _grid_sl
+                if _grid_tp and _grid_tp > 0:
+                    tp_price = _grid_tp
             logger.info(
                 "SL/TP recalculated with fill_price=%.4f (last=%.4f slippage=%.4f%%)",
                 fill_price,
