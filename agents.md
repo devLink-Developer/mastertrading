@@ -1926,3 +1926,17 @@ Conclusion operativa:
   - el mapa de tiers actual puede seguir existiendo
   - pero ya no distorsiona el budget dinamico del allocator
   - eso deja el tier como capa conservadora, no como multiplicador oculto de riesgo
+
+### 2026-04-06 update: `XRPUSDT` baja de `mid` a `alt`
+- Auditoria general de riesgo y rendimiento por simbolo mostro que el mapa de tiers actual esta mayormente bien, con una excepcion razonable:
+  - `XRPUSDT` no justifica seguir en `mid`
+- Lectura operativa:
+  - `BTCUSDT` y `ETHUSDT` siguen teniendo sentido en `base`
+  - `DOGEUSDT`, `ADAUSDT`, `LINKUSDT`, `ENAUSDT` siguen bien en `alt`
+  - `SOLUSDT` hoy queda condicionado mas por `min_qty/xRisk` que por tier
+  - `XRPUSDT` conviene pasarlo a `alt` para bajar dano en setups flojos sin apagar el simbolo
+- Cambio aplicado:
+  - `INSTRUMENT_TIER_MAP["XRPUSDT"] = "alt"`
+- Objetivo:
+  - reducir riesgo de `XRP` sin tocar sus gates ni deshabilitarlo
+  - mantener un ajuste conservador y reversible

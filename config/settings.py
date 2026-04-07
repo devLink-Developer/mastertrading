@@ -522,7 +522,7 @@ _INSTRUMENT_RISK_TIERS_RAW = os.getenv(
 )
 _INSTRUMENT_TIER_MAP_RAW = os.getenv(
     "INSTRUMENT_TIER_MAP",
-    '{"BTCUSDT": "base", "ETHUSDT": "base", "SOLUSDT": "mid", "XRPUSDT": "mid", "DOGEUSDT": "alt", "ADAUSDT": "alt", "LINKUSDT": "alt", "ENAUSDT": "alt"}',
+    '{"BTCUSDT": "base", "ETHUSDT": "base", "SOLUSDT": "mid", "XRPUSDT": "alt", "DOGEUSDT": "alt", "ADAUSDT": "alt", "LINKUSDT": "alt", "ENAUSDT": "alt"}',
 )
 _PER_INST_COOLDOWN_RAW = os.getenv("PER_INSTRUMENT_COOLDOWN", '{}')
 _PER_INST_SPREAD_RAW = os.getenv("PER_INSTRUMENT_MAX_SPREAD_BPS", '{}')
