@@ -654,7 +654,11 @@ try:
 except Exception:
     INSTRUMENT_RISK_TIERS = {"base": 0.0020, "mid": 0.0025, "alt": 0.0015}
 try:
-    INSTRUMENT_TIER_MAP = dict(_json.loads(_INSTRUMENT_TIER_MAP_RAW))
+    INSTRUMENT_TIER_MAP = {
+        str(k).upper(): str(v).strip().lower()
+        for k, v in _parse_raw_mapping(_INSTRUMENT_TIER_MAP_RAW).items()
+        if str(k).strip() and str(v).strip()
+    }
 except Exception:
     INSTRUMENT_TIER_MAP = {}
 INSTRUMENT_RISK_TIERS_ENABLED = os.getenv("INSTRUMENT_RISK_TIERS_ENABLED", "false").strip().lower() in ("true", "1", "yes")

@@ -1940,3 +1940,12 @@ Conclusion operativa:
 - Objetivo:
   - reducir riesgo de `XRP` sin tocar sus gates ni deshabilitarlo
   - mantener un ajuste conservador y reversible
+- Ajuste adicional detectado en prod:
+  - los `.env` de server usan `INSTRUMENT_TIER_MAP` en sintaxis relajada (`{BTCUSDT:base,...}`)
+  - `config/settings.py` lo parseaba antes solo como JSON estricto, dejando `INSTRUMENT_TIER_MAP={}` en runtime
+- Fix aplicado:
+  - ahora `INSTRUMENT_TIER_MAP` usa `_parse_raw_mapping(...)` con normalizacion `SYMBOL -> upper`, `tier -> lower`
+  - esto evita que el tier quede silenciosamente desactivado por formato de `.env`
+- Cobertura agregada:
+  - `config/tests_settings.py`
+  - valida sintaxis relajada y normalizacion del mapa
