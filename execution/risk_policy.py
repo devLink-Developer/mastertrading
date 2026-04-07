@@ -36,14 +36,15 @@ def volatility_adjusted_risk(symbol: str, atr_pct: float | None, base_risk: floa
             per_symbol_risk = float(base_risk)
         effective_base = max(0.0, min(per_symbol_risk, float(base_risk)))
     else:
-        # 2) Risk tiers: use tier-specific base risk, then ATR scaling.
+        # 2) Risk tiers: use tier-specific caps, but never increase allocator/base risk.
         if getattr(settings, "INSTRUMENT_RISK_TIERS_ENABLED", False):
             tier_map = getattr(settings, "INSTRUMENT_TIER_MAP", {})
             tiers = getattr(settings, "INSTRUMENT_RISK_TIERS", {})
             tier_name = tier_map.get(symbol, "")
             if tier_name and tier_name in tiers:
                 try:
-                    effective_base = float(tiers[tier_name])
+                    tier_risk = float(tiers[tier_name])
+                    effective_base = max(0.0, min(tier_risk, float(base_risk)))
                 except Exception:
                     pass
 

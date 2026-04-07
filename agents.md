@@ -1904,3 +1904,25 @@ Conclusion operativa:
 - Politica operativa:
   - es un gate quirurgico, no un bloqueo general de shorts en Asia
   - apunta a cortar carry/trend shorts fragiles cuando BTC esta en transicion y el sesgo sigue balanceado
+
+### 2026-04-06 update: tiers de riesgo no pueden subir el budget del allocator
+- Auditoria general de riesgo detecto una incoherencia en `execution/risk_policy.py`:
+  - `PER_INSTRUMENT_RISK` ya respetaba `min(per_symbol_risk, base_risk)`
+  - pero `INSTRUMENT_RISK_TIERS` no hacia ese cap
+  - con tiers activos en prod, un `base_risk` bajo del allocator podia ser elevado por el tier del simbolo
+- Ejemplo real antes del fix:
+  - `volatility_adjusted_risk("ETHUSDT", atr_pct=0.0, base_risk=0.0009)` devolvia `0.002`
+  - `XRPUSDT` devolvia `0.0025`
+  - `ENAUSDT` devolvia `0.0015`
+- Eso implicaba que el tier podia pisar el `risk_budget_pct` dinamico y abrir con mas riesgo del planeado.
+- Fix aplicado:
+  - los tiers ahora funcionan como `cap`, no como `floor`
+  - regla nueva: `effective_base = min(tier_risk, base_risk)`
+- Cobertura agregada:
+  - `execution/tests_risk_policy.py`
+  - `execution/tests_tasks.py`
+  - valida que `ETH/XRP/ENA` no puedan elevar un `base_risk=0.0009`
+- Lectura operativa:
+  - el mapa de tiers actual puede seguir existiendo
+  - pero ya no distorsiona el budget dinamico del allocator
+  - eso deja el tier como capa conservadora, no como multiplicador oculto de riesgo

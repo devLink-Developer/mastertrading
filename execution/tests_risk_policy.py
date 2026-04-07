@@ -58,6 +58,29 @@ class RiskPolicyHelpersTest(SimpleTestCase):
 
     @override_settings(
         PER_INSTRUMENT_RISK={},
+        INSTRUMENT_RISK_TIERS_ENABLED=True,
+        INSTRUMENT_RISK_TIERS={"base": 0.002, "mid": 0.0025, "alt": 0.0015},
+        INSTRUMENT_TIER_MAP={"ETHUSDT": "base", "XRPUSDT": "mid", "ENAUSDT": "alt"},
+    )
+    def test_volatility_adjusted_risk_tiers_do_not_raise_allocator_budget(self):
+        self.assertAlmostEqual(
+            volatility_adjusted_risk("ETHUSDT", atr_pct=None, base_risk=0.0009),
+            0.0009,
+            places=8,
+        )
+        self.assertAlmostEqual(
+            volatility_adjusted_risk("XRPUSDT", atr_pct=None, base_risk=0.0009),
+            0.0009,
+            places=8,
+        )
+        self.assertAlmostEqual(
+            volatility_adjusted_risk("ENAUSDT", atr_pct=None, base_risk=0.0009),
+            0.0009,
+            places=8,
+        )
+
+    @override_settings(
+        PER_INSTRUMENT_RISK={},
         INSTRUMENT_RISK_TIERS_ENABLED=False,
         VOL_RISK_LOW_ATR_PCT=0.008,
         VOL_RISK_HIGH_ATR_PCT=0.015,
