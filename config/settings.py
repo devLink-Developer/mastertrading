@@ -886,6 +886,15 @@ WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_ENABLED = os.getenv(
 WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN = float(
     os.getenv("WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN", "35.0")
 )
+ASIA_WEAK_SHORT_BLOCK_ENABLED = os.getenv(
+    "ASIA_WEAK_SHORT_BLOCK_ENABLED", "false"
+).lower() == "true"
+ASIA_WEAK_SHORT_BLOCK_LEAD_STATES = _parse_lower_set(
+    os.getenv("ASIA_WEAK_SHORT_BLOCK_LEAD_STATES", "transition")
+)
+ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES = _parse_lower_set(
+    os.getenv("ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES", "balanced")
+)
 
 # --- Cross-symbol directional correlation guard ---
 CROSS_SYMBOL_CORR_GUARD_ENABLED = os.getenv(

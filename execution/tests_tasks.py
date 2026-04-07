@@ -37,6 +37,7 @@ from execution.tasks import (
     _macro_high_impact_allows_entry,
     _min_qty_dynamic_allowlist_state,
     _min_qty_risk_guard,
+    _asia_weak_short_precheck,
     _ny_open_weak_long_precheck,
     _weak_long_bear_weak_precheck,
     _is_no_position_error,
@@ -1339,6 +1340,60 @@ class TaskHelpersTest(SimpleTestCase):
         )
         self.assertFalse(ok)
         self.assertIn("weak_long_bear_weak", reason)
+
+    @override_settings(
+        ASIA_WEAK_SHORT_BLOCK_ENABLED=True,
+        ASIA_WEAK_SHORT_BLOCK_LEAD_STATES={"transition"},
+        ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES={"balanced"},
+    )
+    def test_asia_weak_short_precheck_blocks_matching_context(self):
+        ok, reason = _asia_weak_short_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            current_session="asia",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            trend_context_direction="short",
+            trend_context_is_strong=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("asia_weak_short", reason)
+
+    @override_settings(
+        ASIA_WEAK_SHORT_BLOCK_ENABLED=True,
+        ASIA_WEAK_SHORT_BLOCK_LEAD_STATES={"transition"},
+        ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES={"balanced"},
+    )
+    def test_asia_weak_short_precheck_allows_microvol(self):
+        ok, reason = _asia_weak_short_precheck(
+            strategy_name="mod_microvol_short",
+            signal_direction="short",
+            current_session="asia",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            trend_context_direction="short",
+            trend_context_is_strong=False,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "microvol_exempt")
+
+    @override_settings(
+        ASIA_WEAK_SHORT_BLOCK_ENABLED=True,
+        ASIA_WEAK_SHORT_BLOCK_LEAD_STATES={"transition"},
+        ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES={"balanced"},
+    )
+    def test_asia_weak_short_precheck_allows_strong_short_trend(self):
+        ok, reason = _asia_weak_short_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            current_session="asia",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            trend_context_direction="short",
+            trend_context_is_strong=True,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "strong_short_trend_ok")
 
     def test_corr_guard_positions_snapshot_includes_same_cycle_entries(self):
         merged = _corr_guard_positions_snapshot(

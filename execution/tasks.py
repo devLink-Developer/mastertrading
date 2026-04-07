@@ -4374,6 +4374,46 @@ def _weak_long_bear_weak_precheck(
     return True, "ok"
 
 
+def _asia_weak_short_precheck(
+    *,
+    strategy_name: str,
+    signal_direction: str,
+    current_session: str,
+    btc_lead_state: str,
+    btc_recommended_bias: str,
+    trend_context_direction: str = "",
+    trend_context_is_strong: bool = False,
+) -> tuple[bool, str]:
+    if _strategy_is_microvol(strategy_name):
+        return True, "microvol_exempt"
+    if str(current_session or "").strip().lower() != "asia":
+        return True, "n/a"
+    if str(signal_direction or "").strip().lower() != "short":
+        return True, "n/a"
+    if not get_runtime_bool(
+        "ASIA_WEAK_SHORT_BLOCK_ENABLED",
+        bool(getattr(settings, "ASIA_WEAK_SHORT_BLOCK_ENABLED", False)),
+    ):
+        return True, "disabled"
+
+    lead_state = str(btc_lead_state or "transition").strip().lower()
+    rec_bias = str(btc_recommended_bias or "balanced").strip().lower()
+    blocked_leads = _runtime_lower_set(
+        "ASIA_WEAK_SHORT_BLOCK_LEAD_STATES",
+        getattr(settings, "ASIA_WEAK_SHORT_BLOCK_LEAD_STATES", {"transition"}),
+    )
+    blocked_biases = _runtime_lower_set(
+        "ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES",
+        getattr(settings, "ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES", {"balanced"}),
+    )
+    trend_dir = str(trend_context_direction or "").strip().lower()
+    if lead_state in blocked_leads and rec_bias in blocked_biases:
+        if trend_dir == "short" and bool(trend_context_is_strong):
+            return True, "strong_short_trend_ok"
+        return False, f"asia_weak_short:{lead_state}:{rec_bias}:{trend_dir or 'none'}"
+    return True, "ok"
+
+
 def _corr_guard_positions_snapshot(
     base_positions: list[dict] | None,
     pending_entries: list[dict] | None = None,
@@ -5003,6 +5043,10 @@ def _attempt_entry_open(
         )
         return 0, 0.0
 
+    trend_context = (((sig_payload or {}).get("reasons", {}) or {}).get("trend_context", {}) or {})
+    trend_context_direction = str(trend_context.get("direction", "")).strip().lower()
+    trend_context_is_strong = bool(trend_context.get("is_strong"))
+
     weak_long_ok, weak_long_reason = _weak_long_bear_weak_precheck(
         strategy_name=strategy_name,
         signal_direction=signal_direction,
@@ -5011,18 +5055,8 @@ def _attempt_entry_open(
         btc_lead_state=btc_lead_state,
         btc_recommended_bias=btc_recommended_bias,
         symbol_adx_1h=regime_adx_by_symbol.get(inst.symbol, 0.0),
-        trend_context_direction=(
-            str(
-                ((sig_payload or {}).get("reasons", {}) or {})
-                .get("trend_context", {})
-                .get("direction", "")
-            )
-            .strip()
-            .lower()
-        ),
-        trend_context_is_strong=bool(
-            (((sig_payload or {}).get("reasons", {}) or {}).get("trend_context", {}) or {}).get("is_strong")
-        ),
+        trend_context_direction=trend_context_direction,
+        trend_context_is_strong=trend_context_is_strong,
     )
     if not weak_long_ok:
         logger.info(
@@ -5033,6 +5067,28 @@ def _attempt_entry_open(
             btc_lead_state,
             btc_recommended_bias,
             weak_long_reason,
+        )
+        return 0, 0.0
+
+    weak_short_ok, weak_short_reason = _asia_weak_short_precheck(
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        current_session=current_session,
+        btc_lead_state=btc_lead_state,
+        btc_recommended_bias=btc_recommended_bias,
+        trend_context_direction=trend_context_direction,
+        trend_context_is_strong=trend_context_is_strong,
+    )
+    if not weak_short_ok:
+        logger.info(
+            "Asia weak-short context blocked entry on %s: session=%s lead=%s bias=%s trend_dir=%s trend_strong=%s reason=%s",
+            inst.symbol,
+            current_session,
+            btc_lead_state,
+            btc_recommended_bias,
+            trend_context_direction or "n/a",
+            trend_context_is_strong,
+            weak_short_reason,
         )
         return 0, 0.0
 

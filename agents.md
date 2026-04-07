@@ -1873,3 +1873,34 @@ Conclusion operativa:
   - PnL de cierre: BTC -0.80%, DOGE -0.73%, LINK -0.87%, XRP -0.89%
 - El tracker se auto-corrige: si la senal vuelve a long/short, el timer se limpia y la posicion no se toca
 - Commit: `64dc885`
+
+### 2026-04-06 update: shorts debiles de Asia con lead `transition`
+- Se audito la perdida mas reciente en ambos stacks:
+  - `LINKUSDT sell`
+  - sesion `asia`
+  - `alloc_short`
+  - `monthly=bear_confirmed`, `daily=bear_weak`, `lead=transition`, `bias=balanced`
+  - cierre por `flat_signal_timeout`
+- Hallazgo:
+  - no fue bug ni cierre apurado
+  - incluso 90 minutos despues del cierre el trade no habia vuelto a verde
+  - el patron comun era `trend_context.direction=short` pero `trend_context.is_strong=false`
+- Validacion historica:
+  - en 30d, el subgrupo `alloc_short + asia + lead=transition + bias=balanced + trend no fuerte` fue claramente peor que el mismo contexto con `trend` fuerte
+  - `trend` fuerte en ese contexto si siguio generando algunos `tp`, por lo que no convenia bloquear `asia short` globalmente
+- Fix aplicado:
+  - nuevo gate `_asia_weak_short_precheck()` en `execution/tasks.py`
+  - bloquea solo:
+    - `alloc_short` no-`microvol`
+    - sesion `asia`
+    - `btc_lead_state in {"transition"}`
+    - `recommended_bias in {"balanced"}`
+    - sin `trend short` fuerte
+  - si `trend_context.direction == "short"` y `trend_context.is_strong == true`, la entrada sigue permitida
+- Settings:
+  - `ASIA_WEAK_SHORT_BLOCK_ENABLED`
+  - `ASIA_WEAK_SHORT_BLOCK_LEAD_STATES`
+  - `ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES`
+- Politica operativa:
+  - es un gate quirurgico, no un bloqueo general de shorts en Asia
+  - apunta a cortar carry/trend shorts fragiles cuando BTC esta en transicion y el sesgo sigue balanceado
