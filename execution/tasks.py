@@ -49,6 +49,7 @@ from signals.regime_mtf import (
 from signals.models import Signal
 from signals.runtime_overrides import (
     get_runtime_bool,
+    get_runtime_float,
     get_runtime_int,
     get_runtime_override,
     get_runtime_str_list,
@@ -4414,6 +4415,124 @@ def _asia_weak_short_precheck(
     return True, "ok"
 
 
+def _weak_short_transition_precheck(
+    *,
+    strategy_name: str,
+    signal_direction: str,
+    current_session: str,
+    daily_regime: str,
+    btc_lead_state: str,
+    btc_recommended_bias: str,
+    trend_context_direction: str = "",
+    trend_context_is_strong: bool = False,
+) -> tuple[bool, str]:
+    if _strategy_is_microvol(strategy_name):
+        return True, "microvol_exempt"
+    if str(signal_direction or "").strip().lower() != "short":
+        return True, "n/a"
+    if not get_runtime_bool(
+        "WEAK_SHORT_TRANSITION_BLOCK_ENABLED",
+        bool(getattr(settings, "WEAK_SHORT_TRANSITION_BLOCK_ENABLED", False)),
+    ):
+        return True, "disabled"
+
+    session = str(current_session or "").strip().lower()
+    allowed_sessions = _runtime_lower_set(
+        "WEAK_SHORT_TRANSITION_BLOCK_SESSIONS",
+        getattr(settings, "WEAK_SHORT_TRANSITION_BLOCK_SESSIONS", {"london", "overlap", "ny"}),
+    )
+    if session not in allowed_sessions:
+        return True, "n/a"
+
+    day = str(daily_regime or "").strip().lower()
+    lead_state = str(btc_lead_state or "transition").strip().lower()
+    rec_bias = str(btc_recommended_bias or "balanced").strip().lower()
+    blocked_days = _runtime_lower_set(
+        "WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES",
+        getattr(settings, "WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES", {"bear_weak"}),
+    )
+    blocked_leads = _runtime_lower_set(
+        "WEAK_SHORT_TRANSITION_BLOCK_LEAD_STATES",
+        getattr(settings, "WEAK_SHORT_TRANSITION_BLOCK_LEAD_STATES", {"transition"}),
+    )
+    blocked_biases = _runtime_lower_set(
+        "WEAK_SHORT_TRANSITION_BLOCK_RECOMMENDED_BIASES",
+        getattr(settings, "WEAK_SHORT_TRANSITION_BLOCK_RECOMMENDED_BIASES", {"balanced"}),
+    )
+    trend_dir = str(trend_context_direction or "").strip().lower()
+    if day in blocked_days and lead_state in blocked_leads and rec_bias in blocked_biases:
+        if trend_dir == "short" and bool(trend_context_is_strong):
+            return True, "strong_short_trend_ok"
+        return False, f"weak_short_transition:{session}:{day}:{lead_state}:{rec_bias}:{trend_dir or 'none'}"
+    return True, "ok"
+
+
+def _dead_session_strong_trend_breakout_override(
+    *,
+    strategy_name: str,
+    signal_direction: str,
+    current_session: str,
+    sig_score: float,
+    sig_payload: dict[str, Any] | None,
+) -> tuple[bool, str, float | None, float | None]:
+    if str(current_session or "").strip().lower() != "dead":
+        return False, "n/a", None, None
+    if str(signal_direction or "").strip().lower() != "long":
+        return False, "n/a", None, None
+    if not get_runtime_bool(
+        "DEAD_SESSION_STRONG_TREND_BREAKOUT_ENABLED",
+        bool(getattr(settings, "DEAD_SESSION_STRONG_TREND_BREAKOUT_ENABLED", False)),
+    ):
+        return False, "disabled", None, None
+
+    payload = sig_payload if isinstance(sig_payload, dict) else {}
+    reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
+    trend_ctx = reasons.get("trend_context") if isinstance(reasons.get("trend_context"), dict) else {}
+    trend_dir = str(trend_ctx.get("direction", "")).strip().lower()
+    trend_is_strong = bool(trend_ctx.get("is_strong"))
+    adx_htf = _to_float(trend_ctx.get("adx_htf", 0.0))
+    min_score = get_runtime_float(
+        "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE",
+        float(getattr(settings, "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE", 0.78) or 0.78),
+        minimum=0.0,
+        maximum=1.0,
+    )
+    min_adx = get_runtime_float(
+        "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX",
+        float(getattr(settings, "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX", 30.0) or 30.0),
+        minimum=0.0,
+    )
+    if _to_float(sig_score) < min_score:
+        return False, f"low_score:{_to_float(sig_score):.3f}<{min_score:.3f}", None, None
+    if trend_dir != "long" or not trend_is_strong:
+        return False, f"trend_not_strong:{trend_dir or 'none'}:{trend_is_strong}", None, None
+    if adx_htf < min_adx:
+        return False, f"adx_low:{adx_htf:.1f}<{min_adx:.1f}", None, None
+
+    module_rows = reasons.get("module_rows") if isinstance(reasons.get("module_rows"), list) else []
+    saw_trend = False
+    for row in module_rows:
+        if not isinstance(row, dict):
+            continue
+        module = str(row.get("module", "")).strip().lower()
+        direction = str(row.get("direction", "")).strip().lower()
+        if module == "trend":
+            saw_trend = True
+        if direction and direction != "long":
+            return False, f"opposed_module:{module}:{direction}", None, None
+    if not saw_trend:
+        return False, "trend_module_missing", None, None
+
+    score_override = min_score
+    risk_mult = get_runtime_float(
+        "DEAD_SESSION_STRONG_TREND_BREAKOUT_RISK_MULT",
+        float(getattr(settings, "DEAD_SESSION_STRONG_TREND_BREAKOUT_RISK_MULT", 0.35) or 0.35),
+        minimum=0.0,
+        maximum=1.0,
+    )
+    return True, "dead_strong_trend_breakout", score_override, risk_mult
+
+
 def _corr_guard_positions_snapshot(
     base_positions: list[dict] | None,
     pending_entries: list[dict] | None = None,
@@ -4973,16 +5092,41 @@ def _attempt_entry_open(
             )
             return 0, 0.0
 
+    sig_score = _to_float(getattr(sig, "score", 0.0))
     if session_policy_enabled and session_dead_zone_block and is_dead_session(current_session):
-        logger.info(
-            "Session dead zone active, skipping new entry for %s (session=%s)",
-            inst.symbol,
-            current_session,
+        (
+            dead_override_allowed,
+            dead_override_reason,
+            dead_override_score_min,
+            dead_override_risk_mult,
+        ) = _dead_session_strong_trend_breakout_override(
+            strategy_name=strategy_name,
+            signal_direction=signal_direction,
+            current_session=current_session,
+            sig_score=sig_score,
+            sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
         )
-        return 0, 0.0
+        if not dead_override_allowed:
+            logger.info(
+                "Session dead zone active, skipping new entry for %s (session=%s reason=%s)",
+                inst.symbol,
+                current_session,
+                dead_override_reason,
+            )
+            return 0, 0.0
+        if dead_override_score_min is not None:
+            session_min_score = float(dead_override_score_min)
+        if dead_override_risk_mult is not None:
+            session_risk_mult = float(dead_override_risk_mult)
+        logger.info(
+            "Dead-session breakout override allowing entry on %s: reason=%s score_min=%.3f risk_mult=%.3f",
+            inst.symbol,
+            dead_override_reason,
+            float(session_min_score),
+            float(session_risk_mult),
+        )
 
     exec_min_score = session_min_score if session_policy_enabled else settings.EXECUTION_MIN_SIGNAL_SCORE
-    sig_score = _to_float(getattr(sig, "score", 0.0))
     if sig_score < exec_min_score:
         logger.info(
             "Signal score too low for execution on %s: %.3f < %.3f (session=%s)",
@@ -5089,6 +5233,30 @@ def _attempt_entry_open(
             trend_context_direction or "n/a",
             trend_context_is_strong,
             weak_short_reason,
+        )
+        return 0, 0.0
+
+    weak_short_transition_ok, weak_short_transition_reason = _weak_short_transition_precheck(
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        current_session=current_session,
+        daily_regime=str(mtf_symbol_snapshot.get("daily_regime", "") or ""),
+        btc_lead_state=btc_lead_state,
+        btc_recommended_bias=btc_recommended_bias,
+        trend_context_direction=trend_context_direction,
+        trend_context_is_strong=trend_context_is_strong,
+    )
+    if not weak_short_transition_ok:
+        logger.info(
+            "Weak short transition context blocked entry on %s: session=%s day=%s lead=%s bias=%s trend_dir=%s trend_strong=%s reason=%s",
+            inst.symbol,
+            current_session,
+            mtf_symbol_snapshot.get("daily_regime", ""),
+            btc_lead_state,
+            btc_recommended_bias,
+            trend_context_direction or "n/a",
+            trend_context_is_strong,
+            weak_short_transition_reason,
         )
         return 0, 0.0
 

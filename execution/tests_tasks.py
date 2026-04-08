@@ -38,7 +38,9 @@ from execution.tasks import (
     _min_qty_dynamic_allowlist_state,
     _min_qty_risk_guard,
     _asia_weak_short_precheck,
+    _dead_session_strong_trend_breakout_override,
     _ny_open_weak_long_precheck,
+    _weak_short_transition_precheck,
     _weak_long_bear_weak_precheck,
     _is_no_position_error,
     _load_enabled_instruments_and_latest_signals,
@@ -1417,6 +1419,101 @@ class TaskHelpersTest(SimpleTestCase):
         )
         self.assertTrue(ok)
         self.assertEqual(reason, "strong_short_trend_ok")
+
+    @override_settings(
+        WEAK_SHORT_TRANSITION_BLOCK_ENABLED=True,
+        WEAK_SHORT_TRANSITION_BLOCK_SESSIONS={"london", "overlap", "ny"},
+        WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES={"bear_weak"},
+        WEAK_SHORT_TRANSITION_BLOCK_LEAD_STATES={"transition"},
+        WEAK_SHORT_TRANSITION_BLOCK_RECOMMENDED_BIASES={"balanced"},
+    )
+    def test_weak_short_transition_precheck_blocks_matching_context(self):
+        ok, reason = _weak_short_transition_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            current_session="london",
+            daily_regime="bear_weak",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            trend_context_direction="short",
+            trend_context_is_strong=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("weak_short_transition", reason)
+
+    @override_settings(
+        WEAK_SHORT_TRANSITION_BLOCK_ENABLED=True,
+        WEAK_SHORT_TRANSITION_BLOCK_SESSIONS={"london", "overlap", "ny"},
+        WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES={"bear_weak"},
+        WEAK_SHORT_TRANSITION_BLOCK_LEAD_STATES={"transition"},
+        WEAK_SHORT_TRANSITION_BLOCK_RECOMMENDED_BIASES={"balanced"},
+    )
+    def test_weak_short_transition_precheck_allows_strong_short_trend(self):
+        ok, reason = _weak_short_transition_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            current_session="ny",
+            daily_regime="bear_weak",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            trend_context_direction="short",
+            trend_context_is_strong=True,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "strong_short_trend_ok")
+
+    @override_settings(
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_ENABLED=True,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE=0.78,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX=30.0,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_RISK_MULT=0.35,
+    )
+    def test_dead_session_breakout_override_blocks_opposed_modules(self):
+        ok, reason, score_min, risk_mult = _dead_session_strong_trend_breakout_override(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            current_session="dead",
+            sig_score=0.84,
+            sig_payload={
+                "reasons": {
+                    "trend_context": {"direction": "long", "is_strong": True, "adx_htf": 33.0},
+                    "module_rows": [
+                        {"module": "trend", "direction": "long"},
+                        {"module": "carry", "direction": "short"},
+                    ],
+                }
+            },
+        )
+        self.assertFalse(ok)
+        self.assertIn("opposed_module", reason)
+        self.assertIsNone(score_min)
+        self.assertIsNone(risk_mult)
+
+    @override_settings(
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_ENABLED=True,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE=0.78,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX=30.0,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_RISK_MULT=0.35,
+    )
+    def test_dead_session_breakout_override_allows_clean_strong_trend(self):
+        ok, reason, score_min, risk_mult = _dead_session_strong_trend_breakout_override(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            current_session="dead",
+            sig_score=0.84,
+            sig_payload={
+                "reasons": {
+                    "trend_context": {"direction": "long", "is_strong": True, "adx_htf": 33.0},
+                    "module_rows": [
+                        {"module": "trend", "direction": "long"},
+                    ],
+                }
+            },
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "dead_strong_trend_breakout")
+        self.assertEqual(score_min, 0.78)
+        self.assertEqual(risk_mult, 0.35)
 
     def test_corr_guard_positions_snapshot_includes_same_cycle_entries(self):
         merged = _corr_guard_positions_snapshot(
