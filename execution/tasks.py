@@ -4384,6 +4384,8 @@ def _asia_weak_short_precheck(
     btc_recommended_bias: str,
     trend_context_direction: str = "",
     trend_context_is_strong: bool = False,
+    trend_context_confidence: float = 0.0,
+    trend_context_adx_htf: float = 0.0,
 ) -> tuple[bool, str]:
     if _strategy_is_microvol(strategy_name):
         return True, "microvol_exempt"
@@ -4411,6 +4413,29 @@ def _asia_weak_short_precheck(
     if lead_state in blocked_leads and rec_bias in blocked_biases:
         if trend_dir == "short" and bool(trend_context_is_strong):
             return True, "strong_short_trend_ok"
+        relaxed_enabled = get_runtime_bool(
+            "ASIA_WEAK_SHORT_RELAXED_TREND_ENABLED",
+            bool(getattr(settings, "ASIA_WEAK_SHORT_RELAXED_TREND_ENABLED", False)),
+        )
+        relaxed_conf_min = get_runtime_float(
+            "ASIA_WEAK_SHORT_RELAXED_TREND_CONF_MIN",
+            float(getattr(settings, "ASIA_WEAK_SHORT_RELAXED_TREND_CONF_MIN", 0.34) or 0.34),
+            minimum=0.0,
+        )
+        relaxed_adx_min = get_runtime_float(
+            "ASIA_WEAK_SHORT_RELAXED_TREND_ADX_MIN",
+            float(getattr(settings, "ASIA_WEAK_SHORT_RELAXED_TREND_ADX_MIN", 19.5) or 19.5),
+            minimum=0.0,
+        )
+        trend_conf = max(0.0, float(trend_context_confidence or 0.0))
+        trend_adx = max(0.0, float(trend_context_adx_htf or 0.0))
+        if (
+            relaxed_enabled
+            and trend_dir == "short"
+            and trend_conf >= relaxed_conf_min
+            and trend_adx >= relaxed_adx_min
+        ):
+            return True, f"relaxed_short_trend_ok:{trend_conf:.3f}:{trend_adx:.1f}"
         return False, f"asia_weak_short:{lead_state}:{rec_bias}:{trend_dir or 'none'}"
     return True, "ok"
 
@@ -5190,6 +5215,8 @@ def _attempt_entry_open(
     trend_context = (((sig_payload or {}).get("reasons", {}) or {}).get("trend_context", {}) or {})
     trend_context_direction = str(trend_context.get("direction", "")).strip().lower()
     trend_context_is_strong = bool(trend_context.get("is_strong"))
+    trend_context_confidence = _to_float(trend_context.get("confidence", 0.0))
+    trend_context_adx_htf = _to_float(trend_context.get("adx_htf", 0.0))
 
     weak_long_ok, weak_long_reason = _weak_long_bear_weak_precheck(
         strategy_name=strategy_name,
@@ -5222,16 +5249,20 @@ def _attempt_entry_open(
         btc_recommended_bias=btc_recommended_bias,
         trend_context_direction=trend_context_direction,
         trend_context_is_strong=trend_context_is_strong,
+        trend_context_confidence=trend_context_confidence,
+        trend_context_adx_htf=trend_context_adx_htf,
     )
     if not weak_short_ok:
         logger.info(
-            "Asia weak-short context blocked entry on %s: session=%s lead=%s bias=%s trend_dir=%s trend_strong=%s reason=%s",
+            "Asia weak-short context blocked entry on %s: session=%s lead=%s bias=%s trend_dir=%s trend_strong=%s trend_conf=%.3f trend_adx=%.1f reason=%s",
             inst.symbol,
             current_session,
             btc_lead_state,
             btc_recommended_bias,
             trend_context_direction or "n/a",
             trend_context_is_strong,
+            trend_context_confidence,
+            trend_context_adx_htf,
             weak_short_reason,
         )
         return 0, 0.0

@@ -1421,6 +1421,52 @@ class TaskHelpersTest(SimpleTestCase):
         self.assertEqual(reason, "strong_short_trend_ok")
 
     @override_settings(
+        ASIA_WEAK_SHORT_BLOCK_ENABLED=True,
+        ASIA_WEAK_SHORT_BLOCK_LEAD_STATES={"transition"},
+        ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES={"balanced"},
+        ASIA_WEAK_SHORT_RELAXED_TREND_ENABLED=True,
+        ASIA_WEAK_SHORT_RELAXED_TREND_CONF_MIN=0.34,
+        ASIA_WEAK_SHORT_RELAXED_TREND_ADX_MIN=19.5,
+    )
+    def test_asia_weak_short_precheck_allows_relaxed_short_trend(self):
+        ok, reason = _asia_weak_short_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            current_session="asia",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            trend_context_direction="short",
+            trend_context_is_strong=False,
+            trend_context_confidence=0.36,
+            trend_context_adx_htf=20.0,
+        )
+        self.assertTrue(ok)
+        self.assertIn("relaxed_short_trend_ok", reason)
+
+    @override_settings(
+        ASIA_WEAK_SHORT_BLOCK_ENABLED=True,
+        ASIA_WEAK_SHORT_BLOCK_LEAD_STATES={"transition"},
+        ASIA_WEAK_SHORT_BLOCK_RECOMMENDED_BIASES={"balanced"},
+        ASIA_WEAK_SHORT_RELAXED_TREND_ENABLED=True,
+        ASIA_WEAK_SHORT_RELAXED_TREND_CONF_MIN=0.34,
+        ASIA_WEAK_SHORT_RELAXED_TREND_ADX_MIN=19.5,
+    )
+    def test_asia_weak_short_precheck_blocks_relaxed_short_below_threshold(self):
+        ok, reason = _asia_weak_short_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            current_session="asia",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            trend_context_direction="short",
+            trend_context_is_strong=False,
+            trend_context_confidence=0.31,
+            trend_context_adx_htf=19.8,
+        )
+        self.assertFalse(ok)
+        self.assertIn("asia_weak_short", reason)
+
+    @override_settings(
         WEAK_SHORT_TRANSITION_BLOCK_ENABLED=True,
         WEAK_SHORT_TRANSITION_BLOCK_SESSIONS={"london", "overlap", "ny"},
         WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES={"bear_weak"},

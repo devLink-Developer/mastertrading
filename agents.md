@@ -1949,3 +1949,33 @@ Conclusion operativa:
 - Cobertura agregada:
   - `config/tests_settings.py`
   - valida sintaxis relajada y normalizacion del mapa
+
+### 2026-04-09 update: `asia_weak_short` relajado de forma controlada
+- Despues de 48h sin entradas nuevas, la auditoria mostro que el bot no estaba caido: estaba sobre-filtrado.
+- El principal freno era `ASIA_WEAK_SHORT_BLOCK`, con cientos de bloqueos en `SOLUSDT` y `DOGEUSDT` bajo:
+  - `session=asia`
+  - `btc_lead_state=transition`
+  - `recommended_bias=balanced`
+  - `trend_context.direction=short`
+  - pero `trend_context.is_strong=false`
+- Sondeos sobre casos bloqueados mostraron que `weak_long_bear_weak` y `dead session` estaban haciendo un trabajo razonable, pero `asia_weak_short` estaba apagando demasiado el bot.
+- Ajuste aplicado en `execution/tasks.py`:
+  - `_asia_weak_short_precheck()` ahora permite una excepcion adicional y reversible cuando:
+    - `trend_context.direction == "short"`
+    - `trend_context.confidence >= ASIA_WEAK_SHORT_RELAXED_TREND_CONF_MIN`
+    - `trend_context.adx_htf >= ASIA_WEAK_SHORT_RELAXED_TREND_ADX_MIN`
+  - la excepcion no reemplaza el caso `trend_context.is_strong=true`; lo complementa para devolver actividad a Asia sin abrir la compuerta completa
+- Settings nuevos:
+  - `ASIA_WEAK_SHORT_RELAXED_TREND_ENABLED`
+  - `ASIA_WEAK_SHORT_RELAXED_TREND_CONF_MIN`
+  - `ASIA_WEAK_SHORT_RELAXED_TREND_ADX_MIN`
+- Defaults conservadores:
+  - `enabled=false`
+  - `conf_min=0.34`
+  - `adx_min=19.5`
+- Cobertura agregada:
+  - `execution/tests_tasks.py`
+  - valida caso permitido por tendencia short relajada y caso bloqueado por thresholds insuficientes
+- Politica operativa:
+  - mantener `weak_long_bear_weak` y `dead session` sin cambios
+  - relajar solo `asia_weak_short`, porque era el bloqueo dominante y el principal responsable de que el bot quedara casi inmovil
