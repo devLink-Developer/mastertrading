@@ -4308,10 +4308,12 @@ def _weak_long_bear_weak_precheck(
     *,
     strategy_name: str,
     signal_direction: str,
+    current_session: str = "",
     monthly_regime: str,
     daily_regime: str,
     btc_lead_state: str,
     btc_recommended_bias: str,
+    sig_score: float = 0.0,
     symbol_adx_1h: float = 0.0,
     trend_context_direction: str = "",
     trend_context_is_strong: bool = False,
@@ -4352,6 +4354,44 @@ def _weak_long_bear_weak_precheck(
         and lead_state in blocked_leads
         and rec_bias in blocked_biases
     ):
+        transition_relax_enabled = get_runtime_bool(
+            "WEAK_LONG_TRANSITION_STRONG_TREND_RELAX_ENABLED",
+            bool(getattr(settings, "WEAK_LONG_TRANSITION_STRONG_TREND_RELAX_ENABLED", False)),
+        )
+        transition_relax_sessions = _runtime_lower_set(
+            "WEAK_LONG_TRANSITION_STRONG_TREND_ALLOWED_SESSIONS",
+            getattr(
+                settings,
+                "WEAK_LONG_TRANSITION_STRONG_TREND_ALLOWED_SESSIONS",
+                {"london", "overlap", "ny_open", "ny"},
+            ),
+        )
+        transition_relax_min_score = get_runtime_float(
+            "WEAK_LONG_TRANSITION_STRONG_TREND_MIN_SCORE",
+            float(getattr(settings, "WEAK_LONG_TRANSITION_STRONG_TREND_MIN_SCORE", 0.68) or 0.68),
+            minimum=0.0,
+            maximum=1.0,
+        )
+        transition_relax_min_adx = get_runtime_float(
+            "WEAK_LONG_TRANSITION_STRONG_TREND_MIN_ADX",
+            float(getattr(settings, "WEAK_LONG_TRANSITION_STRONG_TREND_MIN_ADX", 24.0) or 24.0),
+            minimum=0.0,
+        )
+        session_name = str(current_session or "").strip().lower()
+        score_now = max(0.0, float(sig_score or 0.0))
+        trend_dir = str(trend_context_direction or "").strip().lower()
+        if (
+            transition_relax_enabled
+            and day == "transition"
+            and session_name in transition_relax_sessions
+            and trend_dir == "long"
+            and bool(trend_context_is_strong)
+            and score_now >= transition_relax_min_score
+            and symbol_adx_1h >= transition_relax_min_adx > 0
+        ):
+            return True, (
+                f"transition_strong_trend_ok:{session_name}:{score_now:.3f}:{symbol_adx_1h:.1f}"
+            )
         adx_override_enabled = get_runtime_bool(
             "WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_ENABLED",
             bool(getattr(settings, "WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_ENABLED", False)),
@@ -4359,7 +4399,6 @@ def _weak_long_bear_weak_precheck(
         adx_override_min = float(
             getattr(settings, "WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_MIN", 35.0)
         )
-        trend_dir = str(trend_context_direction or "").strip().lower()
         if (
             adx_override_enabled
             and
@@ -5221,10 +5260,12 @@ def _attempt_entry_open(
     weak_long_ok, weak_long_reason = _weak_long_bear_weak_precheck(
         strategy_name=strategy_name,
         signal_direction=signal_direction,
+        current_session=current_session,
         monthly_regime=str(mtf_symbol_snapshot.get("monthly_regime", "") or ""),
         daily_regime=str(mtf_symbol_snapshot.get("daily_regime", "") or ""),
         btc_lead_state=btc_lead_state,
         btc_recommended_bias=btc_recommended_bias,
+        sig_score=sig_score,
         symbol_adx_1h=regime_adx_by_symbol.get(inst.symbol, 0.0),
         trend_context_direction=trend_context_direction,
         trend_context_is_strong=trend_context_is_strong,

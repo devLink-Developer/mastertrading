@@ -1248,6 +1248,7 @@ class TaskHelpersTest(SimpleTestCase):
         ok, reason = _weak_long_bear_weak_precheck(
             strategy_name="alloc_long",
             signal_direction="long",
+            current_session="ny",
             monthly_regime="bear_confirmed",
             daily_regime="bear_weak",
             btc_lead_state="transition",
@@ -1267,6 +1268,7 @@ class TaskHelpersTest(SimpleTestCase):
         ok, reason = _weak_long_bear_weak_precheck(
             strategy_name="mod_microvol_long",
             signal_direction="long",
+            current_session="ny",
             monthly_regime="bear_confirmed",
             daily_regime="bear_weak",
             btc_lead_state="transition",
@@ -1286,6 +1288,7 @@ class TaskHelpersTest(SimpleTestCase):
         ok, reason = _weak_long_bear_weak_precheck(
             strategy_name="alloc_long",
             signal_direction="long",
+            current_session="ny",
             monthly_regime="bear_confirmed",
             daily_regime="transition",
             btc_lead_state="transition",
@@ -1307,6 +1310,7 @@ class TaskHelpersTest(SimpleTestCase):
         ok, reason = _weak_long_bear_weak_precheck(
             strategy_name="alloc_long",
             signal_direction="long",
+            current_session="ny",
             monthly_regime="bear_confirmed",
             daily_regime="bear_weak",
             btc_lead_state="transition",
@@ -1331,6 +1335,7 @@ class TaskHelpersTest(SimpleTestCase):
         ok, reason = _weak_long_bear_weak_precheck(
             strategy_name="alloc_long",
             signal_direction="long",
+            current_session="ny",
             monthly_regime="bear_confirmed",
             daily_regime="bear_weak",
             btc_lead_state="transition",
@@ -1355,11 +1360,68 @@ class TaskHelpersTest(SimpleTestCase):
         ok, reason = _weak_long_bear_weak_precheck(
             strategy_name="alloc_long",
             signal_direction="long",
+            current_session="ny",
             monthly_regime="bear_confirmed",
             daily_regime="bear_weak",
             btc_lead_state="transition",
             btc_recommended_bias="balanced",
             symbol_adx_1h=41.0,
+            trend_context_direction="long",
+            trend_context_is_strong=True,
+        )
+        self.assertFalse(ok)
+        self.assertIn("weak_long_bear_weak", reason)
+
+    @override_settings(
+        WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED=True,
+        WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES={"bear_confirmed"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES={"bear_weak", "transition"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES={"transition", "bear_confirmed"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES={"balanced", "short_bias"},
+        WEAK_LONG_TRANSITION_STRONG_TREND_RELAX_ENABLED=True,
+        WEAK_LONG_TRANSITION_STRONG_TREND_ALLOWED_SESSIONS={"london", "overlap", "ny_open", "ny"},
+        WEAK_LONG_TRANSITION_STRONG_TREND_MIN_SCORE=0.68,
+        WEAK_LONG_TRANSITION_STRONG_TREND_MIN_ADX=24.0,
+    )
+    def test_weak_long_bear_weak_precheck_allows_transition_strong_long_trend(self):
+        ok, reason = _weak_long_bear_weak_precheck(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            current_session="ny",
+            monthly_regime="bear_confirmed",
+            daily_regime="transition",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            sig_score=0.70,
+            symbol_adx_1h=31.8,
+            trend_context_direction="long",
+            trend_context_is_strong=True,
+        )
+        self.assertTrue(ok)
+        self.assertIn("transition_strong_trend_ok", reason)
+
+    @override_settings(
+        WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED=True,
+        WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES={"bear_confirmed"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES={"bear_weak", "transition"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES={"transition", "bear_confirmed"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES={"balanced", "short_bias"},
+        WEAK_LONG_TRANSITION_STRONG_TREND_RELAX_ENABLED=True,
+        WEAK_LONG_TRANSITION_STRONG_TREND_ALLOWED_SESSIONS={"london", "overlap", "ny_open", "ny"},
+        WEAK_LONG_TRANSITION_STRONG_TREND_MIN_SCORE=0.68,
+        WEAK_LONG_TRANSITION_STRONG_TREND_MIN_ADX=24.0,
+    )
+    def test_weak_long_bear_weak_precheck_keeps_transition_block_for_weak_session_or_score(self):
+        ok, reason = _weak_long_bear_weak_precheck(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            current_session="asia",
+            monthly_regime="bear_confirmed",
+            daily_regime="transition",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            sig_score=0.66,
+            symbol_adx_1h=31.8,
             trend_context_direction="long",
             trend_context_is_strong=True,
         )

@@ -1979,3 +1979,42 @@ Conclusion operativa:
 - Politica operativa:
   - mantener `weak_long_bear_weak` y `dead session` sin cambios
   - relajar solo `asia_weak_short`, porque era el bloqueo dominante y el principal responsable de que el bot quedara casi inmovil
+
+### 2026-04-11 update: `weak_long` en `daily=transition` estaba apagando demasiado el bot
+- Diagnostico prod:
+  - contenedores sanos, sin posiciones abiertas ni incidentes operativos
+  - en 48h seguian entrando muchas señales `alloc_long/alloc_short`, pero casi nada se convertia en fills
+  - el cuello principal ya no era `asia_weak_short`; paso a ser:
+    - `weak_long_bear_weak`
+    - `BTC` bloqueado por `min_qty/xRisk`
+- Runtime real en ambos stacks:
+  - `WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES = {'bear_weak','transition'}`
+  - `WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES = {'transition','bear_confirmed'}`
+  - `WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES = {'balanced','short_bias'}`
+- Replay de `weak_long` bloqueados en ultimas 36h usando velas `1m`:
+  - `rortigoza`: `80` muestras `day=transition`
+    - `1h_positive=23`, `avg_1h=-0.3283%`
+    - `3h_positive=47`, `avg_3h=+0.1180%`
+  - `eudy`: `154` muestras `day=transition`
+    - `1h_positive=77`, `avg_1h=-0.1214%`
+    - `3h_positive=122`, `avg_3h=+0.2004%`
+- Lectura operativa:
+  - bloquear todo `daily=transition` estaba siendo demasiado agresivo
+  - pero el hecho de que a `1h` el promedio siga negativo indica que no conviene abrir la compuerta completa
+- Ajuste aplicado en `execution/tasks.py`:
+  - nueva excepcion reversible para `weak_long` solo cuando:
+    - `daily_regime == transition`
+    - sesion en `london, overlap, ny_open, ny`
+    - `trend_context.direction == long`
+    - `trend_context.is_strong == true`
+    - `sig_score >= 0.68`
+    - `symbol_adx_1h >= 24.0`
+- Settings nuevos:
+  - `WEAK_LONG_TRANSITION_STRONG_TREND_RELAX_ENABLED`
+  - `WEAK_LONG_TRANSITION_STRONG_TREND_ALLOWED_SESSIONS`
+  - `WEAK_LONG_TRANSITION_STRONG_TREND_MIN_SCORE`
+  - `WEAK_LONG_TRANSITION_STRONG_TREND_MIN_ADX`
+- Politica operativa:
+  - mantener bloqueado `daily=bear_weak`
+  - mantener bloqueado `transition` cuando la sesion es `asia/dead` o el trend/score no alcanza
+  - devolver actividad solo a los `transition` mas limpios durante sesiones activas
