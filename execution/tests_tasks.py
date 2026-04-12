@@ -1531,7 +1531,7 @@ class TaskHelpersTest(SimpleTestCase):
     @override_settings(
         WEAK_SHORT_TRANSITION_BLOCK_ENABLED=True,
         WEAK_SHORT_TRANSITION_BLOCK_SESSIONS={"london", "overlap", "ny"},
-        WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES={"bear_weak"},
+        WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES={"bear_weak", "transition", "range"},
         WEAK_SHORT_TRANSITION_BLOCK_LEAD_STATES={"transition"},
         WEAK_SHORT_TRANSITION_BLOCK_RECOMMENDED_BIASES={"balanced"},
     )
@@ -1552,7 +1552,7 @@ class TaskHelpersTest(SimpleTestCase):
     @override_settings(
         WEAK_SHORT_TRANSITION_BLOCK_ENABLED=True,
         WEAK_SHORT_TRANSITION_BLOCK_SESSIONS={"london", "overlap", "ny"},
-        WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES={"bear_weak"},
+        WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES={"bear_weak", "transition", "range"},
         WEAK_SHORT_TRANSITION_BLOCK_LEAD_STATES={"transition"},
         WEAK_SHORT_TRANSITION_BLOCK_RECOMMENDED_BIASES={"balanced"},
     )
@@ -1569,6 +1569,27 @@ class TaskHelpersTest(SimpleTestCase):
         )
         self.assertTrue(ok)
         self.assertEqual(reason, "strong_short_trend_ok")
+
+    @override_settings(
+        WEAK_SHORT_TRANSITION_BLOCK_ENABLED=True,
+        WEAK_SHORT_TRANSITION_BLOCK_SESSIONS={"london", "overlap", "ny"},
+        WEAK_SHORT_TRANSITION_BLOCK_DAILY_REGIMES={"bear_weak", "transition", "range"},
+        WEAK_SHORT_TRANSITION_BLOCK_LEAD_STATES={"transition"},
+        WEAK_SHORT_TRANSITION_BLOCK_RECOMMENDED_BIASES={"balanced"},
+    )
+    def test_weak_short_transition_precheck_blocks_range_context(self):
+        ok, reason = _weak_short_transition_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            current_session="ny",
+            daily_regime="range",
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+            trend_context_direction="short",
+            trend_context_is_strong=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("weak_short_transition", reason)
 
     @override_settings(
         DEAD_SESSION_STRONG_TREND_BREAKOUT_ENABLED=True,

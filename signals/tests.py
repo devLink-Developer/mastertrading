@@ -529,6 +529,59 @@ class AllocatorWeightingTest(TestCase):
         self.assertTrue(bool(carry_row["carry_contra_trend_weight_capped"]))
         self.assertAlmostEqual(float(carry_row["weight"]), 0.20, places=6)
 
+    @override_settings(
+        ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_ENABLED=True,
+        ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_MULT=0.65,
+        ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_LEAD_STATES={"transition"},
+        ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_RECOMMENDED_BIASES={"balanced"},
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_dampens_trend_only_in_balanced_transition_context(self):
+        module_signals = [
+            {
+                "module": "trend",
+                "direction": "short",
+                "confidence": 1.0,
+                "reasons": {"adx_htf": 23.0},
+            },
+            {"module": "carry", "direction": "short", "confidence": 1.0},
+        ]
+        weights = {"trend": 0.30, "meanrev": 0.0, "carry": 0.20, "grid": 0.0, "smc": 0.0}
+        risk_budgets = dict(weights)
+
+        baseline = resolve_symbol_allocation(
+            module_signals,
+            threshold=0.18,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights=weights,
+            risk_budgets=risk_budgets,
+            btc_lead_state="bull_confirmed",
+            btc_recommended_bias="long_bias",
+        )
+        dampened = resolve_symbol_allocation(
+            module_signals,
+            threshold=0.18,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights=weights,
+            risk_budgets=risk_budgets,
+            btc_lead_state="transition",
+            btc_recommended_bias="balanced",
+        )
+
+        trend_row = next(
+            row for row in dampened["reasons"]["module_contributions"] if row["module"] == "trend"
+        )
+        carry_row = next(
+            row for row in dampened["reasons"]["module_contributions"] if row["module"] == "carry"
+        )
+
+        self.assertGreater(float(dampened["net_score"]), float(baseline["net_score"]))
+        self.assertTrue(bool(trend_row["trend_context_weight_dampened"]))
+        self.assertAlmostEqual(float(trend_row["weight_mult"]), 0.65, places=6)
+        self.assertFalse(bool(carry_row["trend_context_weight_dampened"]))
+
 
 class AllocatorBudgetMixFloorTest(TestCase):
     def _run_alloc(self) -> dict:

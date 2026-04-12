@@ -17,6 +17,7 @@ from signals.allocator import (
 )
 from signals.meta_allocator import compute_meta_allocator_overlay
 from signals.feature_flags import FEATURE_KEYS, resolve_runtime_flags
+from signals.regime_mtf import build_symbol_regime_snapshot, consolidate_lead_state, recommended_bias
 from signals.models import Signal
 from signals.sessions import (
     get_current_session,
@@ -40,6 +41,33 @@ from signals.modules.common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _btc_allocator_context(instruments: list[Instrument]) -> tuple[str, str]:
+    if not bool(getattr(settings, "MTF_REGIME_ENABLED", True)):
+        return "transition", "balanced"
+    btc_inst = next((inst for inst in instruments if inst.symbol == "BTCUSDT"), None)
+    if btc_inst is None:
+        btc_inst = Instrument.objects.filter(symbol="BTCUSDT", enabled=True).first()
+    if btc_inst is None:
+        return "transition", "balanced"
+    try:
+        snap = build_symbol_regime_snapshot(btc_inst)
+        lead_state = consolidate_lead_state(
+            snap.get("monthly_regime", "transition"),
+            snap.get("weekly_regime", "transition"),
+            snap.get("daily_regime", "transition"),
+        )
+        rec_bias = recommended_bias(
+            snap.get("monthly_regime", "transition"),
+            snap.get("weekly_regime", "transition"),
+            snap.get("daily_regime", "transition"),
+            lead_state=lead_state,
+        )
+        return str(lead_state or "transition"), str(rec_bias or "balanced")
+    except Exception as exc:
+        logger.debug("allocator BTC MTF context failed: %s", exc)
+        return "transition", "balanced"
 
 
 def _module_detector(module_name: str):
@@ -309,6 +337,7 @@ def run_allocator_cycle() -> str:
                 getattr(settings, "WEEKDAY_RISK_MULTIPLIER", {}),
             )
         )
+    btc_lead_state, btc_recommended_bias = _btc_allocator_context(instruments)
 
     symbol_allow_map = {
         module: _allowed_symbols_for_module(module, instruments) for module in active_modules
@@ -406,6 +435,8 @@ def run_allocator_cycle() -> str:
                 min_active_modules=min_modules,
                 symbol=inst.symbol,
                 session_name=session,
+                btc_lead_state=btc_lead_state,
+                btc_recommended_bias=btc_recommended_bias,
             )
             alloc["reasons"]["session"] = session
             alloc["reasons"]["module_rows"] = module_rows

@@ -6,7 +6,12 @@ from typing import Iterable
 
 from django.conf import settings
 
-from .runtime_overrides import get_runtime_dict
+from .runtime_overrides import (
+    get_runtime_bool,
+    get_runtime_dict,
+    get_runtime_float,
+    get_runtime_str_list,
+)
 
 from .modules.common import direction_to_sign, normalize_score, sign_to_direction
 
@@ -353,6 +358,8 @@ def resolve_symbol_allocation(
     min_active_modules: int | None = None,
     symbol: str = "",
     session_name: str = "",
+    btc_lead_state: str = "",
+    btc_recommended_bias: str = "",
 ) -> dict:
     trend_ctx = _trend_context(
         module_signals,
@@ -376,6 +383,7 @@ def resolve_symbol_allocation(
         confidence = normalize_score(float(sig.get("confidence", 0.0)))
         weight_base = float(weights.get(module, 0.0))
         weight_mult = 1.0
+        trend_context_weight_dampened = False
         if (
             module == "smc"
             and bool(getattr(settings, "ALLOCATOR_SMC_CONFLUENCE_BOOST_ENABLED", True))
@@ -388,6 +396,53 @@ def resolve_symbol_allocation(
                 weight_mult = float(
                     getattr(settings, "ALLOCATOR_SMC_NON_CONFLUENCE_WEIGHT_MULT", 0.85)
                 )
+        if (
+            module == "trend"
+            and get_runtime_bool(
+                "ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_ENABLED",
+                bool(
+                    getattr(
+                        settings,
+                        "ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_ENABLED",
+                        False,
+                    )
+                ),
+            )
+        ):
+            dampened_leads = get_runtime_str_list(
+                "ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_LEAD_STATES",
+                getattr(
+                    settings,
+                    "ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_LEAD_STATES",
+                    {"transition"},
+                ),
+            )
+            dampened_biases = get_runtime_str_list(
+                "ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_RECOMMENDED_BIASES",
+                getattr(
+                    settings,
+                    "ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_RECOMMENDED_BIASES",
+                    {"balanced"},
+                ),
+            )
+            lead_state = str(btc_lead_state or "").strip().lower()
+            rec_bias = str(btc_recommended_bias or "").strip().lower()
+            if lead_state in dampened_leads and rec_bias in dampened_biases:
+                trend_dampen_mult = get_runtime_float(
+                    "ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_MULT",
+                    float(
+                        getattr(
+                            settings,
+                            "ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_MULT",
+                            0.65,
+                        )
+                        or 0.65
+                    ),
+                    minimum=0.0,
+                    maximum=1.0,
+                )
+                weight_mult *= trend_dampen_mult
+                trend_context_weight_dampened = trend_dampen_mult < 1.0
         carry_contra_dampened = False
         carry_contra_weight_capped = False
         if (
@@ -445,6 +500,7 @@ def resolve_symbol_allocation(
                 "weight_base": round(weight_base, 4),
                 "weight_mult": round(weight_mult, 4),
                 "smc_confluence": bool(sig.get("smc_confluence", False)),
+                "trend_context_weight_dampened": bool(trend_context_weight_dampened),
                 "carry_contra_trend_dampened": bool(carry_contra_dampened),
                 "carry_contra_trend_weight_capped": bool(carry_contra_weight_capped),
                 "contribution": round(contribution, 6),
@@ -609,6 +665,8 @@ def resolve_symbol_allocation(
             "budget_mix_min_mult": round(float(budget_mix_min_mult), 6),
             "direction_score_context_mult": round(float(direction_ctx_mult), 6),
             "direction_score_context_key": direction_ctx_key,
+            "btc_lead_state": str(btc_lead_state or "").strip().lower(),
+            "recommended_bias": str(btc_recommended_bias or "").strip().lower(),
             "trend_context": {
                 "is_strong": bool(trend_ctx.get("is_strong", False)),
                 "direction": str(trend_ctx.get("direction", "flat")),
