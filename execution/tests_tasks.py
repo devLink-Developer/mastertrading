@@ -1593,8 +1593,9 @@ class TaskHelpersTest(SimpleTestCase):
 
     @override_settings(
         DEAD_SESSION_STRONG_TREND_BREAKOUT_ENABLED=True,
-        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE=0.78,
-        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX=30.0,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE=0.70,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX=40.0,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_TREND_CONF=0.80,
         DEAD_SESSION_STRONG_TREND_BREAKOUT_RISK_MULT=0.35,
     )
     def test_dead_session_breakout_override_blocks_opposed_modules(self):
@@ -1605,7 +1606,7 @@ class TaskHelpersTest(SimpleTestCase):
             sig_score=0.84,
             sig_payload={
                 "reasons": {
-                    "trend_context": {"direction": "long", "is_strong": True, "adx_htf": 33.0},
+                    "trend_context": {"direction": "long", "is_strong": True, "adx_htf": 43.0, "confidence": 0.86},
                     "module_rows": [
                         {"module": "trend", "direction": "long"},
                         {"module": "carry", "direction": "short"},
@@ -1620,8 +1621,9 @@ class TaskHelpersTest(SimpleTestCase):
 
     @override_settings(
         DEAD_SESSION_STRONG_TREND_BREAKOUT_ENABLED=True,
-        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE=0.78,
-        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX=30.0,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE=0.70,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX=40.0,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_TREND_CONF=0.80,
         DEAD_SESSION_STRONG_TREND_BREAKOUT_RISK_MULT=0.35,
     )
     def test_dead_session_breakout_override_allows_clean_strong_trend(self):
@@ -1632,17 +1634,73 @@ class TaskHelpersTest(SimpleTestCase):
             sig_score=0.84,
             sig_payload={
                 "reasons": {
-                    "trend_context": {"direction": "long", "is_strong": True, "adx_htf": 33.0},
+                    "trend_context": {"direction": "long", "is_strong": True, "adx_htf": 43.0, "confidence": 0.86},
                     "module_rows": [
                         {"module": "trend", "direction": "long"},
+                        {"module": "carry", "direction": "long"},
                     ],
                 }
             },
         )
         self.assertTrue(ok)
         self.assertEqual(reason, "dead_strong_trend_breakout")
-        self.assertEqual(score_min, 0.78)
+        self.assertEqual(score_min, 0.70)
         self.assertEqual(risk_mult, 0.35)
+
+    @override_settings(
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_ENABLED=True,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE=0.70,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX=40.0,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_TREND_CONF=0.80,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_RISK_MULT=0.35,
+    )
+    def test_dead_session_breakout_override_blocks_non_allocator_strategy(self):
+        ok, reason, score_min, risk_mult = _dead_session_strong_trend_breakout_override(
+            strategy_name="mod_trend_long",
+            signal_direction="long",
+            current_session="dead",
+            sig_score=0.84,
+            sig_payload={
+                "reasons": {
+                    "trend_context": {"direction": "long", "is_strong": True, "adx_htf": 43.0, "confidence": 0.86},
+                    "module_rows": [
+                        {"module": "trend", "direction": "long"},
+                    ],
+                }
+            },
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "strategy_not_allowed")
+        self.assertIsNone(score_min)
+        self.assertIsNone(risk_mult)
+
+    @override_settings(
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_ENABLED=True,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE=0.70,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX=40.0,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_TREND_CONF=0.80,
+        DEAD_SESSION_STRONG_TREND_BREAKOUT_RISK_MULT=0.35,
+    )
+    def test_dead_session_breakout_override_blocks_low_trend_confidence(self):
+        ok, reason, score_min, risk_mult = _dead_session_strong_trend_breakout_override(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            current_session="dead",
+            sig_score=0.70,
+            sig_payload={
+                "reasons": {
+                    "trend_context": {"direction": "long", "is_strong": True, "adx_htf": 43.0, "confidence": 0.72},
+                    "module_rows": [
+                        {"module": "trend", "direction": "long"},
+                        {"module": "carry", "direction": "long"},
+                    ],
+                }
+            },
+        )
+        self.assertFalse(ok)
+        self.assertIn("trend_conf_low", reason)
+        self.assertIsNone(score_min)
+        self.assertIsNone(risk_mult)
 
     def test_corr_guard_positions_snapshot_includes_same_cycle_entries(self):
         merged = _corr_guard_positions_snapshot(

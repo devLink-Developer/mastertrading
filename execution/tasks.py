@@ -4541,6 +4541,8 @@ def _dead_session_strong_trend_breakout_override(
 ) -> tuple[bool, str, float | None, float | None]:
     if str(current_session or "").strip().lower() != "dead":
         return False, "n/a", None, None
+    if str(strategy_name or "").strip().lower() != "alloc_long":
+        return False, "strategy_not_allowed", None, None
     if str(signal_direction or "").strip().lower() != "long":
         return False, "n/a", None, None
     if not get_runtime_bool(
@@ -4555,16 +4557,23 @@ def _dead_session_strong_trend_breakout_override(
     trend_dir = str(trend_ctx.get("direction", "")).strip().lower()
     trend_is_strong = bool(trend_ctx.get("is_strong"))
     adx_htf = _to_float(trend_ctx.get("adx_htf", 0.0))
+    trend_conf = _to_float(trend_ctx.get("confidence", 0.0))
     min_score = get_runtime_float(
         "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE",
-        float(getattr(settings, "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE", 0.78) or 0.78),
+        float(getattr(settings, "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_SCORE", 0.70) or 0.70),
         minimum=0.0,
         maximum=1.0,
     )
     min_adx = get_runtime_float(
         "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX",
-        float(getattr(settings, "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX", 30.0) or 30.0),
+        float(getattr(settings, "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_ADX", 40.0) or 40.0),
         minimum=0.0,
+    )
+    min_trend_conf = get_runtime_float(
+        "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_TREND_CONF",
+        float(getattr(settings, "DEAD_SESSION_STRONG_TREND_BREAKOUT_MIN_TREND_CONF", 0.80) or 0.80),
+        minimum=0.0,
+        maximum=1.0,
     )
     if _to_float(sig_score) < min_score:
         return False, f"low_score:{_to_float(sig_score):.3f}<{min_score:.3f}", None, None
@@ -4572,6 +4581,8 @@ def _dead_session_strong_trend_breakout_override(
         return False, f"trend_not_strong:{trend_dir or 'none'}:{trend_is_strong}", None, None
     if adx_htf < min_adx:
         return False, f"adx_low:{adx_htf:.1f}<{min_adx:.1f}", None, None
+    if trend_conf < min_trend_conf:
+        return False, f"trend_conf_low:{trend_conf:.3f}<{min_trend_conf:.3f}", None, None
 
     module_rows = reasons.get("module_rows") if isinstance(reasons.get("module_rows"), list) else []
     saw_trend = False
