@@ -1417,6 +1417,75 @@ GARCH_MAX_PERSISTENCE = max(0.0, float(os.getenv("GARCH_MAX_PERSISTENCE", "1.0")
 GARCH_BLEND_VOL_FLOOR_PCT = max(0.0, float(os.getenv("GARCH_BLEND_VOL_FLOOR_PCT", "0.003")))
 GARCH_BLEND_FLOOR_ATR_RATIO = max(0.0, float(os.getenv("GARCH_BLEND_FLOOR_ATR_RATIO", "0.5")))
 
+# --- Howell-style macro liquidity overlay (shadow-only by default) ---
+HOWELL_LIQUIDITY_ENABLED = os.getenv("HOWELL_LIQUIDITY_ENABLED", "false").lower() == "true"
+HOWELL_LIQUIDITY_LOOKBACK_DAYS = max(
+    365,
+    int(os.getenv("HOWELL_LIQUIDITY_LOOKBACK_DAYS", "1460")),
+)
+HOWELL_LIQUIDITY_ZSCORE_WINDOW_OBS = max(
+    52,
+    int(os.getenv("HOWELL_LIQUIDITY_ZSCORE_WINDOW_OBS", "104")),
+)
+HOWELL_LIQUIDITY_CHANGE_WINDOW_OBS = max(
+    2,
+    int(os.getenv("HOWELL_LIQUIDITY_CHANGE_WINDOW_OBS", "13")),
+)
+HOWELL_LIQUIDITY_CACHE_TTL_HOURS = max(
+    1,
+    int(os.getenv("HOWELL_LIQUIDITY_CACHE_TTL_HOURS", "24")),
+)
+HOWELL_LIQUIDITY_REFRESH_HOURS = max(
+    1,
+    int(os.getenv("HOWELL_LIQUIDITY_REFRESH_HOURS", "6")),
+)
+HOWELL_LIQUIDITY_COMPONENT_CLIP = max(
+    0.5,
+    float(os.getenv("HOWELL_LIQUIDITY_COMPONENT_CLIP", "3.0")),
+)
+HOWELL_LIQUIDITY_EXPANDING_SCORE_MIN = float(
+    os.getenv("HOWELL_LIQUIDITY_EXPANDING_SCORE_MIN", "0.35")
+)
+HOWELL_LIQUIDITY_EXPANDING_MOMENTUM_MIN = float(
+    os.getenv("HOWELL_LIQUIDITY_EXPANDING_MOMENTUM_MIN", "0.10")
+)
+HOWELL_LIQUIDITY_LATE_EXPANDING_SCORE_MIN = float(
+    os.getenv("HOWELL_LIQUIDITY_LATE_EXPANDING_SCORE_MIN", "0.05")
+)
+HOWELL_LIQUIDITY_ROLLOVER_MOMENTUM_MAX = float(
+    os.getenv("HOWELL_LIQUIDITY_ROLLOVER_MOMENTUM_MAX", "-0.20")
+)
+HOWELL_LIQUIDITY_STRESS_SCORE_MAX = float(
+    os.getenv("HOWELL_LIQUIDITY_STRESS_SCORE_MAX", "-0.75")
+)
+HOWELL_LIQUIDITY_STRESS_FCI_Z_MAX = float(
+    os.getenv("HOWELL_LIQUIDITY_STRESS_FCI_Z_MAX", "-0.90")
+)
+HOWELL_LIQUIDITY_PREVIEW_BASE_MULT_EXPANDING = float(
+    os.getenv("HOWELL_LIQUIDITY_PREVIEW_BASE_MULT_EXPANDING", "1.00")
+)
+HOWELL_LIQUIDITY_PREVIEW_BASE_MULT_LATE_EXPANDING = float(
+    os.getenv("HOWELL_LIQUIDITY_PREVIEW_BASE_MULT_LATE_EXPANDING", "0.90")
+)
+HOWELL_LIQUIDITY_PREVIEW_BASE_MULT_ROLLOVER = float(
+    os.getenv("HOWELL_LIQUIDITY_PREVIEW_BASE_MULT_ROLLOVER", "0.75")
+)
+HOWELL_LIQUIDITY_PREVIEW_BASE_MULT_STRESS = float(
+    os.getenv("HOWELL_LIQUIDITY_PREVIEW_BASE_MULT_STRESS", "0.55")
+)
+HOWELL_LIQUIDITY_PREVIEW_ALT_MULT_EXPANDING = float(
+    os.getenv("HOWELL_LIQUIDITY_PREVIEW_ALT_MULT_EXPANDING", "1.00")
+)
+HOWELL_LIQUIDITY_PREVIEW_ALT_MULT_LATE_EXPANDING = float(
+    os.getenv("HOWELL_LIQUIDITY_PREVIEW_ALT_MULT_LATE_EXPANDING", "0.80")
+)
+HOWELL_LIQUIDITY_PREVIEW_ALT_MULT_ROLLOVER = float(
+    os.getenv("HOWELL_LIQUIDITY_PREVIEW_ALT_MULT_ROLLOVER", "0.60")
+)
+HOWELL_LIQUIDITY_PREVIEW_ALT_MULT_STRESS = float(
+    os.getenv("HOWELL_LIQUIDITY_PREVIEW_ALT_MULT_STRESS", "0.35")
+)
+
 try:
     ALLOCATOR_MODULE_WEIGHTS = {
         str(k).strip().lower(): float(v)
@@ -1680,6 +1749,7 @@ CELERY_TASK_ROUTES = {
     "signals.tasks.run_grid_engine": {"queue": "trading"},
     "signals.tasks.run_microvol_engine": {"queue": "trading"},
     "signals.tasks.run_portfolio_allocator": {"queue": "trading"},
+    "signals.tasks.run_howell_liquidity_refresh": {"queue": "marketdata"},
     "execution.tasks.execute_orders": {"queue": "trading"},
     "execution.tasks.retrain_entry_filter_model": {"queue": ML_TRAINING_QUEUE},
     "execution.tasks._log_operation": {"queue": "trading"},
@@ -1776,6 +1846,12 @@ if GARCH_ENABLED:
     CELERY_BEAT_SCHEDULE["run-garch-forecast"] = {
         "task": "signals.tasks.run_garch_forecast",
         "schedule": crontab(minute=15, hour=f"*/{GARCH_REFIT_HOURS}"),
+    }
+
+if HOWELL_LIQUIDITY_ENABLED:
+    CELERY_BEAT_SCHEDULE["run-howell-liquidity-refresh"] = {
+        "task": "signals.tasks.run_howell_liquidity_refresh",
+        "schedule": crontab(minute=30, hour=f"*/{HOWELL_LIQUIDITY_REFRESH_HOURS}"),
     }
 
 LOGGING = {

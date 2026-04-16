@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Signal, StrategyConfig
+from .models import MacroLiquiditySnapshot, Signal, StrategyConfig
 from .runtime_overrides import invalidate_runtime_overrides_cache
 
 
@@ -31,3 +31,17 @@ class SignalAdmin(admin.ModelAdmin):
     list_display = ("strategy", "instrument", "ts", "score")
     list_filter = ("strategy", "instrument")
     ordering = ("-ts",)
+
+
+@admin.register(MacroLiquiditySnapshot)
+class MacroLiquiditySnapshotAdmin(admin.ModelAdmin):
+    list_display = (
+        "asof",
+        "regime",
+        "confidence",
+        "composite_score",
+        "composite_momentum",
+    )
+    list_filter = ("regime",)
+    ordering = ("-asof", "-id")
+    readonly_fields = ("created_at",)

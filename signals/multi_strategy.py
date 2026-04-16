@@ -17,6 +17,7 @@ from signals.allocator import (
 )
 from signals.meta_allocator import compute_meta_allocator_overlay
 from signals.feature_flags import FEATURE_KEYS, resolve_runtime_flags
+from signals.howell_liquidity import get_cached_liquidity_snapshot, howell_shadow_diagnostic
 from signals.regime_mtf import build_symbol_regime_snapshot, consolidate_lead_state, recommended_bias
 from signals.models import Signal
 from signals.sessions import (
@@ -326,6 +327,8 @@ def run_allocator_cycle() -> str:
             meta_diag = {"enabled": True, "reason": f"error:{type(exc).__name__}"}
     threshold = float(getattr(settings, "ALLOCATOR_NET_THRESHOLD", 0.20))
     base_risk = float(getattr(settings, "RISK_PER_TRADE_PCT", 0.01))
+    howell_enabled = bool(getattr(settings, "HOWELL_LIQUIDITY_ENABLED", False))
+    howell_snapshot = get_cached_liquidity_snapshot() if howell_enabled else None
     session = get_current_session(now)
     session_risk_mult = float(
         get_session_risk_mult(session, getattr(settings, "SESSION_RISK_MULTIPLIER", {}))
@@ -451,6 +454,11 @@ def run_allocator_cycle() -> str:
                     "risk_budget_total": meta_diag.get("risk_budget_total"),
                     "reason": meta_diag.get("reason", ""),
                 }
+        if howell_enabled:
+            alloc["reasons"]["howell_liquidity"] = howell_shadow_diagnostic(
+                inst.symbol,
+                snapshot=howell_snapshot,
+            )
 
         strategy = f"alloc_{alloc['direction']}"
         ok = emit_signal(

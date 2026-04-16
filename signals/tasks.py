@@ -1174,3 +1174,22 @@ def run_garch_forecast():
 
     results = fit_and_forecast_all()
     return {sym: round(r.get("cond_vol", 0), 6) for sym, r in results.items()} if results else "no_results"
+
+
+@shared_task
+def run_howell_liquidity_refresh():
+    """Periodic Howell-style macro liquidity refresh in shadow mode."""
+    from django.conf import settings as s
+
+    if not getattr(s, "HOWELL_LIQUIDITY_ENABLED", False):
+        return "howell_liquidity_disabled"
+    from .howell_liquidity import refresh_liquidity_snapshot
+
+    result = refresh_liquidity_snapshot()
+    if not result:
+        return "no_result"
+    return {
+        "regime": result.get("regime", "unavailable"),
+        "score": result.get("composite_score", 0.0),
+        "momentum": result.get("composite_momentum", 0.0),
+    }
