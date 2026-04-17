@@ -427,6 +427,73 @@ class AllocatorWeightingTest(TestCase):
     @override_settings(
         ALLOCATOR_MIN_MODULES_ACTIVE=2,
         ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_SCORE_MULT_BY_CONTEXT={"ENAUSDT:ny": 1.35},
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_can_boost_single_module_strong_alt_trend_by_context(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 35.0},
+                }
+            ],
+            threshold=0.20,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 0.16, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            symbol="ENAUSDT",
+            session_name="ny",
+        )
+        self.assertEqual(out["direction"], "long")
+        self.assertEqual(out["symbol_state"], "open")
+        self.assertTrue(bool(out["reasons"]["strong_trend_solo_applied"]))
+        self.assertAlmostEqual(float(out["reasons"]["strong_trend_solo_score_mult"]), 1.35, places=6)
+        self.assertEqual(out["reasons"]["strong_trend_solo_score_mult_key"], "ENAUSDT:ny")
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_SCORE_MULT_BY_CONTEXT={"ENAUSDT:ny": 1.35},
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_does_not_apply_strong_trend_solo_score_mult_when_carry_is_present(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 35.0},
+                },
+                {
+                    "module": "carry",
+                    "direction": "short",
+                    "confidence": 0.90,
+                },
+            ],
+            threshold=0.20,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 0.16, "meanrev": 0.0, "carry": 0.15, "grid": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 1.0, "grid": 0.0, "smc": 0.0},
+            symbol="ENAUSDT",
+            session_name="ny",
+        )
+        self.assertEqual(out["direction"], "flat")
+        self.assertAlmostEqual(float(out["reasons"]["strong_trend_solo_score_mult"]), 1.0, places=6)
+        self.assertEqual(out["reasons"]["strong_trend_solo_score_mult_key"], "")
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
         ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS={"ny_open"},
         ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
         ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,

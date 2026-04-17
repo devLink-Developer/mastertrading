@@ -49,6 +49,36 @@ def _context_float_override(
     return resolved
 
 
+def _context_float_override_with_key(
+    raw_overrides: dict | None,
+    *,
+    symbol: str,
+    session_name: str,
+    default: float,
+    minimum: float = 0.0,
+    maximum: float | None = None,
+) -> tuple[float, str]:
+    sym = str(symbol or "").strip().upper() or "*"
+    session = str(session_name or "").strip().lower() or "*"
+    resolved = float(default)
+    resolved = max(float(minimum), resolved)
+    if maximum is not None:
+        resolved = min(float(maximum), resolved)
+    if not isinstance(raw_overrides, dict):
+        return resolved, ""
+    for key in (f"{sym}:{session}", f"{sym}:*", f"*:{session}", "*:*"):
+        if key not in raw_overrides:
+            continue
+        try:
+            value = max(float(minimum), float(raw_overrides[key]))
+            if maximum is not None:
+                value = min(float(maximum), value)
+            return value, key
+        except Exception:
+            continue
+    return resolved, ""
+
+
 def _context_direction_float_override(
     raw_overrides: dict | None,
     *,
@@ -375,6 +405,9 @@ def resolve_symbol_allocation(
     trend_carry_alignment_applied = False
     trend_carry_alignment_mult = 1.0
     trend_carry_alignment_direction = ""
+    strong_trend_solo_applied = False
+    strong_trend_solo_score_mult = 1.0
+    strong_trend_solo_score_mult_key = ""
 
     for sig in module_signals:
         module = str(sig.get("module", "")).strip().lower()
@@ -595,6 +628,32 @@ def resolve_symbol_allocation(
             not requires_no_opposing_carry or not opposing_carry_present
         ):
             required_modules = 1
+            strong_trend_solo_applied = True
+
+    if (
+        strong_trend_solo_applied
+        and len(module_contributions) == 1
+        and str(module_contributions[0].get("module", "")).strip().lower() == "trend"
+    ):
+        strong_trend_solo_score_mult, strong_trend_solo_score_mult_key = (
+            _context_float_override_with_key(
+                get_runtime_dict(
+                    "ALLOCATOR_STRONG_TREND_SOLO_SCORE_MULT_BY_CONTEXT",
+                    getattr(
+                        settings,
+                        "ALLOCATOR_STRONG_TREND_SOLO_SCORE_MULT_BY_CONTEXT",
+                        {},
+                    ),
+                ),
+                symbol=symbol,
+                session_name=session_name,
+                default=1.0,
+                minimum=1.0,
+                maximum=2.0,
+            )
+        )
+        if strong_trend_solo_score_mult != 1.0:
+            net_score *= strong_trend_solo_score_mult
 
     if len(module_contributions) < required_modules:
         return {
@@ -640,6 +699,12 @@ def resolve_symbol_allocation(
                         )
                     )
                 ),
+                "strong_trend_solo_applied": bool(strong_trend_solo_applied),
+                "strong_trend_solo_score_mult": round(
+                    float(strong_trend_solo_score_mult),
+                    6,
+                ),
+                "strong_trend_solo_score_mult_key": strong_trend_solo_score_mult_key,
                 "trend_carry_alignment_boost_applied": bool(trend_carry_alignment_applied),
                 "trend_carry_alignment_score_mult": round(float(trend_carry_alignment_mult), 6),
                 "trend_carry_alignment_direction": trend_carry_alignment_direction,
@@ -742,6 +807,12 @@ def resolve_symbol_allocation(
                     )
                 )
             ),
+            "strong_trend_solo_applied": bool(strong_trend_solo_applied),
+            "strong_trend_solo_score_mult": round(
+                float(strong_trend_solo_score_mult),
+                6,
+            ),
+            "strong_trend_solo_score_mult_key": strong_trend_solo_score_mult_key,
             "trend_carry_alignment_boost_applied": bool(trend_carry_alignment_applied),
             "trend_carry_alignment_score_mult": round(float(trend_carry_alignment_mult), 6),
             "trend_carry_alignment_direction": trend_carry_alignment_direction,
