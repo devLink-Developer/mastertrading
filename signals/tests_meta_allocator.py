@@ -51,6 +51,64 @@ class MetaAllocatorWeightsTest(SimpleTestCase):
         self.assertLessEqual(max(w.values()), 0.55 + 1e-6)
         self.assertGreater(w["carry"], w["trend"])
 
+    def test_under_sampled_modules_keep_base_share_instead_of_zero(self):
+        base = {"trend": 0.25, "meanrev": 0.20, "carry": 0.15, "grid": 0.15, "smc": 0.25}
+        metrics = {
+            "trend": ModuleMetrics(
+                n=93,
+                expectancy=-0.001185,
+                stdev=0.005758,
+                profit_factor=0.597196,
+                loss_cluster=0.129032,
+                corr_penalty=0.793259,
+                data_readiness=1.0,
+            ),
+            "meanrev": ModuleMetrics(
+                n=3,
+                expectancy=0.0004,
+                stdev=0.002,
+                profit_factor=1.1,
+                loss_cluster=0.0,
+                corr_penalty=1.0,
+                data_readiness=0.25,
+            ),
+            "carry": ModuleMetrics(
+                n=83,
+                expectancy=-0.00042,
+                stdev=0.001265,
+                profit_factor=0.366908,
+                loss_cluster=0.13253,
+                corr_penalty=0.727028,
+                data_readiness=1.0,
+            ),
+            "grid": ModuleMetrics(n=0, corr_penalty=1.0, data_readiness=0.0),
+            "smc": ModuleMetrics(
+                n=9,
+                expectancy=-0.0003,
+                stdev=0.004,
+                profit_factor=0.9,
+                loss_cluster=0.10,
+                corr_penalty=1.0,
+                data_readiness=0.75,
+            ),
+        }
+        w, diag = compute_meta_weights_from_metrics(
+            base_weights=base,
+            metrics=metrics,
+            weight_cap=0.55,
+            loss_cluster_penalty=0.5,
+            pf_target=1.2,
+            single_winner_enabled=False,
+            single_winner_min_weight=0.5,
+        )
+        self.assertAlmostEqual(sum(w.values()), 1.0, places=6)
+        self.assertGreater(w["meanrev"], 0.0)
+        self.assertGreater(w["grid"], 0.0)
+        self.assertGreater(w["smc"], 0.0)
+        self.assertLessEqual(max(w.values()), 0.55 + 1e-6)
+        self.assertEqual(diag["module_metrics"]["grid"]["reason"], "no_data_keep_base")
+        self.assertAlmostEqual(diag["module_metrics"]["meanrev"]["data_readiness"], 0.25, places=6)
+
     def test_single_winner_mode_when_top_weight_is_high(self):
         base = {"trend": 0.6, "meanrev": 0.2, "carry": 0.1, "smc": 0.1}
         metrics = {

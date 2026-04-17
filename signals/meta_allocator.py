@@ -35,6 +35,7 @@ class ModuleMetrics:
     daily_loss_throttle_mult: float = 1.0
     bucket_freeze: bool = False
     sample_mult: float = 1.0
+    data_readiness: float = 1.0
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -321,10 +322,18 @@ def compute_meta_weights_from_metrics(
     exp_by_mod = {m: float(metrics.get(m, ModuleMetrics()).expectancy) for m in MODULE_ORDER}
     std_by_mod = {m: max(1e-9, float(metrics.get(m, ModuleMetrics()).stdev)) for m in MODULE_ORDER}
 
-    exp_vals = [exp_by_mod[m] for m in MODULE_ORDER if n_by_mod[m] > 0]
+    ready_modules = [
+        m
+        for m in MODULE_ORDER
+        if n_by_mod[m] > 0 and float(metrics.get(m, ModuleMetrics()).data_readiness) >= 1.0
+    ]
+    if not ready_modules:
+        ready_modules = [m for m in MODULE_ORDER if n_by_mod[m] > 0]
+
+    exp_vals = [exp_by_mod[m] for m in ready_modules]
     exp_min = min(exp_vals) if exp_vals else 0.0
     exp_max = max(exp_vals) if exp_vals else 0.0
-    std_vals = [std_by_mod[m] for m in MODULE_ORDER if n_by_mod[m] > 0]
+    std_vals = [std_by_mod[m] for m in ready_modules]
     std_med = float(np.median(std_vals)) if std_vals else 1.0
 
     raw: dict[str, float] = {}
@@ -333,9 +342,21 @@ def compute_meta_weights_from_metrics(
     for module in MODULE_ORDER:
         mm = metrics.get(module, ModuleMetrics())
         base_w = float(base.get(module, 0.0))
-        if mm.n <= 0 or base_w <= 0:
+        if base_w <= 0:
             raw[module] = 0.0
             diagnostics[module] = {"n": mm.n, "raw": 0.0}
+            continue
+
+        data_readiness = _clamp(float(mm.data_readiness), 0.0, 1.0)
+        if mm.n <= 0:
+            raw[module] = 0.0 if p4_enabled else max(0.0, base_w)
+            diagnostics[module] = {
+                "n": mm.n,
+                "base": round(base_w, 6),
+                "data_readiness": round(data_readiness, 6),
+                "raw": round(raw[module], 6),
+                "reason": "no_data_zero_p4" if p4_enabled else "no_data_keep_base",
+            }
             continue
 
         if exp_max > exp_min:
@@ -360,7 +381,7 @@ def compute_meta_weights_from_metrics(
             if bool(mm.bucket_freeze):
                 strategy_guard = 0.0
 
-        raw_w = (
+        computed_raw = (
             base_w
             * exp_norm
             * vol_inverse
@@ -368,9 +389,11 @@ def compute_meta_weights_from_metrics(
             * cluster_factor
             * regime_fit
             * corr_pen
-            * strategy_guard
         )
-        raw_w = min(raw_w, max(0.05, weight_cap))
+        # Keep the optimizer-provided base share until enough live evidence exists,
+        # then progressively hand control to the meta overlay as sample size matures.
+        blended_raw = (base_w * (1.0 - data_readiness)) + (computed_raw * data_readiness)
+        raw_w = min(blended_raw * strategy_guard, max(0.05, weight_cap))
         raw[module] = max(0.0, raw_w)
         diagnostics[module] = {
             "n": mm.n,
@@ -385,8 +408,11 @@ def compute_meta_weights_from_metrics(
             "dd_throttle_mult": round(mm.dd_throttle_mult, 6),
             "daily_loss_throttle_mult": round(mm.daily_loss_throttle_mult, 6),
             "sample_mult": round(mm.sample_mult, 6),
+            "data_readiness": round(data_readiness, 6),
             "bucket_freeze": bool(mm.bucket_freeze),
             "strategy_guard": round(strategy_guard, 6),
+            "raw_computed": round(computed_raw, 6),
+            "raw_blended": round(blended_raw, 6),
             "raw": round(raw_w, 6),
         }
 
@@ -520,7 +546,13 @@ def _collect_module_metrics(
     out: dict[str, ModuleMetrics] = {}
     for module in MODULE_ORDER:
         arr = module_returns.get(module, [])
-        if len(arr) < min_trades:
+        data_readiness = _clamp(len(arr) / max(1.0, float(min_trades)), 0.0, 1.0)
+        if not arr:
+            out[module] = ModuleMetrics(
+                n=0,
+                corr_penalty=float(corr_penalties.get(module, 1.0)),
+                data_readiness=data_readiness,
+            )
             continue
         wins = [x for x in arr if x > 0]
         losses = [x for x in arr if x < 0]
@@ -577,6 +609,7 @@ def _collect_module_metrics(
             daily_loss_throttle_mult=daily_loss_throttle_mult,
             bucket_freeze=bool(dd_freeze or daily_freeze),
             sample_mult=sample_mult,
+            data_readiness=data_readiness,
         )
 
     return out, {
