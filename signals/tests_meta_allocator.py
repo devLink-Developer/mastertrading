@@ -109,6 +109,72 @@ class MetaAllocatorWeightsTest(SimpleTestCase):
         self.assertEqual(diag["module_metrics"]["grid"]["reason"], "no_data_keep_base")
         self.assertAlmostEqual(diag["module_metrics"]["meanrev"]["data_readiness"], 0.25, places=6)
 
+    def test_trend_floor_preserves_some_weight_during_strong_meta_penalty(self):
+        base = {"trend": 0.215, "meanrev": 0.219, "carry": 0.128, "grid": 0.164, "smc": 0.274}
+        metrics = {
+            "trend": ModuleMetrics(
+                n=93,
+                expectancy=-0.001185,
+                stdev=0.005758,
+                profit_factor=0.597196,
+                loss_cluster=0.129032,
+                corr_penalty=0.793259,
+                data_readiness=1.0,
+            ),
+            "meanrev": ModuleMetrics(
+                n=3,
+                expectancy=0.001459,
+                stdev=0.003102,
+                profit_factor=2.935539,
+                loss_cluster=0.333333,
+                corr_penalty=1.0,
+                data_readiness=0.25,
+            ),
+            "carry": ModuleMetrics(
+                n=83,
+                expectancy=-0.00042,
+                stdev=0.001265,
+                profit_factor=0.366908,
+                loss_cluster=0.13253,
+                corr_penalty=0.727028,
+                data_readiness=1.0,
+            ),
+            "grid": ModuleMetrics(n=0, corr_penalty=1.0, data_readiness=0.0),
+            "smc": ModuleMetrics(
+                n=9,
+                expectancy=-0.003154,
+                stdev=0.0038,
+                profit_factor=0.159269,
+                loss_cluster=0.777778,
+                corr_penalty=0.85949,
+                data_readiness=0.75,
+            ),
+        }
+        w_no_floor, _ = compute_meta_weights_from_metrics(
+            base_weights=base,
+            metrics=metrics,
+            weight_cap=0.55,
+            loss_cluster_penalty=0.5,
+            pf_target=1.2,
+            single_winner_enabled=False,
+            single_winner_min_weight=0.5,
+        )
+        w_with_floor, diag = compute_meta_weights_from_metrics(
+            base_weights=base,
+            metrics=metrics,
+            weight_cap=0.55,
+            loss_cluster_penalty=0.5,
+            pf_target=1.2,
+            single_winner_enabled=False,
+            single_winner_min_weight=0.5,
+            min_base_weight_share_by_module={"trend": 0.35},
+        )
+        self.assertAlmostEqual(sum(w_with_floor.values()), 1.0, places=6)
+        self.assertGreater(w_with_floor["trend"], w_no_floor["trend"])
+        self.assertGreater(w_with_floor["trend"], 0.10)
+        self.assertAlmostEqual(diag["module_metrics"]["trend"]["min_base_share"], 0.35, places=6)
+        self.assertGreater(diag["module_metrics"]["trend"]["raw_floor"], 0.0)
+
     def test_single_winner_mode_when_top_weight_is_high(self):
         base = {"trend": 0.6, "meanrev": 0.2, "carry": 0.1, "smc": 0.1}
         metrics = {

@@ -547,6 +547,10 @@ _META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS_RAW = os.getenv(
     "META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS",
     '{"trend":0.03,"meanrev":0.025,"carry":0.020,"grid":0.025,"smc":0.030}',
 )
+_META_ALLOCATOR_MIN_BASE_WEIGHT_SHARE_RAW = os.getenv(
+    "META_ALLOCATOR_MIN_BASE_WEIGHT_SHARE_BY_MODULE",
+    '{"trend":0.35}',
+)
 _MULTI_STRATEGY_UNIVERSE_RAW = os.getenv(
     "MULTI_STRATEGY_UNIVERSE",
     "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,ENAUSDT",
@@ -1557,6 +1561,17 @@ except Exception:
     }
 for _m in ("trend", "meanrev", "carry", "grid", "smc"):
     META_ALLOCATOR_STRATEGY_DAILY_LOSS_CAPS.setdefault(_m, 0.03)
+try:
+    META_ALLOCATOR_MIN_BASE_WEIGHT_SHARE_BY_MODULE = {
+        str(k).strip().lower(): max(0.0, min(1.0, float(v)))
+        for k, v in _json.loads(_META_ALLOCATOR_MIN_BASE_WEIGHT_SHARE_RAW).items()
+    }
+except Exception:
+    META_ALLOCATOR_MIN_BASE_WEIGHT_SHARE_BY_MODULE = {
+        "trend": 0.35,
+    }
+for _m in ("trend", "meanrev", "carry", "grid", "smc"):
+    META_ALLOCATOR_MIN_BASE_WEIGHT_SHARE_BY_MODULE.setdefault(_m, 0.0)
 
 MULTI_STRATEGY_UNIVERSE = _parse_symbol_list(_MULTI_STRATEGY_UNIVERSE_RAW)
 ML_ENTRY_FILTER_PER_SYMBOLS = _parse_symbol_list(_ML_ENTRY_FILTER_PER_SYMBOLS_RAW)

@@ -314,10 +314,15 @@ def compute_meta_weights_from_metrics(
     pf_target: float,
     single_winner_enabled: bool,
     single_winner_min_weight: float,
+    min_base_weight_share_by_module: dict[str, float] | None = None,
     p4_enabled: bool = False,
     p4_min_sample: int = 50,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     base = normalize_weight_map(base_weights, base_weights)
+    min_base_share_map = {
+        str(k).strip().lower(): _clamp(_safe_float(v, 0.0), 0.0, 1.0)
+        for k, v in (min_base_weight_share_by_module or {}).items()
+    }
     n_by_mod = {m: int(metrics.get(m, ModuleMetrics()).n) for m in MODULE_ORDER}
     exp_by_mod = {m: float(metrics.get(m, ModuleMetrics()).expectancy) for m in MODULE_ORDER}
     std_by_mod = {m: max(1e-9, float(metrics.get(m, ModuleMetrics()).stdev)) for m in MODULE_ORDER}
@@ -342,6 +347,7 @@ def compute_meta_weights_from_metrics(
     for module in MODULE_ORDER:
         mm = metrics.get(module, ModuleMetrics())
         base_w = float(base.get(module, 0.0))
+        min_base_share = float(min_base_share_map.get(module, 0.0))
         if base_w <= 0:
             raw[module] = 0.0
             diagnostics[module] = {"n": mm.n, "raw": 0.0}
@@ -393,7 +399,12 @@ def compute_meta_weights_from_metrics(
         # Keep the optimizer-provided base share until enough live evidence exists,
         # then progressively hand control to the meta overlay as sample size matures.
         blended_raw = (base_w * (1.0 - data_readiness)) + (computed_raw * data_readiness)
-        raw_w = min(blended_raw * strategy_guard, max(0.05, weight_cap))
+        cap_value = max(0.05, weight_cap)
+        raw_w = min(blended_raw * strategy_guard, cap_value)
+        floor_raw = 0.0
+        if strategy_guard > 0.0 and min_base_share > 0.0:
+            floor_raw = min(base_w * min_base_share * strategy_guard, cap_value)
+            raw_w = max(raw_w, floor_raw)
         raw[module] = max(0.0, raw_w)
         diagnostics[module] = {
             "n": mm.n,
@@ -409,10 +420,12 @@ def compute_meta_weights_from_metrics(
             "daily_loss_throttle_mult": round(mm.daily_loss_throttle_mult, 6),
             "sample_mult": round(mm.sample_mult, 6),
             "data_readiness": round(data_readiness, 6),
+            "min_base_share": round(min_base_share, 6),
             "bucket_freeze": bool(mm.bucket_freeze),
             "strategy_guard": round(strategy_guard, 6),
             "raw_computed": round(computed_raw, 6),
             "raw_blended": round(blended_raw, 6),
+            "raw_floor": round(floor_raw, 6),
             "raw": round(raw_w, 6),
         }
 
@@ -694,6 +707,9 @@ def compute_meta_allocator_overlay(
         pf_target=pf_target,
         single_winner_enabled=single_winner_enabled,
         single_winner_min_weight=single_winner_min_weight,
+        min_base_weight_share_by_module=dict(
+            getattr(settings, "META_ALLOCATOR_MIN_BASE_WEIGHT_SHARE_BY_MODULE", {}) or {}
+        ),
         p4_enabled=p4_enabled,
         p4_min_sample=p4_min_sample,
     )
