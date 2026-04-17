@@ -1,9 +1,10 @@
 import tempfile
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import TestCase, override_settings
 from django.utils import timezone as dj_tz
 
 from core.models import Instrument, AiFeedbackEvent
@@ -39,6 +40,7 @@ from execution.tasks import (
     _min_qty_risk_guard,
     _asia_weak_short_precheck,
     _dead_session_strong_trend_breakout_override,
+    _post_tp_alt_reentry_quality_precheck,
     _ny_open_weak_long_precheck,
     _weak_short_transition_precheck,
     _weak_long_bear_weak_precheck,
@@ -211,7 +213,7 @@ class _DummyAdapterOpenOrders:
         return {"id": order_id}
 
 
-class TaskHelpersTest(SimpleTestCase):
+class TaskHelpersTest(TestCase):
     def test_extract_fee_from_fees_list(self):
         fee = _extract_fee_usdt({"fees": [{"cost": 0.11}, {"cost": "0.04"}]})
         self.assertAlmostEqual(fee, 0.15, places=8)
@@ -2191,6 +2193,171 @@ class OperationReportFeeNetTest(TestCase):
         self.assertEqual(op.reason, "stale_cleanup")
         self.assertEqual(op.close_sub_reason, "")
         self.assertAlmostEqual(float(op.exit_price), 100.2, places=8)
+
+
+class PostTpAltReentryQualityGateTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.alt_inst = Instrument.objects.create(
+            symbol="ENAUSDT",
+            base="ENA",
+            quote="USDT",
+            exchange="bingx",
+            enabled=True,
+        )
+        cls.base_inst = Instrument.objects.create(
+            symbol="BTCUSDT",
+            base="BTC",
+            quote="USDT",
+            exchange="bingx",
+            enabled=True,
+        )
+
+    def _create_close_report(
+        self,
+        inst: Instrument,
+        *,
+        minutes_ago: int,
+        reason: str = "tp",
+        outcome: str = "win",
+        side: str = "buy",
+    ) -> None:
+        now = dj_tz.now()
+        OperationReport.objects.create(
+            instrument=inst,
+            side=side,
+            qty=Decimal("1"),
+            entry_price=Decimal("1"),
+            exit_price=Decimal("1.01"),
+            pnl_abs=Decimal("0.01"),
+            pnl_pct=Decimal("0.01"),
+            outcome=outcome,
+            reason=reason,
+            opened_at=now - timedelta(minutes=minutes_ago + 5),
+            closed_at=now - timedelta(minutes=minutes_ago),
+        )
+
+    @override_settings(
+        POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED=True,
+        POST_TP_ALT_REENTRY_QUALITY_WINDOW_MINUTES=120,
+        POST_TP_ALT_REENTRY_QUALITY_TIERS={"alt"},
+        POST_TP_ALT_REENTRY_MIN_TREND_CONFIDENCE=0.94,
+        POST_TP_ALT_REENTRY_MIN_TREND_VOLUME_RATIO=0.45,
+        POST_TP_ALT_REENTRY_MAX_TREND_VOLUME_PENALTY=0.06,
+        POST_TP_ALT_REENTRY_MIN_NET_SCORE=0.23,
+        INSTRUMENT_TIER_MAP={"ENAUSDT": "alt", "BTCUSDT": "base"},
+    )
+    def test_post_tp_alt_reentry_blocks_weak_quality_after_recent_tp(self):
+        self._create_close_report(self.alt_inst, minutes_ago=40, reason="tp", outcome="win")
+        ok, reason = _post_tp_alt_reentry_quality_precheck(
+            inst=self.alt_inst,
+            strategy_name="alloc_long",
+            signal_direction="long",
+            sig_payload={
+                "net_score": 0.224,
+                "reasons": {
+                    "module_rows": [
+                        {
+                            "module": "trend",
+                            "direction": "long",
+                            "confidence": 0.90,
+                            "reasons": {
+                                "volume_ratio": 0.0648,
+                                "volume_penalty": 0.10,
+                            },
+                        },
+                        {
+                            "module": "carry",
+                            "direction": "long",
+                            "confidence": 1.0,
+                        },
+                    ]
+                },
+            },
+        )
+        self.assertFalse(ok)
+        self.assertIn("trend_conf_low", reason)
+
+    @override_settings(
+        POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED=True,
+        POST_TP_ALT_REENTRY_QUALITY_WINDOW_MINUTES=120,
+        POST_TP_ALT_REENTRY_QUALITY_TIERS={"alt"},
+        POST_TP_ALT_REENTRY_MIN_TREND_CONFIDENCE=0.94,
+        POST_TP_ALT_REENTRY_MIN_TREND_VOLUME_RATIO=0.45,
+        POST_TP_ALT_REENTRY_MAX_TREND_VOLUME_PENALTY=0.06,
+        POST_TP_ALT_REENTRY_MIN_NET_SCORE=0.23,
+        INSTRUMENT_TIER_MAP={"ENAUSDT": "alt", "BTCUSDT": "base"},
+    )
+    def test_post_tp_alt_reentry_allows_strong_quality_after_recent_tp(self):
+        self._create_close_report(self.alt_inst, minutes_ago=40, reason="tp", outcome="win")
+        ok, reason = _post_tp_alt_reentry_quality_precheck(
+            inst=self.alt_inst,
+            strategy_name="alloc_long",
+            signal_direction="long",
+            sig_payload={
+                "net_score": 0.238,
+                "reasons": {
+                    "module_rows": [
+                        {
+                            "module": "trend",
+                            "direction": "long",
+                            "confidence": 0.9804,
+                            "reasons": {
+                                "volume_ratio": 0.6691,
+                                "volume_penalty": 0.0196,
+                            },
+                        },
+                        {
+                            "module": "carry",
+                            "direction": "long",
+                            "confidence": 1.0,
+                        },
+                    ]
+                },
+            },
+        )
+        self.assertTrue(ok)
+        self.assertIn("post_tp_alt_reentry_ok", reason)
+
+    @override_settings(
+        POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED=True,
+        POST_TP_ALT_REENTRY_QUALITY_WINDOW_MINUTES=120,
+        POST_TP_ALT_REENTRY_QUALITY_TIERS={"alt"},
+        INSTRUMENT_TIER_MAP={"ENAUSDT": "alt", "BTCUSDT": "base"},
+    )
+    def test_post_tp_alt_reentry_ignores_non_alt_symbols(self):
+        self._create_close_report(self.base_inst, minutes_ago=30, reason="tp", outcome="win")
+        ok, reason = _post_tp_alt_reentry_quality_precheck(
+            inst=self.base_inst,
+            strategy_name="alloc_long",
+            signal_direction="long",
+            sig_payload={"net_score": 0.24, "reasons": {"module_rows": []}},
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "n/a")
+
+    @override_settings(
+        POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED=True,
+        POST_TP_ALT_REENTRY_QUALITY_WINDOW_MINUTES=120,
+        POST_TP_ALT_REENTRY_QUALITY_TIERS={"alt"},
+        INSTRUMENT_TIER_MAP={"ENAUSDT": "alt", "BTCUSDT": "base"},
+    )
+    def test_post_tp_alt_reentry_ignores_when_last_close_was_not_tp(self):
+        self._create_close_report(
+            self.alt_inst,
+            minutes_ago=20,
+            reason="flat_signal_timeout",
+            outcome="loss",
+        )
+        ok, reason = _post_tp_alt_reentry_quality_precheck(
+            inst=self.alt_inst,
+            strategy_name="alloc_long",
+            signal_direction="long",
+            sig_payload={"net_score": 0.24, "reasons": {"module_rows": []}},
+        )
+        self.assertTrue(ok)
+        self.assertIn("last_close_not_tp", reason)
 
 
 class LatestSignalSelectionTest(TestCase):

@@ -860,6 +860,34 @@ def _parse_lower_set(raw: str) -> set[str]:
     return {v for v in values if v}
 
 
+POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED = (
+    os.getenv("POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED", "false").lower() == "true"
+)
+POST_TP_ALT_REENTRY_QUALITY_WINDOW_MINUTES = max(
+    1,
+    int(os.getenv("POST_TP_ALT_REENTRY_QUALITY_WINDOW_MINUTES", "120")),
+)
+POST_TP_ALT_REENTRY_QUALITY_TIERS = _parse_lower_set(
+    os.getenv("POST_TP_ALT_REENTRY_QUALITY_TIERS", "alt")
+)
+POST_TP_ALT_REENTRY_MIN_TREND_CONFIDENCE = max(
+    0.0,
+    min(1.0, float(os.getenv("POST_TP_ALT_REENTRY_MIN_TREND_CONFIDENCE", "0.94"))),
+)
+POST_TP_ALT_REENTRY_MIN_TREND_VOLUME_RATIO = max(
+    0.0,
+    float(os.getenv("POST_TP_ALT_REENTRY_MIN_TREND_VOLUME_RATIO", "0.45")),
+)
+POST_TP_ALT_REENTRY_MAX_TREND_VOLUME_PENALTY = max(
+    0.0,
+    min(1.0, float(os.getenv("POST_TP_ALT_REENTRY_MAX_TREND_VOLUME_PENALTY", "0.06"))),
+)
+POST_TP_ALT_REENTRY_MIN_NET_SCORE = max(
+    0.0,
+    float(os.getenv("POST_TP_ALT_REENTRY_MIN_NET_SCORE", "0.23")),
+)
+
+
 WEEKDAY_CONTEXT_ENABLED = os.getenv("WEEKDAY_CONTEXT_ENABLED", "true").lower() == "true"
 ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS = _parse_session_set(
     os.getenv("ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS", "ny_open")

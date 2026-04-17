@@ -4608,6 +4608,129 @@ def _dead_session_strong_trend_breakout_override(
     return True, "dead_strong_trend_breakout", score_override, risk_mult
 
 
+def _post_tp_alt_reentry_quality_precheck(
+    *,
+    inst: Instrument,
+    strategy_name: str,
+    signal_direction: str,
+    sig_payload: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    if _strategy_is_microvol(strategy_name):
+        return True, "microvol_exempt"
+    if str(strategy_name or "").strip().lower() != "alloc_long":
+        return True, "n/a"
+    if str(signal_direction or "").strip().lower() != "long":
+        return True, "n/a"
+    if not get_runtime_bool(
+        "POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED",
+        bool(getattr(settings, "POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED", False)),
+    ):
+        return True, "disabled"
+
+    tier_map = getattr(settings, "INSTRUMENT_TIER_MAP", {}) or {}
+    symbol_tier = str(tier_map.get(str(inst.symbol or "").strip().upper(), "")).strip().lower()
+    gated_tiers = get_runtime_str_list(
+        "POST_TP_ALT_REENTRY_QUALITY_TIERS",
+        getattr(settings, "POST_TP_ALT_REENTRY_QUALITY_TIERS", {"alt"}),
+    )
+    if not symbol_tier or symbol_tier not in gated_tiers:
+        return True, "n/a"
+
+    window_minutes = get_runtime_int(
+        "POST_TP_ALT_REENTRY_QUALITY_WINDOW_MINUTES",
+        int(getattr(settings, "POST_TP_ALT_REENTRY_QUALITY_WINDOW_MINUTES", 120) or 120),
+        minimum=1,
+    )
+    last_same_side_close = (
+        OperationReport.objects.filter(
+            instrument=inst,
+            side="buy",
+            closed_at__isnull=False,
+        )
+        .only("closed_at", "reason", "outcome")
+        .order_by("-closed_at")
+        .first()
+    )
+    if last_same_side_close is None or last_same_side_close.closed_at is None:
+        return True, "no_recent_close"
+    if str(last_same_side_close.reason or "").strip().lower() != "tp":
+        return True, f"last_close_not_tp:{str(last_same_side_close.reason or 'n/a').strip().lower()}"
+    if str(last_same_side_close.outcome or "").strip().lower() != str(OperationReport.Outcome.WIN):
+        return True, f"last_tp_not_win:{str(last_same_side_close.outcome or 'n/a').strip().lower()}"
+    elapsed_min = (dj_tz.now() - last_same_side_close.closed_at).total_seconds() / 60.0
+    if elapsed_min > float(window_minutes):
+        return True, f"tp_outside_window:{elapsed_min:.1f}>{window_minutes}"
+
+    payload = sig_payload if isinstance(sig_payload, dict) else {}
+    reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
+    module_rows = reasons.get("module_rows") if isinstance(reasons.get("module_rows"), list) else []
+    trend_row = None
+    for row in module_rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("module", "")).strip().lower() != "trend":
+            continue
+        if str(row.get("direction", "")).strip().lower() != "long":
+            continue
+        trend_row = row
+        break
+    if trend_row is None:
+        return True, "no_trend_row_fail_open"
+
+    min_trend_conf = get_runtime_float(
+        "POST_TP_ALT_REENTRY_MIN_TREND_CONFIDENCE",
+        float(getattr(settings, "POST_TP_ALT_REENTRY_MIN_TREND_CONFIDENCE", 0.94) or 0.94),
+        minimum=0.0,
+        maximum=1.0,
+    )
+    trend_conf = max(0.0, _to_float(trend_row.get("confidence", 0.0)))
+    if trend_conf < min_trend_conf:
+        return False, f"post_tp_alt_reentry_trend_conf_low:{trend_conf:.3f}<{min_trend_conf:.3f}"
+
+    trend_reasons = trend_row.get("reasons") if isinstance(trend_row.get("reasons"), dict) else {}
+    min_volume_ratio = get_runtime_float(
+        "POST_TP_ALT_REENTRY_MIN_TREND_VOLUME_RATIO",
+        float(getattr(settings, "POST_TP_ALT_REENTRY_MIN_TREND_VOLUME_RATIO", 0.45) or 0.45),
+        minimum=0.0,
+    )
+    trend_volume_ratio = max(0.0, _to_float(trend_reasons.get("volume_ratio", 0.0)))
+    if trend_volume_ratio > 0 and trend_volume_ratio < min_volume_ratio:
+        return False, (
+            f"post_tp_alt_reentry_trend_volume_low:{trend_volume_ratio:.3f}<{min_volume_ratio:.3f}"
+        )
+
+    max_volume_penalty = get_runtime_float(
+        "POST_TP_ALT_REENTRY_MAX_TREND_VOLUME_PENALTY",
+        float(getattr(settings, "POST_TP_ALT_REENTRY_MAX_TREND_VOLUME_PENALTY", 0.06) or 0.06),
+        minimum=0.0,
+        maximum=1.0,
+    )
+    trend_volume_penalty = max(0.0, _to_float(trend_reasons.get("volume_penalty", 0.0)))
+    if trend_volume_penalty > max_volume_penalty:
+        return False, (
+            "post_tp_alt_reentry_trend_volume_penalty_high:"
+            f"{trend_volume_penalty:.3f}>{max_volume_penalty:.3f}"
+        )
+
+    min_net_score = get_runtime_float(
+        "POST_TP_ALT_REENTRY_MIN_NET_SCORE",
+        float(getattr(settings, "POST_TP_ALT_REENTRY_MIN_NET_SCORE", 0.23) or 0.23),
+        minimum=0.0,
+    )
+    net_score = max(0.0, _to_float(payload.get("net_score", 0.0)))
+    if net_score < min_net_score:
+        return False, f"post_tp_alt_reentry_net_score_low:{net_score:.3f}<{min_net_score:.3f}"
+
+    return True, (
+        "post_tp_alt_reentry_ok:"
+        f"{elapsed_min:.1f}m:"
+        f"net={net_score:.3f}:"
+        f"trend_conf={trend_conf:.3f}:"
+        f"vol_ratio={trend_volume_ratio:.3f}:"
+        f"vol_pen={trend_volume_penalty:.3f}"
+    )
+
+
 def _corr_guard_positions_snapshot(
     base_positions: list[dict] | None,
     pending_entries: list[dict] | None = None,
@@ -5471,6 +5594,20 @@ def _attempt_entry_open(
                     last_close_reason or "n/a",
                 )
                 return 0, 0.0
+
+    post_tp_reentry_ok, post_tp_reentry_reason = _post_tp_alt_reentry_quality_precheck(
+        inst=inst,
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+    )
+    if not post_tp_reentry_ok:
+        logger.info(
+            "Post-TP alt reentry quality gate blocked entry on %s: reason=%s",
+            inst.symbol,
+            post_tp_reentry_reason,
+        )
+        return 0, 0.0
 
     volume_allowed, volume_ratio = _volume_gate_allowed(
         inst,
