@@ -283,6 +283,47 @@ class AllocatorWeightingTest(TestCase):
         reduced_row = _smc_row(reduced)
         self.assertGreater(float(boosted_row.get("weight", 0.0)), float(reduced_row.get("weight", 0.0)))
 
+    @override_settings(
+        ALLOCATOR_TREND_CARRY_ALIGNMENT_BOOST_ENABLED=True,
+        ALLOCATOR_TREND_CARRY_ALIGNMENT_SCORE_MULT=1.25,
+        ALLOCATOR_TREND_CARRY_ALIGNMENT_MIN_TREND_CONFIDENCE=0.68,
+        ALLOCATOR_TREND_CARRY_ALIGNMENT_MIN_CARRY_CONFIDENCE=0.95,
+        ALLOCATOR_LONG_SCORE_PENALTY=0.70,
+    )
+    def test_allocator_boosts_aligned_trend_and_carry(self):
+        module_signals = [
+            {"module": "trend", "direction": "long", "confidence": 0.7164, "reasons": {"adx_htf": 25.1}},
+            {"module": "carry", "direction": "long", "confidence": 1.0},
+        ]
+        weights = {"trend": 0.1459, "meanrev": 0.0, "carry": 0.1284, "grid": 0.0, "smc": 0.0}
+        risk_budgets = dict(weights)
+
+        with override_settings(ALLOCATOR_TREND_CARRY_ALIGNMENT_BOOST_ENABLED=False):
+            baseline = resolve_symbol_allocation(
+                module_signals,
+                threshold=0.20,
+                base_risk_pct=0.01,
+                session_risk_mult=1.0,
+                weights=weights,
+                risk_budgets=risk_budgets,
+                min_active_modules=2,
+            )
+
+        boosted = resolve_symbol_allocation(
+            module_signals,
+            threshold=0.20,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights=weights,
+            risk_budgets=risk_budgets,
+            min_active_modules=2,
+        )
+
+        self.assertEqual(baseline["direction"], "flat")
+        self.assertEqual(boosted["direction"], "long")
+        self.assertTrue(bool(boosted["reasons"]["trend_carry_alignment_boost_applied"]))
+        self.assertAlmostEqual(float(boosted["reasons"]["trend_carry_alignment_score_mult"]), 1.25, places=6)
+
     @override_settings(ALLOCATOR_MIN_MODULES_ACTIVE=2)
     def test_allocator_enforces_internal_min_modules_gate(self):
         out = resolve_symbol_allocation(

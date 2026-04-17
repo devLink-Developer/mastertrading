@@ -372,6 +372,9 @@ def resolve_symbol_allocation(
     net_score = 0.0
     abs_capacity = 0.0
     module_contributions: list[dict] = []
+    trend_carry_alignment_applied = False
+    trend_carry_alignment_mult = 1.0
+    trend_carry_alignment_direction = ""
 
     for sig in module_signals:
         module = str(sig.get("module", "")).strip().lower()
@@ -507,6 +510,48 @@ def resolve_symbol_allocation(
             }
         )
 
+    align_enabled = get_runtime_bool(
+        "ALLOCATOR_TREND_CARRY_ALIGNMENT_BOOST_ENABLED",
+        bool(getattr(settings, "ALLOCATOR_TREND_CARRY_ALIGNMENT_BOOST_ENABLED", True)),
+    )
+    if align_enabled and module_contributions:
+        min_trend_conf = get_runtime_float(
+            "ALLOCATOR_TREND_CARRY_ALIGNMENT_MIN_TREND_CONFIDENCE",
+            float(getattr(settings, "ALLOCATOR_TREND_CARRY_ALIGNMENT_MIN_TREND_CONFIDENCE", 0.68) or 0.68),
+            minimum=0.0,
+            maximum=1.0,
+        )
+        min_carry_conf = get_runtime_float(
+            "ALLOCATOR_TREND_CARRY_ALIGNMENT_MIN_CARRY_CONFIDENCE",
+            float(getattr(settings, "ALLOCATOR_TREND_CARRY_ALIGNMENT_MIN_CARRY_CONFIDENCE", 0.95) or 0.95),
+            minimum=0.0,
+            maximum=1.0,
+        )
+        score_mult = get_runtime_float(
+            "ALLOCATOR_TREND_CARRY_ALIGNMENT_SCORE_MULT",
+            float(getattr(settings, "ALLOCATOR_TREND_CARRY_ALIGNMENT_SCORE_MULT", 1.25) or 1.25),
+            minimum=1.0,
+            maximum=2.0,
+        )
+        trend_rows = [
+            row for row in module_contributions
+            if row.get("module") == "trend" and float(row.get("confidence", 0.0)) >= min_trend_conf
+        ]
+        carry_rows = [
+            row for row in module_contributions
+            if row.get("module") == "carry" and float(row.get("confidence", 0.0)) >= min_carry_conf
+        ]
+        for trend_row in trend_rows:
+            trend_dir = str(trend_row.get("direction", "")).strip().lower()
+            if trend_dir not in {"long", "short"}:
+                continue
+            if any(str(carry_row.get("direction", "")).strip().lower() == trend_dir for carry_row in carry_rows):
+                net_score *= score_mult
+                trend_carry_alignment_applied = True
+                trend_carry_alignment_mult = score_mult
+                trend_carry_alignment_direction = trend_dir
+                break
+
     required_modules = max(
         1,
         int(
@@ -595,6 +640,9 @@ def resolve_symbol_allocation(
                         )
                     )
                 ),
+                "trend_carry_alignment_boost_applied": bool(trend_carry_alignment_applied),
+                "trend_carry_alignment_score_mult": round(float(trend_carry_alignment_mult), 6),
+                "trend_carry_alignment_direction": trend_carry_alignment_direction,
             },
         }
 
@@ -694,5 +742,8 @@ def resolve_symbol_allocation(
                     )
                 )
             ),
+            "trend_carry_alignment_boost_applied": bool(trend_carry_alignment_applied),
+            "trend_carry_alignment_score_mult": round(float(trend_carry_alignment_mult), 6),
+            "trend_carry_alignment_direction": trend_carry_alignment_direction,
         },
     }
