@@ -28,6 +28,7 @@ from execution.tasks import (
     _corr_guard_positions_snapshot,
     _extract_trigger_price,
     _extract_fee_usdt,
+    _resolve_order_fee_usdt,
     _grid_structural_sl_tp_hints,
     _is_insufficient_margin_error,
     _ml_entry_filter_model_path,
@@ -42,6 +43,7 @@ from execution.tasks import (
     _dead_session_strong_trend_breakout_override,
     _post_tp_alt_reentry_quality_precheck,
     _ny_open_weak_long_precheck,
+    _long_bias_short_precheck,
     _weak_short_transition_precheck,
     _weak_long_bear_weak_precheck,
     _is_no_position_error,
@@ -221,6 +223,17 @@ class TaskHelpersTest(TestCase):
     def test_extract_fee_fallback_info(self):
         fee = _extract_fee_usdt({"info": {"commission": "0.23"}})
         self.assertAlmostEqual(fee, 0.23, places=8)
+
+    @override_settings(
+        ORDER_FEE_FALLBACK_ENABLED=True,
+        ORDER_FEE_FALLBACK_TAKER_PCT=0.0005,
+    )
+    def test_resolve_order_fee_estimates_when_exchange_fee_missing(self):
+        fee = _resolve_order_fee_usdt(
+            {"fee": {"cost": None}, "fees": [{"cost": None}]},
+            2.0,
+        )
+        self.assertAlmostEqual(fee, 0.001, places=8)
 
     def test_error_classifiers(self):
         self.assertTrue(_is_no_position_error(Exception("No position to close")))
@@ -1192,6 +1205,42 @@ class TaskHelpersTest(TestCase):
         self.assertEqual(reason, "ok")
 
     @override_settings(
+        LONG_BIAS_SHORT_BLOCK_ENABLED=True,
+        LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES={"long_bias"},
+        LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES={"meanrev", "smc"},
+        LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES=1,
+        LONG_BIAS_SHORT_BLOCK_COUNTERTREND_MIN_SCORE=0.90,
+    )
+    def test_long_bias_short_precheck_blocks_trend_carry_short(self):
+        ok, reason = _long_bias_short_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            btc_recommended_bias="long_bias",
+            sig_score=0.28,
+            sig_payload={"reasons": {"module_rows": [{"module": "trend"}, {"module": "carry"}]}},
+        )
+        self.assertFalse(ok)
+        self.assertIn("long_bias_short_block", reason)
+
+    @override_settings(
+        LONG_BIAS_SHORT_BLOCK_ENABLED=True,
+        LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES={"long_bias"},
+        LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES={"meanrev", "smc"},
+        LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES=1,
+        LONG_BIAS_SHORT_BLOCK_COUNTERTREND_MIN_SCORE=0.90,
+    )
+    def test_long_bias_short_precheck_allows_high_score_countertrend_retrace(self):
+        ok, reason = _long_bias_short_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            btc_recommended_bias="long_bias",
+            sig_score=0.93,
+            sig_payload={"reasons": {"module_rows": [{"module": "smc"}, {"module": "trend"}]}},
+        )
+        self.assertTrue(ok)
+        self.assertIn("countertrend_short_ok", reason)
+
+    @override_settings(
         NY_OPEN_WEAK_LONG_BLOCK_ENABLED=True,
         NY_OPEN_WEAK_LONG_BLOCK_LEAD_STATES={"transition"},
         NY_OPEN_WEAK_LONG_BLOCK_RECOMMENDED_BIASES={"balanced"},
@@ -2032,6 +2081,49 @@ class OperationReportFeeNetTest(TestCase):
             leverage=5.0,
             fee_usdt=0.5,
             opened_at=None,
+            contract_size=1.0,
+        )
+
+        op = OperationReport.objects.get(instrument=inst)
+        self.assertAlmostEqual(float(op.pnl_abs), 1.5, places=8)
+        self.assertAlmostEqual(float(op.fee_usdt), 0.5, places=8)
+        self.assertEqual(op.outcome, OperationReport.Outcome.WIN)
+
+    @override_settings(ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False)
+    def test_log_operation_adds_entry_and_close_fees(self):
+        inst = Instrument.objects.create(
+            symbol="SOLUSDT",
+            exchange="bingx",
+            base="SOL",
+            quote="USDT",
+        )
+        opened_at = dj_tz.now().replace(microsecond=0)
+        Order.objects.create(
+            instrument=inst,
+            side="buy",
+            type=Order.OrderType.MARKET,
+            qty=Decimal("1"),
+            price=Decimal("100"),
+            status=Order.OrderStatus.FILLED,
+            correlation_id="sol-fee-1",
+            fee_usdt=Decimal("0.25"),
+            opened_at=opened_at,
+            closed_at=opened_at,
+            reduce_only=False,
+        )
+
+        _log_operation(
+            inst=inst,
+            side="buy",
+            qty=1.0,
+            entry_price=100.0,
+            exit_price=102.0,
+            reason="tp",
+            signal_id="sol-fee-1",
+            correlation_id="sol-fee-1",
+            leverage=5.0,
+            fee_usdt=0.25,
+            opened_at=opened_at,
             contract_size=1.0,
         )
 

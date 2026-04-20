@@ -30,6 +30,8 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `ATR_MULT_TP_LONG`, `ATR_MULT_TP_SHORT`: directional TP asymmetry.
 - `MIN_SL_PCT`, `TAKE_PROFIT_MIN_PCT`: hard floors.
 - `TP_SL_FEE_ADJUST_ENABLED`: include estimated fees in TP/SL decisions.
+- `TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT`: gate-level roundtrip fee estimate.
+- `ORDER_FEE_FALLBACK_ENABLED`, `ORDER_FEE_FALLBACK_TAKER_PCT`: estimate per-side order fees when the exchange response omits them.
 - `TRAILING_STOP_ENABLED`, `TRAILING_STOP_ACTIVATION_R`, `TRAILING_STOP_LOCK_IN_PCT`
 - `TRAILING_ADAPTIVE_ENABLED`
 - `TRAILING_ACTIVATION_R_LOWVOL`, `TRAILING_ACTIVATION_R_HIGHVOL`, `TRAILING_ACTIVATION_ATR_THRESHOLD`
@@ -48,6 +50,11 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `POST_TP_ALT_REENTRY_MIN_TREND_VOLUME_RATIO`
 - `POST_TP_ALT_REENTRY_MAX_TREND_VOLUME_PENALTY`
 - `POST_TP_ALT_REENTRY_MIN_NET_SCORE`
+- `LONG_BIAS_SHORT_BLOCK_ENABLED`
+- `LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES`
+- `LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES`
+- `LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES`
+- `LONG_BIAS_SHORT_BLOCK_COUNTERTREND_MIN_SCORE`
 - `MODULE_SIGNAL_TTL_SECONDS` (module-level)
 
 ## 6) Session and regime controls

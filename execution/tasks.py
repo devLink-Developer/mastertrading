@@ -144,6 +144,68 @@ def _extract_fee_usdt(order_resp: dict[str, Any] | None) -> float:
     return 0.0
 
 
+def _trade_notional_usdt(qty: float, price: float, contract_size: float = 1.0) -> float:
+    cs = _to_float(contract_size)
+    if cs <= 0:
+        cs = 1.0
+    return abs(_to_float(qty) * _to_float(price) * cs)
+
+
+def _estimate_order_fee_usdt(notional_usdt: float) -> float:
+    if not bool(getattr(settings, "ORDER_FEE_FALLBACK_ENABLED", True)):
+        return 0.0
+    fee_pct = max(0.0, _to_float(getattr(settings, "ORDER_FEE_FALLBACK_TAKER_PCT", 0.0005)))
+    if fee_pct <= 0:
+        return 0.0
+    return max(0.0, _to_float(notional_usdt) * fee_pct)
+
+
+def _resolve_order_fee_usdt(order_resp: dict[str, Any] | None, notional_usdt: float) -> float:
+    fee = _extract_fee_usdt(order_resp)
+    if fee > 0:
+        return fee
+    return _estimate_order_fee_usdt(notional_usdt)
+
+
+def _lookup_entry_order_fee_usdt(
+    inst: Instrument,
+    side: str,
+    correlation_id: str,
+    opened_at: datetime | None,
+) -> float:
+    corr = str(correlation_id or "").strip()
+    if not corr:
+        return 0.0
+    try:
+        qs = Order.objects.filter(
+            instrument=inst,
+            side=side,
+            correlation_id=corr,
+            reduce_only=False,
+        ).only("fee_usdt", "opened_at")
+        if opened_at is not None:
+            qs = qs.filter(opened_at=opened_at)
+        order = qs.order_by("-opened_at", "-id").first()
+        if order is None:
+            return 0.0
+        return max(0.0, _to_float(order.fee_usdt))
+    except Exception:
+        return 0.0
+
+
+def _report_pnl_for_notification(
+    report: OperationReport | None,
+    pnl_pct_fallback: float,
+    pnl_abs_fallback: float,
+) -> tuple[float, float]:
+    if report is None:
+        return pnl_pct_fallback, pnl_abs_fallback
+    try:
+        return _to_float(report.pnl_pct), _to_float(report.pnl_abs)
+    except Exception:
+        return pnl_pct_fallback, pnl_abs_fallback
+
+
 def _is_no_position_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     patterns = (
@@ -2768,7 +2830,10 @@ def _check_trailing_stop(
             pass
         try:
             close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-            close_fee = _extract_fee_usdt(close_resp)
+            close_fee = _resolve_order_fee_usdt(
+                close_resp,
+                _trade_notional_usdt(close_qty, last_price, contract_size),
+            )
             logger.info(
                 "Trailing stop hit %s (%s) trail_sl=%.4f last=%.4f hwm=%.4f%% lock=%.2f",
                 symbol,
@@ -2846,7 +2911,9 @@ def _log_operation(
     outcome_side = 1 if side == "buy" else -1
     pnl_abs_gross *= outcome_side
     notional = abs(qty * entry_price * contract_size)
-    fee_val = max(0.0, _to_float(fee_usdt))
+    close_fee_val = max(0.0, _to_float(fee_usdt))
+    entry_fee_val = _lookup_entry_order_fee_usdt(inst, side, correlation_id, opened_at)
+    fee_val = close_fee_val + entry_fee_val
     pnl_abs = pnl_abs_gross - fee_val
     pnl_pct_gross = ((exit_price - entry_price) / entry_price) * outcome_side if entry_price else 0.0
     fee_pct = (fee_val / notional) if notional > 0 else 0.0
@@ -4531,6 +4598,61 @@ def _weak_short_transition_precheck(
     return True, "ok"
 
 
+def _long_bias_short_precheck(
+    *,
+    strategy_name: str,
+    signal_direction: str,
+    btc_recommended_bias: str,
+    sig_score: float,
+    sig_payload: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    if _strategy_is_microvol(strategy_name):
+        return True, "microvol_exempt"
+    if str(signal_direction or "").strip().lower() != "short":
+        return True, "n/a"
+    if not get_runtime_bool(
+        "LONG_BIAS_SHORT_BLOCK_ENABLED",
+        bool(getattr(settings, "LONG_BIAS_SHORT_BLOCK_ENABLED", False)),
+    ):
+        return True, "disabled"
+
+    rec_bias = str(btc_recommended_bias or "balanced").strip().lower()
+    blocked_biases = _runtime_lower_set(
+        "LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES",
+        getattr(settings, "LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES", {"long_bias"}),
+    )
+    if rec_bias not in blocked_biases:
+        return True, "n/a"
+
+    score = max(0.0, _to_float(sig_score))
+    min_score = get_runtime_float(
+        "LONG_BIAS_SHORT_BLOCK_COUNTERTREND_MIN_SCORE",
+        float(getattr(settings, "LONG_BIAS_SHORT_BLOCK_COUNTERTREND_MIN_SCORE", 0.90) or 0.90),
+        minimum=0.0,
+        maximum=1.0,
+    )
+    allowed_modules = get_runtime_str_list(
+        "LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES",
+        getattr(settings, "LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES", {"meanrev", "smc"}),
+    )
+    needed = get_runtime_int(
+        "LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES",
+        int(getattr(settings, "LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES", 1) or 1),
+        minimum=1,
+    )
+    active_modules = set(_signal_active_modules(sig_payload if isinstance(sig_payload, dict) else {}, strategy_name))
+    matched_modules = active_modules & allowed_modules
+    if score >= min_score and len(matched_modules) >= needed:
+        return True, (
+            f"countertrend_short_ok:{score:.3f}:"
+            f"{','.join(sorted(matched_modules)) or 'none'}"
+        )
+    return False, (
+        f"long_bias_short_block:{rec_bias}:{score:.3f}:"
+        f"{','.join(sorted(active_modules)) or 'none'}"
+    )
+
+
 def _dead_session_strong_trend_breakout_override(
     *,
     strategy_name: str,
@@ -5466,6 +5588,22 @@ def _attempt_entry_open(
         )
         return 0, 0.0
 
+    long_bias_short_ok, long_bias_short_reason = _long_bias_short_precheck(
+        strategy_name=strategy_name,
+        signal_direction=signal_direction,
+        btc_recommended_bias=btc_recommended_bias,
+        sig_score=sig_score,
+        sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+    )
+    if not long_bias_short_ok:
+        logger.info(
+            "Long-bias short context blocked entry on %s: bias=%s reason=%s",
+            inst.symbol,
+            btc_recommended_bias,
+            long_bias_short_reason,
+        )
+        return 0, 0.0
+
     # --- Cross-symbol correlation guard ---
     corr_risk_mult, corr_reason = _cross_symbol_correlation_guard(
         inst=inst,
@@ -6207,7 +6345,15 @@ def _attempt_entry_open(
         order.status = Order.OrderStatus.FILLED
         order.exchange_order_id = resp.get("id") or resp.get("orderId", "")
         order.raw_response = resp
-        order.fee_usdt = _extract_fee_usdt(resp)
+        entry_fee_notional = max(
+            _to_float(notional_order),
+            _trade_notional_usdt(
+                float(order.qty),
+                _to_float(resp.get("average") or resp.get("price") or last_price),
+                contract_size,
+            ),
+        )
+        order.fee_usdt = _resolve_order_fee_usdt(resp, entry_fee_notional)
         order.closed_at = dj_tz.now()
         order.status_reason = ""
         order.save(update_fields=[
@@ -6514,7 +6660,7 @@ def _manage_open_position(
             pnl_abs_trail = (last - entry_price) * abs(current_qty) * contract_size * (1 if current_qty > 0 else -1)
             trade_side = "buy" if current_qty > 0 else "sell"
             dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
-            _log_operation(
+            report = _log_operation(
                 inst,
                 trade_side,
                 abs(current_qty),
@@ -6530,11 +6676,12 @@ def _manage_open_position(
                 opened_at=pos_opened_at,
                 contract_size=contract_size,
             )
+            notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(report, pnl_trail, pnl_abs_trail)
             notify_trade_closed(
                 inst.symbol,
                 "trailing_stop",
-                pnl_trail,
-                pnl_abs=pnl_abs_trail,
+                notify_pnl_pct,
+                pnl_abs=notify_pnl_abs,
                 entry_price=entry_price,
                 exit_price=last,
                 qty=abs(current_qty),
@@ -6556,7 +6703,10 @@ def _manage_open_position(
             close_qty = abs(current_qty)
             try:
                 close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                close_fee = _extract_fee_usdt(close_resp)
+                close_fee = _resolve_order_fee_usdt(
+                    close_resp,
+                    _trade_notional_usdt(close_qty, last, contract_size),
+                )
                 pnl_pct_timeout = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
                 pnl_abs_timeout = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
                 trade_side = "buy" if current_qty > 0 else "sell"
@@ -6567,7 +6717,7 @@ def _manage_open_position(
                     max_hold_min,
                     pnl_pct_timeout,
                 )
-                _log_operation(
+                report = _log_operation(
                     inst,
                     trade_side,
                     close_qty,
@@ -6583,11 +6733,16 @@ def _manage_open_position(
                     opened_at=pos_opened_at,
                     contract_size=contract_size,
                 )
+                notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+                    report,
+                    pnl_pct_timeout,
+                    pnl_abs_timeout,
+                )
                 notify_trade_closed(
                     inst.symbol,
                     "microvol_timeout",
-                    pnl_pct_timeout,
-                    pnl_abs=pnl_abs_timeout,
+                    notify_pnl_pct,
+                    pnl_abs=notify_pnl_abs,
                     entry_price=entry_price,
                     exit_price=last,
                     qty=close_qty,
@@ -6615,7 +6770,10 @@ def _manage_open_position(
             age_h = (dj_tz.now() - pos_opened_at).total_seconds() / 3600 if pos_opened_at else 0
             try:
                 close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                close_fee = _extract_fee_usdt(close_resp)
+                close_fee = _resolve_order_fee_usdt(
+                    close_resp,
+                    _trade_notional_usdt(close_qty, last, contract_size),
+                )
                 pnl_abs_stale = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
                 trade_side = "buy" if current_qty > 0 else "sell"
                 dur_min = age_h * 60
@@ -6625,7 +6783,7 @@ def _manage_open_position(
                     pnl_pct_stale,
                     age_h,
                 )
-                _log_operation(
+                report = _log_operation(
                     inst,
                     trade_side,
                     close_qty,
@@ -6641,11 +6799,16 @@ def _manage_open_position(
                     opened_at=pos_opened_at,
                     contract_size=contract_size,
                 )
+                notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+                    report,
+                    pnl_pct_stale,
+                    pnl_abs_stale,
+                )
                 notify_trade_closed(
                     inst.symbol,
                     "stale_cleanup",
-                    pnl_pct_stale,
-                    pnl_abs=pnl_abs_stale,
+                    notify_pnl_pct,
+                    pnl_abs=notify_pnl_abs,
                     entry_price=entry_price,
                     exit_price=last,
                     qty=close_qty,
@@ -6691,7 +6854,10 @@ def _manage_open_position(
                     close_qty = abs(current_qty)
                     pnl_pct_kill = (last - entry_price) / entry_price * -1
                     close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                    close_fee = _extract_fee_usdt(close_resp)
+                    close_fee = _resolve_order_fee_usdt(
+                        close_resp,
+                        _trade_notional_usdt(close_qty, last, contract_size),
+                    )
                     pnl_abs_kill = (last - entry_price) * close_qty * contract_size * -1
                     dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
                     logger.info(
@@ -6699,7 +6865,7 @@ def _manage_open_position(
                         symbol,
                         pnl_pct_kill,
                     )
-                    _log_operation(
+                    report = _log_operation(
                         inst,
                         "sell",
                         close_qty,
@@ -6715,11 +6881,16 @@ def _manage_open_position(
                         opened_at=pos_opened_at,
                         contract_size=contract_size,
                     )
+                    notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+                        report,
+                        pnl_pct_kill,
+                        pnl_abs_kill,
+                    )
                     notify_trade_closed(
                         inst.symbol,
                         "uptrend_short_kill",
-                        pnl_pct_kill,
-                        pnl_abs=pnl_abs_kill,
+                        notify_pnl_pct,
+                        pnl_abs=notify_pnl_abs,
                         entry_price=entry_price,
                         exit_price=last,
                         qty=close_qty,
@@ -6762,7 +6933,10 @@ def _manage_open_position(
                     close_qty = abs(current_qty)
                     pnl_pct_kill = (last - entry_price) / entry_price
                     close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                    close_fee = _extract_fee_usdt(close_resp)
+                    close_fee = _resolve_order_fee_usdt(
+                        close_resp,
+                        _trade_notional_usdt(close_qty, last, contract_size),
+                    )
                     pnl_abs_kill = (last - entry_price) * close_qty * contract_size
                     dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
                     logger.info(
@@ -6770,7 +6944,7 @@ def _manage_open_position(
                         symbol,
                         pnl_pct_kill,
                     )
-                    _log_operation(
+                    report = _log_operation(
                         inst,
                         "buy",
                         close_qty,
@@ -6786,11 +6960,16 @@ def _manage_open_position(
                         opened_at=pos_opened_at,
                         contract_size=contract_size,
                     )
+                    notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+                        report,
+                        pnl_pct_kill,
+                        pnl_abs_kill,
+                    )
                     notify_trade_closed(
                         inst.symbol,
                         "downtrend_long_kill",
-                        pnl_pct_kill,
-                        pnl_abs=pnl_abs_kill,
+                        notify_pnl_pct,
+                        pnl_abs=notify_pnl_abs,
                         entry_price=entry_price,
                         exit_price=last,
                         qty=close_qty,
@@ -6830,7 +7009,10 @@ def _manage_open_position(
                     close_qty,
                     params={"reduceOnly": True},
                 )
-                close_fee = _extract_fee_usdt(close_resp)
+                close_fee = _resolve_order_fee_usdt(
+                    close_resp,
+                    _trade_notional_usdt(close_qty, last, contract_size),
+                )
                 pnl_pct_exit = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
                 pnl_abs_exit = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
                 trade_side = "buy" if current_qty > 0 else "sell"
@@ -6843,7 +7025,7 @@ def _manage_open_position(
                     progress_meta.get("score", 0),
                     progress_reason,
                 )
-                _log_operation(
+                report = _log_operation(
                     inst,
                     trade_side,
                     close_qty,
@@ -6860,11 +7042,16 @@ def _manage_open_position(
                     contract_size=contract_size,
                     close_sub_reason=progress_reason,
                 )
+                notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+                    report,
+                    pnl_pct_exit,
+                    pnl_abs_exit,
+                )
                 notify_trade_closed(
                     inst.symbol,
                     "tp_progress_exit",
-                    pnl_pct_exit,
-                    pnl_abs=pnl_abs_exit,
+                    notify_pnl_pct,
+                    pnl_abs=notify_pnl_abs,
                     entry_price=entry_price,
                     exit_price=last,
                     qty=close_qty,
@@ -6968,7 +7155,10 @@ def _manage_open_position(
                             close_qty,
                             params={"reduceOnly": True},
                         )
-                        close_fee = _extract_fee_usdt(close_resp)
+                        close_fee = _resolve_order_fee_usdt(
+                            close_resp,
+                            _trade_notional_usdt(close_qty, last, contract_size),
+                        )
                         pnl_abs_exit = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
                         trade_side = "buy" if current_qty > 0 else "sell"
                         dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
@@ -6981,7 +7171,7 @@ def _manage_open_position(
                             ai_exit_reason,
                             ai_exit_meta.get("cfg_alias", "n/a"),
                         )
-                        _log_operation(
+                        report = _log_operation(
                             inst,
                             trade_side,
                             close_qty,
@@ -6997,11 +7187,16 @@ def _manage_open_position(
                             opened_at=pos_opened_at,
                             contract_size=contract_size,
                         )
+                        notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+                            report,
+                            pnl_pct_live_gross,
+                            pnl_abs_exit,
+                        )
                         notify_trade_closed(
                             inst.symbol,
                             "ai_tp_early_exit",
-                            pnl_pct_live_gross,
-                            pnl_abs=pnl_abs_exit,
+                            notify_pnl_pct,
+                            pnl_abs=notify_pnl_abs,
                             entry_price=entry_price,
                             exit_price=last,
                             qty=close_qty,
@@ -7037,7 +7232,10 @@ def _manage_open_position(
             reason = "tp" if pnl_pct_live_gate >= tp_pct_pos else "sl"
             try:
                 close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                close_fee = _extract_fee_usdt(close_resp)
+                close_fee = _resolve_order_fee_usdt(
+                    close_resp,
+                    _trade_notional_usdt(close_qty, last, contract_size),
+                )
                 pnl_abs_tpsl = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
                 trade_side = "buy" if current_qty > 0 else "sell"
                 dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
@@ -7052,7 +7250,7 @@ def _manage_open_position(
                     sl_pct_pos,
                     pnl_abs_tpsl,
                 )
-                _log_operation(
+                report = _log_operation(
                     inst,
                     trade_side,
                     close_qty,
@@ -7068,11 +7266,16 @@ def _manage_open_position(
                     opened_at=pos_opened_at,
                     contract_size=contract_size,
                 )
+                notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+                    report,
+                    pnl_pct_live_gross,
+                    pnl_abs_tpsl,
+                )
                 notify_trade_closed(
                     inst.symbol,
                     reason,
-                    pnl_pct_live_gross,
-                    pnl_abs=pnl_abs_tpsl,
+                    notify_pnl_pct,
+                    pnl_abs=notify_pnl_abs,
                     entry_price=entry_price,
                     exit_price=last,
                     qty=close_qty,
@@ -7142,14 +7345,17 @@ def _manage_open_position(
         close_qty = abs(current_qty)
         try:
             close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-            close_fee = _extract_fee_usdt(close_resp)
+            close_fee = _resolve_order_fee_usdt(
+                close_resp,
+                _trade_notional_usdt(close_qty, last, contract_size),
+            )
             logger.info("Signal flip close %s qty=%s", symbol, close_qty)
             if last and entry_price:
                 pnl_flip = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
                 pnl_abs_flip = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
                 trade_side = "buy" if current_qty > 0 else "sell"
                 dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
-                _log_operation(
+                report = _log_operation(
                     inst,
                     trade_side,
                     close_qty,
@@ -7165,11 +7371,16 @@ def _manage_open_position(
                     opened_at=pos_opened_at,
                     contract_size=contract_size,
                 )
+                notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+                    report,
+                    pnl_flip,
+                    pnl_abs_flip,
+                )
                 notify_trade_closed(
                     inst.symbol,
                     "signal_flip",
-                    pnl_flip,
-                    pnl_abs=pnl_abs_flip,
+                    notify_pnl_pct,
+                    pnl_abs=notify_pnl_abs,
                     entry_price=entry_price,
                     exit_price=last,
                     qty=close_qty,
@@ -7217,8 +7428,11 @@ def _manage_open_position(
                 )
                 try:
                     close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                    close_fee = _extract_fee_usdt(close_resp)
-                    _log_operation(
+                    close_fee = _resolve_order_fee_usdt(
+                        close_resp,
+                        _trade_notional_usdt(close_qty, last, contract_size),
+                    )
+                    report = _log_operation(
                         inst,
                         trade_side,
                         close_qty,
@@ -7234,11 +7448,16 @@ def _manage_open_position(
                         opened_at=pos_opened_at,
                         contract_size=contract_size,
                     )
+                    notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+                        report,
+                        pnl_flat,
+                        pnl_abs_flat,
+                    )
                     notify_trade_closed(
                         inst.symbol,
                         "flat_signal_timeout",
-                        pnl_flat,
-                        pnl_abs=pnl_abs_flat,
+                        notify_pnl_pct,
+                        pnl_abs=notify_pnl_abs,
                         entry_price=entry_price,
                         exit_price=last,
                         qty=close_qty,

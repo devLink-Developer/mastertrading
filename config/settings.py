@@ -30,6 +30,16 @@ TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT = max(
     0.0,
     float(os.getenv("TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT", "0.0010")),
 )
+ORDER_FEE_FALLBACK_ENABLED = os.getenv("ORDER_FEE_FALLBACK_ENABLED", "true").lower() == "true"
+ORDER_FEE_FALLBACK_TAKER_PCT = max(
+    0.0,
+    float(
+        os.getenv(
+            "ORDER_FEE_FALLBACK_TAKER_PCT",
+            str(float(os.getenv("TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT", "0.0010")) / 2.0),
+        )
+    ),
+)
 TAKE_PROFIT_DYNAMIC_MULT = max(
     0.1,
     min(2.0, float(os.getenv("TAKE_PROFIT_DYNAMIC_MULT", "1.0"))),
@@ -885,6 +895,23 @@ POST_TP_ALT_REENTRY_MAX_TREND_VOLUME_PENALTY = max(
 POST_TP_ALT_REENTRY_MIN_NET_SCORE = max(
     0.0,
     float(os.getenv("POST_TP_ALT_REENTRY_MIN_NET_SCORE", "0.23")),
+)
+LONG_BIAS_SHORT_BLOCK_ENABLED = os.getenv(
+    "LONG_BIAS_SHORT_BLOCK_ENABLED", "false"
+).lower() == "true"
+LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES = _parse_lower_set(
+    os.getenv("LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES", "long_bias")
+)
+LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES = _parse_lower_set(
+    os.getenv("LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES", "meanrev,smc")
+)
+LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES = max(
+    1,
+    int(os.getenv("LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES", "1")),
+)
+LONG_BIAS_SHORT_BLOCK_COUNTERTREND_MIN_SCORE = max(
+    0.0,
+    min(1.0, float(os.getenv("LONG_BIAS_SHORT_BLOCK_COUNTERTREND_MIN_SCORE", "0.90"))),
 )
 
 
