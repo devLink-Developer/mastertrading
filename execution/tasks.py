@@ -1548,6 +1548,49 @@ def _min_qty_risk_guard(
     return risk_multiplier > max_multiplier, actual_risk_amount, risk_multiplier
 
 
+def _min_qty_absolute_risk_cap_allows(
+    *,
+    actual_risk_amount: float,
+    equity_usdt: float,
+) -> tuple[bool, float, float]:
+    """
+    Optional escape hatch for tiny accounts / low-budget allocator signals.
+
+    The normal min-qty guard compares actual stop risk against the intended
+    signal budget. When the signal budget is deliberately tiny, the exchange
+    minimum can look like a huge multiplier while still being small in absolute
+    account-risk terms. This helper only allows that case when explicitly
+    enabled and the actual risk remains under a configured equity cap.
+    """
+    enabled = get_runtime_bool(
+        "MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED",
+        bool(getattr(settings, "MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED", False)),
+    )
+    if not enabled:
+        return False, 0.0, 0.0
+    equity = max(0.0, float(equity_usdt or 0.0))
+    actual = max(0.0, float(actual_risk_amount or 0.0))
+    if equity <= 0 or actual <= 0:
+        return False, 0.0, 0.0
+    cap_pct = get_runtime_float(
+        "MIN_QTY_RISK_ABSOLUTE_CAP_PCT",
+        float(
+            getattr(
+                settings,
+                "MIN_QTY_RISK_ABSOLUTE_CAP_PCT",
+                getattr(settings, "RISK_PER_TRADE_PCT", 0.003),
+            )
+            or 0.0
+        ),
+        minimum=0.0,
+        maximum=0.05,
+    )
+    if cap_pct <= 0:
+        return False, actual / equity, cap_pct
+    actual_pct = actual / equity
+    return actual_pct <= cap_pct, actual_pct, cap_pct
+
+
 def _order_is_reduce_only(order_payload: dict | None) -> bool:
     if not isinstance(order_payload, dict):
         return False
@@ -6201,32 +6244,48 @@ def _attempt_entry_open(
         if actual_stop_risk_amount > 0 and target_risk_amount > 0
         else 0.0
     )
+    absolute_cap_allows, actual_risk_pct, absolute_cap_pct = _min_qty_absolute_risk_cap_allows(
+        actual_risk_amount=actual_stop_risk_amount,
+        equity_usdt=equity_usdt,
+    )
     allowlist_state = _min_qty_dynamic_allowlist_state(actual_risk_mult)
     if bool(getattr(settings, "MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED", True)):
         if allowlist_state == "blocked":
-            _record_min_qty_risk_guard_event(
-                inst,
-                qty=qty,
-                risk_qty=risk_qty,
-                min_qty=min_qty,
-                actual_risk_amount=actual_stop_risk_amount,
-                target_risk_amount=target_risk_amount,
-                risk_multiplier=actual_risk_mult,
-                stop_distance_pct=stop_dist,
-            )
-            logger.info(
-                "Dynamic min-qty allowlist blocked %s: state=%s qty=%.10f risk_qty=%.10f "
-                "min_qty=%.10f risk_actual=%.5f risk_target=%.5f risk_mult=%.2f",
-                symbol,
-                allowlist_state,
-                qty,
-                risk_qty,
-                min_qty,
-                actual_stop_risk_amount,
-                target_risk_amount,
-                actual_risk_mult,
-            )
-            return 0, 0.0
+            if absolute_cap_allows:
+                logger.info(
+                    "Dynamic min-qty allowlist absolute-cap override %s: "
+                    "risk_actual=%.5f risk_pct=%.4f%% cap=%.4f%% risk_target=%.5f risk_mult=%.2f",
+                    symbol,
+                    actual_stop_risk_amount,
+                    actual_risk_pct * 100,
+                    absolute_cap_pct * 100,
+                    target_risk_amount,
+                    actual_risk_mult,
+                )
+            else:
+                _record_min_qty_risk_guard_event(
+                    inst,
+                    qty=qty,
+                    risk_qty=risk_qty,
+                    min_qty=min_qty,
+                    actual_risk_amount=actual_stop_risk_amount,
+                    target_risk_amount=target_risk_amount,
+                    risk_multiplier=actual_risk_mult,
+                    stop_distance_pct=stop_dist,
+                )
+                logger.info(
+                    "Dynamic min-qty allowlist blocked %s: state=%s qty=%.10f risk_qty=%.10f "
+                    "min_qty=%.10f risk_actual=%.5f risk_target=%.5f risk_mult=%.2f",
+                    symbol,
+                    allowlist_state,
+                    qty,
+                    risk_qty,
+                    min_qty,
+                    actual_stop_risk_amount,
+                    target_risk_amount,
+                    actual_risk_mult,
+                )
+                return 0, 0.0
         if allowlist_state == "watch":
             logger.info(
                 "Dynamic min-qty allowlist watch %s: qty=%.10f risk_qty=%.10f min_qty=%.10f risk_mult=%.2f",
@@ -6247,29 +6306,45 @@ def _attempt_entry_open(
         target_risk_amount=target_risk_amount,
     )
     if min_qty_risk_blocked:
-        _record_min_qty_risk_guard_event(
-            inst,
-            qty=qty,
-            risk_qty=risk_qty,
-            min_qty=min_qty,
+        absolute_cap_allows, actual_risk_pct, absolute_cap_pct = _min_qty_absolute_risk_cap_allows(
             actual_risk_amount=actual_stop_risk_amount,
-            target_risk_amount=target_risk_amount,
-            risk_multiplier=actual_risk_mult,
-            stop_distance_pct=stop_dist,
+            equity_usdt=equity_usdt,
         )
-        logger.info(
-            "Min-qty risk guard blocked %s: qty=%.10f risk_qty=%.10f min_qty=%.10f "
-            "risk_actual=%.5f risk_target=%.5f risk_mult=%.2f stop_pct=%.4f%%",
-            symbol,
-            qty,
-            risk_qty,
-            min_qty,
-            actual_stop_risk_amount,
-            target_risk_amount,
-            actual_risk_mult,
-            stop_dist * 100,
-        )
-        return 0, 0.0
+        if absolute_cap_allows:
+            logger.info(
+                "Min-qty risk guard absolute-cap override %s: "
+                "risk_actual=%.5f risk_pct=%.4f%% cap=%.4f%% risk_target=%.5f risk_mult=%.2f",
+                symbol,
+                actual_stop_risk_amount,
+                actual_risk_pct * 100,
+                absolute_cap_pct * 100,
+                target_risk_amount,
+                actual_risk_mult,
+            )
+        else:
+            _record_min_qty_risk_guard_event(
+                inst,
+                qty=qty,
+                risk_qty=risk_qty,
+                min_qty=min_qty,
+                actual_risk_amount=actual_stop_risk_amount,
+                target_risk_amount=target_risk_amount,
+                risk_multiplier=actual_risk_mult,
+                stop_distance_pct=stop_dist,
+            )
+            logger.info(
+                "Min-qty risk guard blocked %s: qty=%.10f risk_qty=%.10f min_qty=%.10f "
+                "risk_actual=%.5f risk_target=%.5f risk_mult=%.2f stop_pct=%.4f%%",
+                symbol,
+                qty,
+                risk_qty,
+                min_qty,
+                actual_stop_risk_amount,
+                target_risk_amount,
+                actual_risk_mult,
+                stop_dist * 100,
+            )
+            return 0, 0.0
 
     required_margin = notional_order / entry_leverage if entry_leverage else notional_order
     if required_margin > usable_margin:

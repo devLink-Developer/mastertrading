@@ -89,6 +89,13 @@ MIN_QTY_RISK_MULTIPLIER_MAX = max(
     1.0,
     float(os.getenv("MIN_QTY_RISK_MULTIPLIER_MAX", "3.0")),
 )
+MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED = (
+    os.getenv("MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED", "false").lower() == "true"
+)
+MIN_QTY_RISK_ABSOLUTE_CAP_PCT = max(
+    0.0,
+    float(os.getenv("MIN_QTY_RISK_ABSOLUTE_CAP_PCT", str(RISK_PER_TRADE_PCT))),
+)
 MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED = os.getenv("MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED", "true").lower() == "true"
 MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER = max(
     1.0,

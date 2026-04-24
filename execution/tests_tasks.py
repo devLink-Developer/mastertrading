@@ -37,6 +37,7 @@ from execution.tasks import (
     _minimum_order_amount_from_error,
     _market_min_qty,
     _macro_high_impact_allows_entry,
+    _min_qty_absolute_risk_cap_allows,
     _min_qty_dynamic_allowlist_state,
     _min_qty_risk_guard,
     _asia_weak_short_precheck,
@@ -494,6 +495,42 @@ class TaskHelpersTest(TestCase):
         self.assertFalse(blocked)
         self.assertEqual(actual_risk, 0.0)
         self.assertEqual(risk_mult, 0.0)
+
+    @override_settings(
+        MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED=True,
+        MIN_QTY_RISK_ABSOLUTE_CAP_PCT=0.004,
+    )
+    def test_min_qty_absolute_cap_allows_small_account_risk(self):
+        allowed, actual_pct, cap_pct = _min_qty_absolute_risk_cap_allows(
+            actual_risk_amount=0.033,
+            equity_usdt=10.0,
+        )
+        self.assertTrue(allowed)
+        self.assertAlmostEqual(actual_pct, 0.0033, places=6)
+        self.assertAlmostEqual(cap_pct, 0.004, places=6)
+
+    @override_settings(
+        MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED=True,
+        MIN_QTY_RISK_ABSOLUTE_CAP_PCT=0.004,
+    )
+    def test_min_qty_absolute_cap_rejects_large_account_risk(self):
+        allowed, actual_pct, cap_pct = _min_qty_absolute_risk_cap_allows(
+            actual_risk_amount=1.02,
+            equity_usdt=10.0,
+        )
+        self.assertFalse(allowed)
+        self.assertAlmostEqual(actual_pct, 0.102, places=6)
+        self.assertAlmostEqual(cap_pct, 0.004, places=6)
+
+    @override_settings(MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED=False)
+    def test_min_qty_absolute_cap_is_disabled_by_default(self):
+        allowed, actual_pct, cap_pct = _min_qty_absolute_risk_cap_allows(
+            actual_risk_amount=0.033,
+            equity_usdt=10.0,
+        )
+        self.assertFalse(allowed)
+        self.assertEqual(actual_pct, 0.0)
+        self.assertEqual(cap_pct, 0.0)
 
     @override_settings(
         TP_SL_FEE_ADJUST_ENABLED=True,
