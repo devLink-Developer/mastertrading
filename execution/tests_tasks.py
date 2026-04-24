@@ -45,6 +45,7 @@ from execution.tasks import (
     _post_tp_alt_reentry_quality_precheck,
     _ny_open_weak_long_precheck,
     _long_bias_short_precheck,
+    _symbol_health_precheck,
     _weak_short_transition_precheck,
     _weak_long_bear_weak_precheck,
     _is_no_position_error,
@@ -1276,6 +1277,81 @@ class TaskHelpersTest(TestCase):
         )
         self.assertTrue(ok)
         self.assertIn("countertrend_short_ok", reason)
+
+    def _create_symbol_health_report(self, inst, pnl_abs: float, minutes_ago: int):
+        now = dj_tz.now()
+        return OperationReport.objects.create(
+            instrument=inst,
+            side="buy",
+            qty=Decimal("1"),
+            entry_price=Decimal("1"),
+            exit_price=Decimal("1"),
+            pnl_abs=Decimal(str(pnl_abs)),
+            pnl_pct=Decimal("0"),
+            notional_usdt=Decimal("10"),
+            fee_usdt=Decimal("0"),
+            leverage=Decimal("1"),
+            mode="live",
+            opened_at=now - timedelta(minutes=minutes_ago + 5),
+            closed_at=now - timedelta(minutes=minutes_ago),
+            outcome=OperationReport.Outcome.WIN if pnl_abs > 0 else OperationReport.Outcome.LOSS,
+            reason="tp" if pnl_abs > 0 else "sl",
+        )
+
+    @override_settings(
+        SYMBOL_HEALTH_GUARD_ENABLED=True,
+        SYMBOL_HEALTH_GUARD_LOOKBACK_DAYS=14,
+        SYMBOL_HEALTH_GUARD_MIN_TRADES=4,
+        SYMBOL_HEALTH_GUARD_MIN_PROFIT_FACTOR=0.90,
+        SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT=0.0,
+        SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS=set(),
+    )
+    def test_symbol_health_precheck_blocks_poor_recent_symbol(self):
+        inst = Instrument.objects.create(symbol="LINKUSDT", exchange="bingx", base="LINK", quote="USDT")
+        for idx, pnl in enumerate([-0.20, -0.18, -0.10, 0.05], start=1):
+            self._create_symbol_health_report(inst, pnl, idx)
+
+        ok, reason = _symbol_health_precheck(inst)
+
+        self.assertFalse(ok)
+        self.assertIn("symbol_health:LINKUSDT", reason)
+        self.assertIn("n=4", reason)
+
+    @override_settings(
+        SYMBOL_HEALTH_GUARD_ENABLED=True,
+        SYMBOL_HEALTH_GUARD_LOOKBACK_DAYS=14,
+        SYMBOL_HEALTH_GUARD_MIN_TRADES=4,
+        SYMBOL_HEALTH_GUARD_MIN_PROFIT_FACTOR=0.90,
+        SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT=0.0,
+        SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS=set(),
+    )
+    def test_symbol_health_precheck_allows_insufficient_sample(self):
+        inst = Instrument.objects.create(symbol="DOGEUSDT", exchange="bingx", base="DOGE", quote="USDT")
+        for idx, pnl in enumerate([-0.20, -0.18, 0.05], start=1):
+            self._create_symbol_health_report(inst, pnl, idx)
+
+        ok, reason = _symbol_health_precheck(inst)
+
+        self.assertTrue(ok)
+        self.assertIn("insufficient_sample", reason)
+
+    @override_settings(
+        SYMBOL_HEALTH_GUARD_ENABLED=True,
+        SYMBOL_HEALTH_GUARD_LOOKBACK_DAYS=14,
+        SYMBOL_HEALTH_GUARD_MIN_TRADES=4,
+        SYMBOL_HEALTH_GUARD_MIN_PROFIT_FACTOR=0.90,
+        SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT=0.0,
+        SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS=set(),
+    )
+    def test_symbol_health_precheck_allows_profitable_symbol(self):
+        inst = Instrument.objects.create(symbol="DOGEUSDT", exchange="bingx", base="DOGE", quote="USDT")
+        for idx, pnl in enumerate([0.20, 0.12, -0.08, -0.04], start=1):
+            self._create_symbol_health_report(inst, pnl, idx)
+
+        ok, reason = _symbol_health_precheck(inst)
+
+        self.assertTrue(ok)
+        self.assertIn("healthy:DOGEUSDT", reason)
 
     @override_settings(
         NY_OPEN_WEAK_LONG_BLOCK_ENABLED=True,

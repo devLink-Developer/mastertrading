@@ -4696,6 +4696,76 @@ def _long_bias_short_precheck(
     )
 
 
+def _symbol_health_precheck(inst: Instrument) -> tuple[bool, str]:
+    if not get_runtime_bool(
+        "SYMBOL_HEALTH_GUARD_ENABLED",
+        bool(getattr(settings, "SYMBOL_HEALTH_GUARD_ENABLED", False)),
+    ):
+        return True, "disabled"
+
+    symbol = str(getattr(inst, "symbol", "") or "").strip().upper()
+    exempt_symbols = get_runtime_str_list(
+        "SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS",
+        getattr(settings, "SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS", set()),
+    )
+    if symbol.lower() in exempt_symbols:
+        return True, "exempt"
+
+    lookback_days = get_runtime_int(
+        "SYMBOL_HEALTH_GUARD_LOOKBACK_DAYS",
+        int(getattr(settings, "SYMBOL_HEALTH_GUARD_LOOKBACK_DAYS", 14) or 14),
+        minimum=1,
+    )
+    min_trades = get_runtime_int(
+        "SYMBOL_HEALTH_GUARD_MIN_TRADES",
+        int(getattr(settings, "SYMBOL_HEALTH_GUARD_MIN_TRADES", 8) or 8),
+        minimum=1,
+    )
+    min_pf = get_runtime_float(
+        "SYMBOL_HEALTH_GUARD_MIN_PROFIT_FACTOR",
+        float(getattr(settings, "SYMBOL_HEALTH_GUARD_MIN_PROFIT_FACTOR", 0.90) or 0.90),
+        minimum=0.0,
+    )
+    min_expectancy = get_runtime_float(
+        "SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT",
+        float(getattr(settings, "SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT", 0.0) or 0.0),
+    )
+
+    cutoff = dj_tz.now() - timedelta(days=lookback_days)
+    reports = list(
+        OperationReport.objects.filter(
+            instrument=inst,
+            closed_at__gte=cutoff,
+        )
+        .order_by("-closed_at")
+        .values_list("pnl_abs", flat=True)
+    )
+    sample_size = len(reports)
+    if sample_size < min_trades:
+        return True, f"insufficient_sample:{sample_size}<{min_trades}"
+
+    pnls = [_to_float(pnl) for pnl in reports]
+    gross_win = sum(pnl for pnl in pnls if pnl > 0)
+    gross_loss = abs(sum(pnl for pnl in pnls if pnl < 0))
+    profit_factor = (
+        float("inf")
+        if gross_win > 0 and gross_loss <= 0
+        else (gross_win / gross_loss if gross_loss > 0 else 0.0)
+    )
+    expectancy = sum(pnls) / sample_size if sample_size else 0.0
+    total_pnl = sum(pnls)
+
+    if profit_factor < min_pf or expectancy < min_expectancy:
+        return False, (
+            f"symbol_health:{symbol}:n={sample_size}:pf={profit_factor:.3f}:"
+            f"expect={expectancy:.5f}:pnl={total_pnl:.5f}"
+        )
+    return True, (
+        f"healthy:{symbol}:n={sample_size}:pf={profit_factor:.3f}:"
+        f"expect={expectancy:.5f}:pnl={total_pnl:.5f}"
+    )
+
+
 def _dead_session_strong_trend_breakout_override(
     *,
     strategy_name: str,
@@ -5644,6 +5714,15 @@ def _attempt_entry_open(
             inst.symbol,
             btc_recommended_bias,
             long_bias_short_reason,
+        )
+        return 0, 0.0
+
+    symbol_health_ok, symbol_health_reason = _symbol_health_precheck(inst)
+    if not symbol_health_ok:
+        logger.info(
+            "Symbol health guard blocked entry on %s: reason=%s",
+            inst.symbol,
+            symbol_health_reason,
         )
         return 0, 0.0
 
