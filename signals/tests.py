@@ -395,6 +395,50 @@ class AllocatorWeightingTest(TestCase):
 
     @override_settings(
         ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_RANGE_REVERSION_SOLO_ENABLED=True,
+        ALLOCATOR_RANGE_REVERSION_SOLO_MODULES={"grid", "meanrev"},
+        ALLOCATOR_RANGE_REVERSION_SOLO_MIN_CONFIDENCE=0.75,
+        ALLOCATOR_RANGE_REVERSION_SOLO_WEIGHT_FLOOR=0.24,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_allows_high_confidence_grid_solo(self):
+        out = resolve_symbol_allocation(
+            [{"module": "grid", "direction": "long", "confidence": 0.90}],
+            threshold=0.20,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 0.25, "meanrev": 0.20, "carry": 0.15, "grid": 0.15, "smc": 0.25},
+            risk_budgets={"trend": 0.25, "meanrev": 0.20, "carry": 0.15, "grid": 0.15, "smc": 0.25},
+        )
+        self.assertEqual(out["direction"], "long")
+        self.assertEqual(out["symbol_state"], "open")
+        self.assertEqual(out["reasons"]["required_modules"], 1)
+        self.assertTrue(out["reasons"]["range_reversion_solo_applied"])
+        self.assertTrue(out["reasons"]["range_reversion_solo_weight_floor_applied"])
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_RANGE_REVERSION_SOLO_ENABLED=True,
+        ALLOCATOR_RANGE_REVERSION_SOLO_MODULES={"grid", "meanrev"},
+        ALLOCATOR_RANGE_REVERSION_SOLO_MIN_CONFIDENCE=0.75,
+        ALLOCATOR_RANGE_REVERSION_SOLO_WEIGHT_FLOOR=0.24,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_does_not_allow_carry_solo_through_range_solo(self):
+        out = resolve_symbol_allocation(
+            [{"module": "carry", "direction": "short", "confidence": 1.0}],
+            threshold=0.20,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 0.25, "meanrev": 0.20, "carry": 0.15, "grid": 0.15, "smc": 0.25},
+            risk_budgets={"trend": 0.25, "meanrev": 0.20, "carry": 0.15, "grid": 0.15, "smc": 0.25},
+        )
+        self.assertEqual(out["direction"], "flat")
+        self.assertEqual(out["symbol_state"], "blocked")
+        self.assertFalse(out["reasons"]["range_reversion_solo_applied"])
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
         ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
         ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
         ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT={"BTCUSDT:london": 13.0},

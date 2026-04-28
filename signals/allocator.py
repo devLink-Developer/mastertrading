@@ -408,6 +408,10 @@ def resolve_symbol_allocation(
     strong_trend_solo_applied = False
     strong_trend_solo_score_mult = 1.0
     strong_trend_solo_score_mult_key = ""
+    range_reversion_solo_applied = False
+    range_reversion_solo_module = ""
+    range_reversion_solo_weight_floor = 0.0
+    range_reversion_solo_weight_floor_applied = False
 
     for sig in module_signals:
         module = str(sig.get("module", "")).strip().lower()
@@ -631,6 +635,51 @@ def resolve_symbol_allocation(
             strong_trend_solo_applied = True
 
     if (
+        not strong_trend_solo_applied
+        and len(module_contributions) == 1
+        and get_runtime_bool(
+            "ALLOCATOR_RANGE_REVERSION_SOLO_ENABLED",
+            bool(getattr(settings, "ALLOCATOR_RANGE_REVERSION_SOLO_ENABLED", True)),
+        )
+    ):
+        solo_row = module_contributions[0]
+        solo_module = str(solo_row.get("module", "")).strip().lower()
+        allowed_range_modules = get_runtime_str_list(
+            "ALLOCATOR_RANGE_REVERSION_SOLO_MODULES",
+            getattr(settings, "ALLOCATOR_RANGE_REVERSION_SOLO_MODULES", {"grid", "meanrev"}),
+        )
+        solo_confidence = normalize_score(float(solo_row.get("confidence", 0.0) or 0.0))
+        min_solo_confidence = get_runtime_float(
+            "ALLOCATOR_RANGE_REVERSION_SOLO_MIN_CONFIDENCE",
+            float(getattr(settings, "ALLOCATOR_RANGE_REVERSION_SOLO_MIN_CONFIDENCE", 0.75)),
+            minimum=0.0,
+            maximum=1.0,
+        )
+        if solo_module in allowed_range_modules and solo_confidence >= min_solo_confidence:
+            required_modules = 1
+            range_reversion_solo_applied = True
+            range_reversion_solo_module = solo_module
+            range_reversion_solo_weight_floor = get_runtime_float(
+                "ALLOCATOR_RANGE_REVERSION_SOLO_WEIGHT_FLOOR",
+                float(getattr(settings, "ALLOCATOR_RANGE_REVERSION_SOLO_WEIGHT_FLOOR", 0.24)),
+                minimum=0.0,
+                maximum=1.0,
+            )
+            current_weight = max(0.0, float(solo_row.get("weight", 0.0) or 0.0))
+            if range_reversion_solo_weight_floor > current_weight:
+                row_sign = 1 if str(solo_row.get("direction", "")).strip().lower() == "long" else -1
+                current_abs = abs(float(solo_row.get("contribution", 0.0) or 0.0))
+                target_abs = range_reversion_solo_weight_floor * solo_confidence
+                if target_abs > current_abs:
+                    delta = target_abs - current_abs
+                    net_score += row_sign * delta
+                    abs_capacity += delta
+                    solo_row["weight"] = round(range_reversion_solo_weight_floor, 4)
+                    solo_row["range_reversion_solo_weight_floor_applied"] = True
+                    solo_row["contribution"] = round(row_sign * target_abs, 6)
+                    range_reversion_solo_weight_floor_applied = True
+
+    if (
         strong_trend_solo_applied
         and len(module_contributions) == 1
         and str(module_contributions[0].get("module", "")).strip().lower() == "trend"
@@ -705,6 +754,15 @@ def resolve_symbol_allocation(
                     6,
                 ),
                 "strong_trend_solo_score_mult_key": strong_trend_solo_score_mult_key,
+                "range_reversion_solo_applied": bool(range_reversion_solo_applied),
+                "range_reversion_solo_module": range_reversion_solo_module,
+                "range_reversion_solo_weight_floor": round(
+                    float(range_reversion_solo_weight_floor),
+                    6,
+                ),
+                "range_reversion_solo_weight_floor_applied": bool(
+                    range_reversion_solo_weight_floor_applied
+                ),
                 "trend_carry_alignment_boost_applied": bool(trend_carry_alignment_applied),
                 "trend_carry_alignment_score_mult": round(float(trend_carry_alignment_mult), 6),
                 "trend_carry_alignment_direction": trend_carry_alignment_direction,
@@ -813,6 +871,15 @@ def resolve_symbol_allocation(
                 6,
             ),
             "strong_trend_solo_score_mult_key": strong_trend_solo_score_mult_key,
+            "range_reversion_solo_applied": bool(range_reversion_solo_applied),
+            "range_reversion_solo_module": range_reversion_solo_module,
+            "range_reversion_solo_weight_floor": round(
+                float(range_reversion_solo_weight_floor),
+                6,
+            ),
+            "range_reversion_solo_weight_floor_applied": bool(
+                range_reversion_solo_weight_floor_applied
+            ),
             "trend_carry_alignment_boost_applied": bool(trend_carry_alignment_applied),
             "trend_carry_alignment_score_mult": round(float(trend_carry_alignment_mult), 6),
             "trend_carry_alignment_direction": trend_carry_alignment_direction,
