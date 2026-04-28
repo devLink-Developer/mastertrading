@@ -2,6 +2,7 @@ from django.test import SimpleTestCase, override_settings
 
 from backtest.engine import (
     _execution_min_signal_score,
+    _market_regime_adx_bypass_for_modules,
     _passes_execution_score_gate,
     _resolve_backtest_symbol_allocation,
 )
@@ -84,6 +85,36 @@ class BacktestExecutionScoreGateTest(SimpleTestCase):
                 session_score_overrides=overrides,
             ),
             (True, 0.55),
+        )
+
+    @override_settings(
+        MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED=True,
+        MARKET_REGIME_ADX_RANGE_BYPASS_MODULES={"grid", "meanrev"},
+    )
+    def test_market_regime_adx_bypass_allows_matching_range_module(self):
+        self.assertTrue(
+            _market_regime_adx_bypass_for_modules(
+                direction="long",
+                module_signals=[
+                    {"module": "grid", "direction": "long", "confidence": 0.9},
+                    {"module": "carry", "direction": "short", "confidence": 1.0},
+                ],
+            )
+        )
+
+    @override_settings(
+        MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED=True,
+        MARKET_REGIME_ADX_RANGE_BYPASS_MODULES={"grid", "meanrev"},
+    )
+    def test_market_regime_adx_bypass_rejects_non_range_modules(self):
+        self.assertFalse(
+            _market_regime_adx_bypass_for_modules(
+                direction="short",
+                module_signals=[
+                    {"module": "trend", "direction": "short", "confidence": 0.9},
+                    {"module": "carry", "direction": "short", "confidence": 1.0},
+                ],
+            )
         )
 
 

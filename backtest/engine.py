@@ -58,6 +58,7 @@ from signals.allocator import (
     resolve_symbol_allocation,
 )
 from signals.modules.common import compute_adx
+from signals.runtime_overrides import get_runtime_bool, get_runtime_str_list
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,34 @@ def _passes_execution_score_gate(
         session_score_overrides=session_score_overrides,
     )
     return score >= min_score, min_score
+
+
+def _market_regime_adx_bypass_for_modules(
+    *,
+    direction: str,
+    module_signals: list[dict],
+) -> bool:
+    """Mirror live low-ADX bypass for range-reversion module-backed entries."""
+    if not get_runtime_bool(
+        "MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED",
+        bool(getattr(settings, "MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED", True)),
+    ):
+        return False
+    direct = str(direction or "").strip().lower()
+    if direct not in {"long", "short"}:
+        return False
+    allowed = get_runtime_str_list(
+        "MARKET_REGIME_ADX_RANGE_BYPASS_MODULES",
+        getattr(settings, "MARKET_REGIME_ADX_RANGE_BYPASS_MODULES", {"grid", "meanrev"}),
+    )
+    if not allowed:
+        return False
+    for sig in module_signals:
+        module = str(sig.get("module", "")).strip().lower()
+        sig_direction = str(sig.get("direction", "")).strip().lower()
+        if module in allowed and sig_direction == direct:
+            return True
+    return False
 
 
 def _resolve_backtest_symbol_allocation(
@@ -769,6 +798,7 @@ def run_backtest(
                 continue
 
             # -- Regime ADX gate (per-instrument, mirrors live) --
+            regime_gate_blocked = False
             if regime_adx_min > 0 and not has_position:
                 htf_1h_info_gate = htf_1h_idx_map.get(inst.id)
                 if htf_1h_info_gate is not None:
@@ -779,8 +809,7 @@ def run_backtest(
                     if len(df_1h_gate) >= 30:
                         _inst_adx_1h = compute_adx(df_1h_gate, period=14)
                         if _inst_adx_1h is not None and _inst_adx_1h < regime_adx_min:
-                            regime_gate_skips += 1
-                            continue
+                            regime_gate_blocked = True
 
             # -- Daily trade throttle (per-instrument ADX adaptive) --
             if not has_position:
@@ -972,6 +1001,16 @@ def run_backtest(
             score = float(alloc["confidence"])
 
             if direction not in {"long", "short"}:
+                continue
+
+            if (
+                regime_gate_blocked
+                and not _market_regime_adx_bypass_for_modules(
+                    direction=direction,
+                    module_signals=module_signals,
+                )
+            ):
+                regime_gate_skips += 1
                 continue
 
             score_ok, _exec_min_score = _passes_execution_score_gate(
