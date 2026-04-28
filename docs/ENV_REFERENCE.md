@@ -1,6 +1,6 @@
 # Environment Reference
 
-Last update: 2026-03-01
+Last update: 2026-04-28
 
 Source of truth: `config/settings.py`.
 This document lists high-impact variables only. Keep secrets out of git.
@@ -70,6 +70,8 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `WEEKDAY_CONTEXT_ENABLED`
 - `SESSION_DEAD_ZONE_BLOCK`
 - `MARKET_REGIME_ADX_MIN`
+- `MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED`
+- `MARKET_REGIME_ADX_RANGE_BYPASS_MODULES`: modules allowed to bypass low-ADX regime block when aligned with the signal direction; default `grid,meanrev`.
 - `MARKET_REGIME_ADX_MIN_BY_CONTEXT` (JSON overrides: `SYMBOL:session`, `SYMBOL:*`, `*:session`, `*:*`)
 - `REGIME_DIRECTIONAL_PENALTY_ENABLED`
 - `REGIME_BEAR_LONG_PENALTY`, `REGIME_BULL_SHORT_PENALTY`

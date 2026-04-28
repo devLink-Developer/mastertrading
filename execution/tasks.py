@@ -695,6 +695,53 @@ def _signal_active_modules(payload: dict[str, Any] | None, strategy_name: str = 
     return deduped
 
 
+def _market_regime_adx_bypass_for_signal(
+    *,
+    strategy_name: str,
+    signal_direction: str,
+    sig_payload: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    """Allow low-ADX entries only when the signal is backed by range modules."""
+    if not get_runtime_bool(
+        "MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED",
+        bool(getattr(settings, "MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED", True)),
+    ):
+        return False, "disabled"
+
+    direction = str(signal_direction or "").strip().lower()
+    if direction not in {"long", "short"}:
+        return False, "invalid_direction"
+
+    allowed_modules = get_runtime_str_list(
+        "MARKET_REGIME_ADX_RANGE_BYPASS_MODULES",
+        getattr(settings, "MARKET_REGIME_ADX_RANGE_BYPASS_MODULES", {"grid", "meanrev"}),
+    )
+    allowed_modules = {m for m in allowed_modules if m}
+    if not allowed_modules:
+        return False, "no_allowed_modules"
+
+    payload = sig_payload if isinstance(sig_payload, dict) else {}
+    reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
+    rows = reasons.get("module_rows") if isinstance(reasons.get("module_rows"), list) else []
+    matched: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        module_name = str(row.get("module") or "").strip().lower()
+        row_direction = str(row.get("direction") or "").strip().lower()
+        if module_name in allowed_modules and row_direction == direction:
+            matched.append(module_name)
+
+    if matched:
+        return True, f"range_module:{','.join(sorted(set(matched)))}"
+
+    strategy_module = _strategy_module_name(strategy_name)
+    if strategy_module in allowed_modules and not str(strategy_name or "").startswith("alloc_"):
+        return True, f"direct_range_module:{strategy_module}"
+
+    return False, "no_range_module_match"
+
+
 def _signal_entry_reason(payload: dict[str, Any] | None, strategy_name: str = "") -> str:
     """Build a concise human-readable reason for opening a position."""
     strategy_txt = str(strategy_name or "").strip().lower()
@@ -5503,13 +5550,27 @@ def _attempt_entry_open(
 
     if inst.symbol in regime_blocked_symbols and not allow_scale_entry:
         effective_regime_adx_min = float(regime_adx_min_by_symbol.get(inst.symbol, regime_adx_min))
+        range_bypass_ok, range_bypass_reason = _market_regime_adx_bypass_for_signal(
+            strategy_name=strategy_name,
+            signal_direction=signal_direction,
+            sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+        )
+        if not range_bypass_ok:
+            logger.info(
+                "Market regime gate blocked entry on %s: 1h ADX=%.1f < %.1f",
+                inst.symbol,
+                regime_adx_by_symbol.get(inst.symbol, 0),
+                effective_regime_adx_min,
+            )
+            return 0, 0.0
         logger.info(
-            "Market regime gate blocked entry on %s: 1h ADX=%.1f < %.1f",
+            "Market regime gate bypassed on %s for range-reversion signal: "
+            "1h ADX=%.1f < %.1f reason=%s",
             inst.symbol,
             regime_adx_by_symbol.get(inst.symbol, 0),
             effective_regime_adx_min,
+            range_bypass_reason,
         )
-        return 0, 0.0
 
     if not allow_scale_entry:
         htf_adx_for_limit = regime_adx_by_symbol.get(inst.symbol, market_regime_adx)

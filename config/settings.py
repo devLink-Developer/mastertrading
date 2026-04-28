@@ -877,6 +877,16 @@ def _parse_lower_set(raw: str) -> set[str]:
     return {v for v in values if v}
 
 
+# Low-ADX market regime blocks trend-style entries, but range-reversion modules
+# are designed for that environment. Keep this narrow and module-backed.
+MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED = os.getenv(
+    "MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED", "true"
+).lower() == "true"
+MARKET_REGIME_ADX_RANGE_BYPASS_MODULES = _parse_lower_set(
+    os.getenv("MARKET_REGIME_ADX_RANGE_BYPASS_MODULES", "grid,meanrev")
+)
+
+
 POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED = (
     os.getenv("POST_TP_ALT_REENTRY_QUALITY_GATE_ENABLED", "false").lower() == "true"
 )
@@ -1163,7 +1173,7 @@ MODULE_MEANREV_IMPULSE_BLOCK_ENABLED = (
 MODULE_CARRY_MAX_ATR_PCT = max(0.0, float(os.getenv("MODULE_CARRY_MAX_ATR_PCT", "0.020")))
 MODULE_GRID_ADX_MIN = max(0.0, float(os.getenv("MODULE_GRID_ADX_MIN", "8.0")))
 MODULE_GRID_ADX_MAX = max(MODULE_GRID_ADX_MIN, float(os.getenv("MODULE_GRID_ADX_MAX", "22.0")))
-MODULE_GRID_ATR_MIN_PCT = max(0.0, float(os.getenv("MODULE_GRID_ATR_MIN_PCT", "0.006")))
+MODULE_GRID_ATR_MIN_PCT = max(0.0, float(os.getenv("MODULE_GRID_ATR_MIN_PCT", "0.0015")))
 MODULE_GRID_ATR_MAX_PCT = max(MODULE_GRID_ATR_MIN_PCT, float(os.getenv("MODULE_GRID_ATR_MAX_PCT", "0.030")))
 MODULE_GRID_BB_PERIOD = max(10, int(os.getenv("MODULE_GRID_BB_PERIOD", "20")))
 MODULE_GRID_BB_STD = max(0.5, float(os.getenv("MODULE_GRID_BB_STD", "2.0")))
@@ -1187,7 +1197,7 @@ MODULE_GRID_ALLOWED_SESSIONS = _parse_session_set(
     os.getenv("MODULE_GRID_ALLOWED_SESSIONS", "asia,london,ny,overlap")
 )
 MODULE_GRID_ALLOWED_SYMBOLS = _parse_symbol_set(
-    os.getenv("MODULE_GRID_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
+    os.getenv("MODULE_GRID_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT,ADAUSDT,DOGEUSDT,ENAUSDT,LINKUSDT,XRPUSDT")
 )
 MODULE_GRID_MTF_RANGE_ENABLED = os.getenv("MODULE_GRID_MTF_RANGE_ENABLED", "true").lower() == "true"
 MODULE_GRID_D1_LOOKBACK = max(7, int(os.getenv("MODULE_GRID_D1_LOOKBACK", "45")))

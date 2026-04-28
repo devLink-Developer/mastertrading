@@ -37,6 +37,7 @@ from execution.tasks import (
     _minimum_order_amount_from_error,
     _market_min_qty,
     _macro_high_impact_allows_entry,
+    _market_regime_adx_bypass_for_signal,
     _min_qty_absolute_risk_cap_allows,
     _min_qty_dynamic_allowlist_state,
     _min_qty_risk_guard,
@@ -1935,6 +1936,66 @@ class TaskHelpersTest(TestCase):
         self.assertAlmostEqual(btc_london, 14.0, places=6)  # symbol wildcard session
         self.assertAlmostEqual(eth_asia, 15.0, places=6)    # session wildcard symbol
         self.assertAlmostEqual(sol_ny, 16.0, places=6)      # global wildcard
+
+    @override_settings(
+        MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED=True,
+        MARKET_REGIME_ADX_RANGE_BYPASS_MODULES={"grid", "meanrev"},
+    )
+    def test_market_regime_adx_bypass_allows_allocator_range_module(self):
+        payload = {
+            "reasons": {
+                "module_rows": [
+                    {"module": "grid", "direction": "long", "confidence": 0.91},
+                    {"module": "carry", "direction": "short", "confidence": 0.83},
+                ],
+            },
+        }
+
+        ok, reason = _market_regime_adx_bypass_for_signal(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            sig_payload=payload,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "range_module:grid")
+
+    @override_settings(
+        MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED=True,
+        MARKET_REGIME_ADX_RANGE_BYPASS_MODULES={"grid", "meanrev"},
+    )
+    def test_market_regime_adx_bypass_rejects_trend_carry_allocator(self):
+        payload = {
+            "reasons": {
+                "module_rows": [
+                    {"module": "trend", "direction": "short", "confidence": 0.97},
+                    {"module": "carry", "direction": "short", "confidence": 0.95},
+                ],
+            },
+        }
+
+        ok, reason = _market_regime_adx_bypass_for_signal(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            sig_payload=payload,
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "no_range_module_match")
+
+    @override_settings(
+        MARKET_REGIME_ADX_RANGE_MODULE_BYPASS_ENABLED=True,
+        MARKET_REGIME_ADX_RANGE_BYPASS_MODULES={"grid", "meanrev"},
+    )
+    def test_market_regime_adx_bypass_allows_direct_meanrev_module(self):
+        ok, reason = _market_regime_adx_bypass_for_signal(
+            strategy_name="mod_meanrev_short",
+            signal_direction="short",
+            sig_payload={},
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "direct_range_module:meanrev")
 
     @override_settings(
         TRAILING_STOP_ENABLED=True,

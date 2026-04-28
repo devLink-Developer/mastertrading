@@ -156,7 +156,7 @@ def detect(
     atr_pct = compute_atr_pct(df_ltf, period=14)
     if atr_pct is None:
         return None
-    atr_min = max(0.0, float(getattr(settings, "MODULE_GRID_ATR_MIN_PCT", 0.006)))
+    atr_min = max(0.0, float(getattr(settings, "MODULE_GRID_ATR_MIN_PCT", 0.0015)))
     atr_max = max(atr_min, float(getattr(settings, "MODULE_GRID_ATR_MAX_PCT", 0.03)))
     if float(atr_pct) < atr_min or float(atr_pct) > atr_max:
         return None
