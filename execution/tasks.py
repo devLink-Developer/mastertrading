@@ -17,6 +17,7 @@ from django.db.models import OuterRef, Subquery, Q
 from django.conf import settings
 from django.core.management import call_command
 from django.utils import timezone as dj_tz
+from django.utils.dateparse import parse_datetime
 
 import redis
 
@@ -4743,6 +4744,24 @@ def _long_bias_short_precheck(
     )
 
 
+def _parse_symbol_health_reset_at(raw_value: Any) -> datetime | None:
+    text = str(raw_value or "").strip()
+    if not text or text.lower() in {"0", "false", "none", "null", "off"}:
+        return None
+
+    reset_at = parse_datetime(text)
+    if reset_at is None:
+        try:
+            reset_at = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            logger.warning("Ignoring invalid SYMBOL_HEALTH_GUARD_RESET_AT=%r", text)
+            return None
+
+    if dj_tz.is_naive(reset_at):
+        reset_at = reset_at.replace(tzinfo=timezone.utc)
+    return reset_at
+
+
 def _symbol_health_precheck(inst: Instrument) -> tuple[bool, str]:
     if not get_runtime_bool(
         "SYMBOL_HEALTH_GUARD_ENABLED",
@@ -4779,6 +4798,15 @@ def _symbol_health_precheck(inst: Instrument) -> tuple[bool, str]:
     )
 
     cutoff = dj_tz.now() - timedelta(days=lookback_days)
+    reset_at = _parse_symbol_health_reset_at(
+        get_runtime_override(
+            "SYMBOL_HEALTH_GUARD_RESET_AT",
+            getattr(settings, "SYMBOL_HEALTH_GUARD_RESET_AT", ""),
+        )
+    )
+    if reset_at is not None and reset_at > cutoff:
+        cutoff = reset_at
+
     reports = list(
         OperationReport.objects.filter(
             instrument=inst,
@@ -4788,8 +4816,9 @@ def _symbol_health_precheck(inst: Instrument) -> tuple[bool, str]:
         .values_list("pnl_abs", flat=True)
     )
     sample_size = len(reports)
+    reset_suffix = f":reset={reset_at.isoformat()}" if reset_at is not None else ""
     if sample_size < min_trades:
-        return True, f"insufficient_sample:{sample_size}<{min_trades}"
+        return True, f"insufficient_sample:{sample_size}<{min_trades}{reset_suffix}"
 
     pnls = [_to_float(pnl) for pnl in reports]
     gross_win = sum(pnl for pnl in pnls if pnl > 0)
@@ -4805,11 +4834,11 @@ def _symbol_health_precheck(inst: Instrument) -> tuple[bool, str]:
     if profit_factor < min_pf or expectancy < min_expectancy:
         return False, (
             f"symbol_health:{symbol}:n={sample_size}:pf={profit_factor:.3f}:"
-            f"expect={expectancy:.5f}:pnl={total_pnl:.5f}"
+            f"expect={expectancy:.5f}:pnl={total_pnl:.5f}{reset_suffix}"
         )
     return True, (
         f"healthy:{symbol}:n={sample_size}:pf={profit_factor:.3f}:"
-        f"expect={expectancy:.5f}:pnl={total_pnl:.5f}"
+        f"expect={expectancy:.5f}:pnl={total_pnl:.5f}{reset_suffix}"
     )
 
 

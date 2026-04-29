@@ -949,6 +949,7 @@ SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT = float(
 SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS = _parse_lower_set(
     os.getenv("SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS", "")
 )
+SYMBOL_HEALTH_GUARD_RESET_AT = os.getenv("SYMBOL_HEALTH_GUARD_RESET_AT", "").strip()
 
 
 WEEKDAY_CONTEXT_ENABLED = os.getenv("WEEKDAY_CONTEXT_ENABLED", "true").lower() == "true"
@@ -2038,6 +2039,10 @@ LOGGING = {
         "console": {"class": "logging.StreamHandler", "formatter": "json"},
     },
     "root": {"handlers": ["console"], "level": "INFO"},
+    "loggers": {
+        "httpx": {"level": "WARNING"},
+        "httpcore": {"level": "WARNING"},
+    },
 }
 EXCHANGE = os.getenv("EXCHANGE", "kucoin")
 BINANCE_TESTNET = os.getenv("BINANCE_TESTNET", "true").lower() == "true"

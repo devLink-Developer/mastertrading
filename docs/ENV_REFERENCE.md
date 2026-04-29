@@ -59,6 +59,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `SYMBOL_HEALTH_GUARD_LOOKBACK_DAYS`, `SYMBOL_HEALTH_GUARD_MIN_TRADES`
 - `SYMBOL_HEALTH_GUARD_MIN_PROFIT_FACTOR`, `SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT`
 - `SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS`
+- `SYMBOL_HEALTH_GUARD_RESET_AT`: optional ISO timestamp; closed trades before it are ignored by the symbol health guard.
 - `MODULE_SIGNAL_TTL_SECONDS` (module-level)
 
 ## 6) Session and regime controls

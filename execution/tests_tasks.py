@@ -1336,6 +1336,27 @@ class TaskHelpersTest(TestCase):
         self.assertTrue(ok)
         self.assertIn("insufficient_sample", reason)
 
+    def test_symbol_health_precheck_reset_at_ignores_older_losses(self):
+        inst = Instrument.objects.create(symbol="SOLUSDT", exchange="bingx", base="SOL", quote="USDT")
+        for idx, pnl in enumerate([-0.20, -0.18, -0.10, 0.05], start=30):
+            self._create_symbol_health_report(inst, pnl, idx)
+
+        reset_at = (dj_tz.now() - timedelta(minutes=10)).isoformat()
+        with override_settings(
+            SYMBOL_HEALTH_GUARD_ENABLED=True,
+            SYMBOL_HEALTH_GUARD_LOOKBACK_DAYS=14,
+            SYMBOL_HEALTH_GUARD_MIN_TRADES=4,
+            SYMBOL_HEALTH_GUARD_MIN_PROFIT_FACTOR=0.90,
+            SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT=0.0,
+            SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS=set(),
+            SYMBOL_HEALTH_GUARD_RESET_AT=reset_at,
+        ):
+            ok, reason = _symbol_health_precheck(inst)
+
+        self.assertTrue(ok)
+        self.assertIn("insufficient_sample:0<4", reason)
+        self.assertIn("reset=", reason)
+
     @override_settings(
         SYMBOL_HEALTH_GUARD_ENABLED=True,
         SYMBOL_HEALTH_GUARD_LOOKBACK_DAYS=14,
