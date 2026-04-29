@@ -185,3 +185,22 @@ class SymbolHeatGuardDBTests(TestCase):
         buy_mult, _ = _symbol_heat_guard("TESTUSDT", side="buy")
         self.assertEqual(sell_mult, 0.35)
         self.assertEqual(buy_mult, 1.0)
+
+    @override_settings(
+        SYMBOL_HEAT_GUARD_ENABLED=True,
+        SYMBOL_HEAT_GUARD_WINDOW=7,
+        SYMBOL_HEAT_GUARD_LOOKBACK_DAYS=30,
+        SYMBOL_HEAT_GUARD_WR_NEUTRAL=0.50,
+        SYMBOL_HEAT_GUARD_WR_FLOOR=0.25,
+        SYMBOL_HEAT_GUARD_MIN_PROFIT_FACTOR=0.90,
+        SYMBOL_HEAT_GUARD_MIN_EXPECTANCY_PCT=-1.0,
+        SYMBOL_HEAT_GUARD_MIN_RISK_MULT=0.35,
+        SYMBOL_HEAT_GUARD_MIN_TRADES=3,
+        SYMBOL_HEAT_GUARD_RESET_AT="",
+    )
+    def test_low_profit_factor_reduces_even_when_win_rate_is_good(self):
+        # Many tiny wins and a few larger losses should not receive full risk.
+        self._create_reports(self.inst, [0.05, 0.05, 0.05, 0.05, -0.40, -0.40], side="buy")
+        mult, reason = _symbol_heat_guard("TESTUSDT", side="buy")
+        self.assertLess(mult, 1.0)
+        self.assertIn("pf=", reason)

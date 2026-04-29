@@ -5206,29 +5206,64 @@ def _grid_structural_sl_tp_hints(
 # ---------------------------------------------------------------------------
 
 def _symbol_heat_guard(symbol: str, side: str = "") -> tuple[float, str]:
-    """Return (risk_mult, reason) based on recent trade outcomes for *symbol*.
+    """Return (risk_mult, reason) based on recent percent returns for *symbol*.
 
     Instead of hard-blocking entries on a losing symbol, this progressively
-    reduces risk so the bot can still participate when the symbol recovers
-    while limiting damage during losing streaks.
+    reduces risk per symbol+side so the bot can still participate when that
+    exact book recovers while limiting damage during losing streaks.
 
     Returns:
         risk_mult: 1.0 (no reduction) down to the configured floor.
         reason: human-readable explanation or empty string.
     """
-    if not bool(getattr(settings, "SYMBOL_HEAT_GUARD_ENABLED", False)):
+    if not get_runtime_bool(
+        "SYMBOL_HEAT_GUARD_ENABLED",
+        bool(getattr(settings, "SYMBOL_HEAT_GUARD_ENABLED", False)),
+    ):
         return 1.0, ""
 
-    window = max(3, int(getattr(settings, "SYMBOL_HEAT_GUARD_WINDOW", 7) or 7))
-    wr_neutral = max(0.10, min(1.0,
+    window = get_runtime_int(
+        "SYMBOL_HEAT_GUARD_WINDOW",
+        int(getattr(settings, "SYMBOL_HEAT_GUARD_WINDOW", 7) or 7),
+        minimum=3,
+    )
+    lookback_days = get_runtime_int(
+        "SYMBOL_HEAT_GUARD_LOOKBACK_DAYS",
+        int(getattr(settings, "SYMBOL_HEAT_GUARD_LOOKBACK_DAYS", 30) or 30),
+        minimum=1,
+    )
+    wr_neutral = get_runtime_float(
+        "SYMBOL_HEAT_GUARD_WR_NEUTRAL",
         float(getattr(settings, "SYMBOL_HEAT_GUARD_WR_NEUTRAL", 0.50) or 0.50),
-    ))
-    wr_floor = max(0.0, min(wr_neutral,
+        minimum=0.10,
+        maximum=1.0,
+    )
+    wr_floor = get_runtime_float(
+        "SYMBOL_HEAT_GUARD_WR_FLOOR",
         float(getattr(settings, "SYMBOL_HEAT_GUARD_WR_FLOOR", 0.25) or 0.25),
-    ))
-    min_risk_mult = max(0.10, min(1.0,
+        minimum=0.0,
+        maximum=wr_neutral,
+    )
+    min_pf = get_runtime_float(
+        "SYMBOL_HEAT_GUARD_MIN_PROFIT_FACTOR",
+        float(getattr(settings, "SYMBOL_HEAT_GUARD_MIN_PROFIT_FACTOR", 0.0) or 0.0),
+        minimum=0.0,
+    )
+    min_expectancy_pct = get_runtime_float(
+        "SYMBOL_HEAT_GUARD_MIN_EXPECTANCY_PCT",
+        float(getattr(settings, "SYMBOL_HEAT_GUARD_MIN_EXPECTANCY_PCT", -1.0)),
+    )
+    min_risk_mult = get_runtime_float(
+        "SYMBOL_HEAT_GUARD_MIN_RISK_MULT",
         float(getattr(settings, "SYMBOL_HEAT_GUARD_MIN_RISK_MULT", 0.35) or 0.35),
-    ))
+        minimum=0.10,
+        maximum=1.0,
+    )
+    min_trades = get_runtime_int(
+        "SYMBOL_HEAT_GUARD_MIN_TRADES",
+        int(getattr(settings, "SYMBOL_HEAT_GUARD_MIN_TRADES", 3) or 3),
+        minimum=3,
+    )
 
     from execution.models import OperationReport
     from core.models import Instrument
@@ -5242,30 +5277,63 @@ def _symbol_heat_guard(symbol: str, side: str = "") -> tuple[float, str]:
         side_txt = str(side or "").strip().lower()
         if side_txt in {"buy", "sell"}:
             op_qs = op_qs.filter(side=side_txt)
-        recent = list(op_qs.order_by("-closed_at").values_list("pnl_abs", flat=True)[:window])
+        cutoff = dj_tz.now() - timedelta(days=lookback_days)
+        reset_at = _parse_symbol_health_reset_at(
+            get_runtime_override(
+                "SYMBOL_HEAT_GUARD_RESET_AT",
+                getattr(settings, "SYMBOL_HEAT_GUARD_RESET_AT", ""),
+            )
+        )
+        if reset_at is not None and reset_at > cutoff:
+            cutoff = reset_at
+        recent = list(
+            op_qs.filter(closed_at__gte=cutoff)
+            .order_by("-closed_at")
+            .values_list("pnl_pct", flat=True)[:window]
+        )
     except Exception:
         return 1.0, ""
 
-    if len(recent) < max(3, int(getattr(settings, "SYMBOL_HEAT_GUARD_MIN_TRADES", 3) or 3)):
+    if len(recent) < min_trades:
         return 1.0, ""
 
-    wins = sum(1 for pnl in recent if float(pnl) > 0)
-    wr = wins / len(recent)
+    pnls = [_to_float(pnl) for pnl in recent]
+    wins = sum(1 for pnl in pnls if pnl > 0)
+    wr = wins / len(pnls)
+    gross_win = sum(pnl for pnl in pnls if pnl > 0)
+    gross_loss = abs(sum(pnl for pnl in pnls if pnl < 0))
+    profit_factor = (
+        float("inf")
+        if gross_win > 0 and gross_loss <= 0
+        else (gross_win / gross_loss if gross_loss > 0 else 0.0)
+    )
+    expectancy_pct = sum(pnls) / len(pnls) if pnls else 0.0
+    risk_mult = 1.0
 
     if wr >= wr_neutral:
+        wr_mult = 1.0
+    elif wr <= wr_floor:
+        wr_mult = min_risk_mult
+    else:
+        ratio = (wr - wr_floor) / (wr_neutral - wr_floor)
+        wr_mult = min_risk_mult + ratio * (1.0 - min_risk_mult)
+    risk_mult = min(risk_mult, wr_mult)
+
+    if min_pf > 0.0 and profit_factor < min_pf:
+        pf_ratio = max(0.0, min(1.0, profit_factor / min_pf)) if min_pf > 0 else 1.0
+        pf_mult = min_risk_mult + pf_ratio * (1.0 - min_risk_mult)
+        risk_mult = min(risk_mult, pf_mult)
+
+    if min_expectancy_pct > -1.0 and expectancy_pct < min_expectancy_pct:
+        risk_mult = min(risk_mult, min_risk_mult)
+
+    risk_mult = round(max(min_risk_mult, min(1.0, risk_mult)), 4)
+    if risk_mult >= 1.0:
         return 1.0, ""
-
-    if wr <= wr_floor:
-        return min_risk_mult, (
-            f"heat_guard:{symbol}:{side_txt or 'all'},wr={wr:.0%}({wins}/{len(recent)}),mult={min_risk_mult:.2f}"
-        )
-
-    # Linear interpolation between wr_floor → wr_neutral
-    ratio = (wr - wr_floor) / (wr_neutral - wr_floor)
-    mult = min_risk_mult + ratio * (1.0 - min_risk_mult)
-    mult = round(max(min_risk_mult, min(1.0, mult)), 4)
-    return mult, (
-        f"heat_guard:{symbol}:{side_txt or 'all'},wr={wr:.0%}({wins}/{len(recent)}),mult={mult:.2f}"
+    return risk_mult, (
+        f"heat_guard:{symbol}:{side_txt or 'all'},n={len(pnls)},"
+        f"wr={wr:.0%}({wins}/{len(pnls)}),pf={profit_factor:.2f},"
+        f"exp={expectancy_pct * 100:.3f}%,mult={risk_mult:.2f}"
     )
 
 

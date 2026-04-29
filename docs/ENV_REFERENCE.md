@@ -60,6 +60,10 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `SYMBOL_HEALTH_GUARD_MIN_PROFIT_FACTOR`, `SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT`
 - `SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS`
 - `SYMBOL_HEALTH_GUARD_RESET_AT`: optional ISO timestamp; closed trades before it are ignored by the symbol health guard.
+- `SYMBOL_HEAT_GUARD_ENABLED`: progressive risk reduction by symbol+side using recent `OperationReport.pnl_pct`.
+- `SYMBOL_HEAT_GUARD_WINDOW`, `SYMBOL_HEAT_GUARD_LOOKBACK_DAYS`, `SYMBOL_HEAT_GUARD_MIN_TRADES`
+- `SYMBOL_HEAT_GUARD_WR_NEUTRAL`, `SYMBOL_HEAT_GUARD_WR_FLOOR`, `SYMBOL_HEAT_GUARD_MIN_PROFIT_FACTOR`
+- `SYMBOL_HEAT_GUARD_MIN_EXPECTANCY_PCT`, `SYMBOL_HEAT_GUARD_MIN_RISK_MULT`, `SYMBOL_HEAT_GUARD_RESET_AT`
 - `MODULE_SIGNAL_TTL_SECONDS` (module-level)
 
 ## 6) Session and regime controls
