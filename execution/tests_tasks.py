@@ -28,6 +28,7 @@ from execution.tasks import (
     _corr_guard_positions_snapshot,
     _extract_trigger_price,
     _extract_fee_usdt,
+    _flat_signal_timeout_fee_defer_decision,
     _resolve_order_fee_usdt,
     _grid_structural_sl_tp_hints,
     _is_insufficient_margin_error,
@@ -548,6 +549,75 @@ class TaskHelpersTest(TestCase):
         pnl_gate, fee_est = _tp_sl_gate_pnl_pct(0.0100)
         self.assertAlmostEqual(fee_est, 0.0, places=8)
         self.assertAlmostEqual(pnl_gate, 0.0100, places=8)
+
+    @override_settings(
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED=True,
+        FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT=0.0,
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES=20.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_flat_signal_timeout_defers_tiny_gross_win_when_fee_negative(self):
+        defer, reason, pnl_net, fee_est = _flat_signal_timeout_fee_defer_decision(
+            pnl_pct_gross=0.0005,
+            flat_minutes=10.0,
+            timeout_minutes=10.0,
+        )
+        self.assertTrue(defer)
+        self.assertLess(pnl_net, 0.0)
+        self.assertAlmostEqual(fee_est, 0.0010, places=8)
+        self.assertIn("fee_not_covered", reason)
+
+    @override_settings(
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED=True,
+        FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT=0.0,
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES=20.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_flat_signal_timeout_allows_close_when_net_positive(self):
+        defer, reason, pnl_net, _ = _flat_signal_timeout_fee_defer_decision(
+            pnl_pct_gross=0.0015,
+            flat_minutes=10.0,
+            timeout_minutes=10.0,
+        )
+        self.assertFalse(defer)
+        self.assertGreater(pnl_net, 0.0)
+        self.assertIn("net_ok", reason)
+
+    @override_settings(
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED=True,
+        FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT=0.0,
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES=20.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_flat_signal_timeout_still_closes_gross_losers(self):
+        defer, reason, pnl_net, _ = _flat_signal_timeout_fee_defer_decision(
+            pnl_pct_gross=-0.0002,
+            flat_minutes=10.0,
+            timeout_minutes=10.0,
+        )
+        self.assertFalse(defer)
+        self.assertLess(pnl_net, 0.0)
+        self.assertIn("gross_not_positive", reason)
+
+    @override_settings(
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED=True,
+        FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT=0.0,
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES=20.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_flat_signal_timeout_stops_deferring_after_max_defer(self):
+        defer, reason, pnl_net, _ = _flat_signal_timeout_fee_defer_decision(
+            pnl_pct_gross=0.0005,
+            flat_minutes=31.0,
+            timeout_minutes=10.0,
+        )
+        self.assertFalse(defer)
+        self.assertLess(pnl_net, 0.0)
+        self.assertIn("max_defer_reached", reason)
 
     @override_settings(MODULE_MICROVOL_TP_MULT=0.50)
     def test_microvol_tp_profile_is_tighter(self):

@@ -139,6 +139,14 @@ SIGNAL_DEDUP_SECONDS = int(os.getenv("SIGNAL_DEDUP_SECONDS", "120"))  # prevent 
 # -- Flat signal timeout: close positions when signal stays flat --
 FLAT_SIGNAL_TIMEOUT_ENABLED = os.getenv("FLAT_SIGNAL_TIMEOUT_ENABLED", "true").lower() == "true"
 FLAT_SIGNAL_TIMEOUT_MINUTES = max(1.0, float(os.getenv("FLAT_SIGNAL_TIMEOUT_MINUTES", "10")))
+FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED = (
+    os.getenv("FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED", "true").lower() == "true"
+)
+FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT = float(os.getenv("FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT", "0.0"))
+FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES = max(
+    0.0,
+    float(os.getenv("FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES", "20")),
+)
 
 # -- New: Trailing stop / partial close --
 TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"

@@ -5167,6 +5167,53 @@ def _clear_flat_signal(symbol: str) -> None:
         pass
 
 
+def _flat_signal_timeout_fee_defer_decision(
+    pnl_pct_gross: float,
+    flat_minutes: float,
+    timeout_minutes: float,
+) -> tuple[bool, str, float, float]:
+    """Return whether to defer a flat-timeout close to avoid fee-negative exits."""
+    pnl_pct_net, fee_pct_estimate = _tp_sl_gate_pnl_pct(pnl_pct_gross)
+    if not get_runtime_bool(
+        "FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED",
+        bool(getattr(settings, "FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED", True)),
+    ):
+        return False, "fee_aware_disabled", pnl_pct_net, fee_pct_estimate
+
+    min_net_pnl_pct = get_runtime_float(
+        "FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT",
+        float(getattr(settings, "FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT", 0.0)),
+    )
+    max_defer_minutes = get_runtime_float(
+        "FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES",
+        float(getattr(settings, "FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES", 20.0)),
+        minimum=0.0,
+    )
+
+    # Losing/flat-gross positions are still closed by timeout; this guard only
+    # avoids voluntarily banking a tiny gross win that is still net-negative.
+    if pnl_pct_gross <= 0:
+        return False, f"gross_not_positive:net={pnl_pct_net:.6f}", pnl_pct_net, fee_pct_estimate
+    if pnl_pct_net >= min_net_pnl_pct:
+        return False, (
+            f"net_ok:{pnl_pct_net:.6f}>={min_net_pnl_pct:.6f}:"
+            f"fee={fee_pct_estimate:.6f}"
+        ), pnl_pct_net, fee_pct_estimate
+
+    minutes_after_timeout = max(0.0, flat_minutes - timeout_minutes)
+    if max_defer_minutes > 0 and minutes_after_timeout >= max_defer_minutes:
+        return False, (
+            f"max_defer_reached:{minutes_after_timeout:.1f}>={max_defer_minutes:.1f}:"
+            f"net={pnl_pct_net:.6f}:fee={fee_pct_estimate:.6f}"
+        ), pnl_pct_net, fee_pct_estimate
+
+    return True, (
+        f"fee_not_covered:gross={pnl_pct_gross:.6f}:"
+        f"net={pnl_pct_net:.6f}<{min_net_pnl_pct:.6f}:"
+        f"fee={fee_pct_estimate:.6f}:defer={minutes_after_timeout:.1f}/{max_defer_minutes:.1f}"
+    ), pnl_pct_net, fee_pct_estimate
+
+
 def _grid_structural_sl_tp_hints(
     *,
     strategy_name: str,
@@ -7730,13 +7777,36 @@ def _manage_open_position(
                 trade_side = "buy" if current_qty > 0 else "sell"
                 pnl_flat = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
                 pnl_abs_flat = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+                defer_fee_close, fee_gate_reason, pnl_flat_net, fee_pct_estimate = (
+                    _flat_signal_timeout_fee_defer_decision(
+                        pnl_flat,
+                        flat_minutes,
+                        flat_timeout_minutes,
+                    )
+                )
+                if defer_fee_close:
+                    logger.info(
+                        "Flat signal timeout deferred on %s: flat=%.1f min gross=%.4f%% "
+                        "net_est=%.4f%% fee_est=%.4f%% reason=%s",
+                        symbol,
+                        flat_minutes,
+                        pnl_flat * 100,
+                        pnl_flat_net * 100,
+                        fee_pct_estimate * 100,
+                        fee_gate_reason,
+                    )
+                    return True, allow_scale_entry, scale_parent_correlation, scale_add_index
                 dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
                 logger.info(
-                    "Flat signal timeout on %s: flat for %.1f min (threshold %.1f min), closing pnl=%.4f%%",
+                    "Flat signal timeout on %s: flat for %.1f min (threshold %.1f min), "
+                    "closing gross=%.4f%% net_est=%.4f%% fee_est=%.4f%% reason=%s",
                     symbol,
                     flat_minutes,
                     flat_timeout_minutes,
                     pnl_flat * 100,
+                    pnl_flat_net * 100,
+                    fee_pct_estimate * 100,
+                    fee_gate_reason,
                 )
                 try:
                     close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
