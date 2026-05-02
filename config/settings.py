@@ -479,6 +479,12 @@ SHORT_SCORE_PENALTY = float(os.getenv("SHORT_SCORE_PENALTY", "0.15"))  # penaliz
 UPTREND_SHORT_KILLER_ENABLED = os.getenv("UPTREND_SHORT_KILLER_ENABLED", "true").lower() == "true"  # close shorts when HTF turns bullish
 # -- Downtrend long killer (symmetry to protect longs when HTF flips bearish) --
 DOWNTREND_LONG_KILLER_ENABLED = os.getenv("DOWNTREND_LONG_KILLER_ENABLED", "true").lower() == "true"
+TREND_KILLER_FEE_AWARE_ENABLED = os.getenv("TREND_KILLER_FEE_AWARE_ENABLED", "true").lower() == "true"
+TREND_KILLER_MIN_NET_PNL_PCT = float(os.getenv("TREND_KILLER_MIN_NET_PNL_PCT", "0.0"))
+TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES = max(
+    0.0,
+    float(os.getenv("TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES", "5")),
+)
 
 # -- New: Kill-switch thresholds --
 MAX_CONSECUTIVE_ERRORS = int(os.getenv("MAX_CONSECUTIVE_ERRORS", "3"))

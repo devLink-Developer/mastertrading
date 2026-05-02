@@ -5214,6 +5214,53 @@ def _flat_signal_timeout_fee_defer_decision(
     ), pnl_pct_net, fee_pct_estimate
 
 
+def _trend_killer_fee_defer_decision(
+    pnl_pct_gross: float,
+    age_minutes: float,
+) -> tuple[bool, str, float, float]:
+    """Defer trend-killer exits that are gross-positive but fee-negative.
+
+    Trend killers remain immediate for losers and for exits whose estimated net
+    PnL already covers fees. The defer window is intentionally short and is
+    measured from position age, so stale positions are still protected.
+    """
+    pnl_pct_net, fee_pct_estimate = _tp_sl_gate_pnl_pct(pnl_pct_gross)
+    if not get_runtime_bool(
+        "TREND_KILLER_FEE_AWARE_ENABLED",
+        bool(getattr(settings, "TREND_KILLER_FEE_AWARE_ENABLED", True)),
+    ):
+        return False, "fee_aware_disabled", pnl_pct_net, fee_pct_estimate
+
+    min_net_pnl_pct = get_runtime_float(
+        "TREND_KILLER_MIN_NET_PNL_PCT",
+        float(getattr(settings, "TREND_KILLER_MIN_NET_PNL_PCT", 0.0)),
+    )
+    max_defer_minutes = get_runtime_float(
+        "TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES",
+        float(getattr(settings, "TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES", 5.0)),
+        minimum=0.0,
+    )
+
+    if pnl_pct_gross <= 0:
+        return False, f"gross_not_positive:net={pnl_pct_net:.6f}", pnl_pct_net, fee_pct_estimate
+    if pnl_pct_net >= min_net_pnl_pct:
+        return False, (
+            f"net_ok:{pnl_pct_net:.6f}>={min_net_pnl_pct:.6f}:"
+            f"fee={fee_pct_estimate:.6f}"
+        ), pnl_pct_net, fee_pct_estimate
+    if max_defer_minutes <= 0 or max(0.0, age_minutes) >= max_defer_minutes:
+        return False, (
+            f"max_defer_reached:{age_minutes:.1f}>={max_defer_minutes:.1f}:"
+            f"net={pnl_pct_net:.6f}:fee={fee_pct_estimate:.6f}"
+        ), pnl_pct_net, fee_pct_estimate
+
+    return True, (
+        f"fee_not_covered:gross={pnl_pct_gross:.6f}:"
+        f"net={pnl_pct_net:.6f}<{min_net_pnl_pct:.6f}:"
+        f"fee={fee_pct_estimate:.6f}:age={age_minutes:.1f}/{max_defer_minutes:.1f}"
+    ), pnl_pct_net, fee_pct_estimate
+
+
 def _grid_structural_sl_tp_hints(
     *,
     strategy_name: str,
@@ -7212,13 +7259,23 @@ def _manage_open_position(
                     close_side = "buy"
                     close_qty = abs(current_qty)
                     pnl_pct_kill = (last - entry_price) / entry_price * -1
+                    dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+                    defer_kill, defer_reason, _pnl_net_est, _fee_pct_est = (
+                        _trend_killer_fee_defer_decision(pnl_pct_kill, dur_min)
+                    )
+                    if defer_kill:
+                        logger.info(
+                            "Uptrend short killer deferred %s: %s",
+                            symbol,
+                            defer_reason,
+                        )
+                        return False, allow_scale_entry, scale_parent_correlation, scale_add_index
                     close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
                     close_fee = _resolve_order_fee_usdt(
                         close_resp,
                         _trade_notional_usdt(close_qty, last, contract_size),
                     )
                     pnl_abs_kill = (last - entry_price) * close_qty * contract_size * -1
-                    dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
                     logger.info(
                         "Uptrend short killer closed %s: HTF=bull pnl=%.4f",
                         symbol,
@@ -7291,13 +7348,23 @@ def _manage_open_position(
                     close_side = "sell"
                     close_qty = abs(current_qty)
                     pnl_pct_kill = (last - entry_price) / entry_price
+                    dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
+                    defer_kill, defer_reason, _pnl_net_est, _fee_pct_est = (
+                        _trend_killer_fee_defer_decision(pnl_pct_kill, dur_min)
+                    )
+                    if defer_kill:
+                        logger.info(
+                            "Downtrend long killer deferred %s: %s",
+                            symbol,
+                            defer_reason,
+                        )
+                        return False, allow_scale_entry, scale_parent_correlation, scale_add_index
                     close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
                     close_fee = _resolve_order_fee_usdt(
                         close_resp,
                         _trade_notional_usdt(close_qty, last, contract_size),
                     )
                     pnl_abs_kill = (last - entry_price) * close_qty * contract_size
-                    dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
                     logger.info(
                         "Downtrend long killer closed %s: HTF=bear pnl=%.4f",
                         symbol,

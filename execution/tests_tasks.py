@@ -78,6 +78,7 @@ from execution.tasks import (
     _volume_gate_min_ratio,
     _tp_sl_gate_pnl_pct,
     _track_data_staleness_transition,
+    _trend_killer_fee_defer_decision,
     _evaluate_tp_progress_exit,
     _volatility_adjusted_risk,
 )
@@ -614,6 +615,55 @@ class TaskHelpersTest(TestCase):
             pnl_pct_gross=0.0005,
             flat_minutes=31.0,
             timeout_minutes=10.0,
+        )
+        self.assertFalse(defer)
+        self.assertLess(pnl_net, 0.0)
+        self.assertIn("max_defer_reached", reason)
+
+    @override_settings(
+        TREND_KILLER_FEE_AWARE_ENABLED=True,
+        TREND_KILLER_MIN_NET_PNL_PCT=0.0,
+        TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES=5.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_trend_killer_defers_tiny_gross_win_when_fee_negative(self):
+        defer, reason, pnl_net, fee_est = _trend_killer_fee_defer_decision(
+            pnl_pct_gross=0.0005,
+            age_minutes=1.0,
+        )
+        self.assertTrue(defer)
+        self.assertLess(pnl_net, 0.0)
+        self.assertAlmostEqual(fee_est, 0.0010, places=8)
+        self.assertIn("fee_not_covered", reason)
+
+    @override_settings(
+        TREND_KILLER_FEE_AWARE_ENABLED=True,
+        TREND_KILLER_MIN_NET_PNL_PCT=0.0,
+        TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES=5.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_trend_killer_still_closes_gross_losers(self):
+        defer, reason, pnl_net, _ = _trend_killer_fee_defer_decision(
+            pnl_pct_gross=-0.0002,
+            age_minutes=1.0,
+        )
+        self.assertFalse(defer)
+        self.assertLess(pnl_net, 0.0)
+        self.assertIn("gross_not_positive", reason)
+
+    @override_settings(
+        TREND_KILLER_FEE_AWARE_ENABLED=True,
+        TREND_KILLER_MIN_NET_PNL_PCT=0.0,
+        TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES=5.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_trend_killer_stops_deferring_after_max_age(self):
+        defer, reason, pnl_net, _ = _trend_killer_fee_defer_decision(
+            pnl_pct_gross=0.0005,
+            age_minutes=5.0,
         )
         self.assertFalse(defer)
         self.assertLess(pnl_net, 0.0)
