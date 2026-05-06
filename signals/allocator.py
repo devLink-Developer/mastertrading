@@ -408,6 +408,8 @@ def resolve_symbol_allocation(
     strong_trend_solo_applied = False
     strong_trend_solo_score_mult = 1.0
     strong_trend_solo_score_mult_key = ""
+    strong_trend_solo_weight_floor = 0.0
+    strong_trend_solo_weight_floor_applied = False
     range_reversion_solo_applied = False
     range_reversion_solo_module = ""
     range_reversion_solo_weight_floor = 0.0
@@ -634,6 +636,33 @@ def resolve_symbol_allocation(
             required_modules = 1
             strong_trend_solo_applied = True
 
+    if strong_trend_solo_applied and trend_sign != 0:
+        strong_trend_solo_weight_floor = get_runtime_float(
+            "ALLOCATOR_STRONG_TREND_SOLO_WEIGHT_FLOOR",
+            float(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_WEIGHT_FLOOR", 0.35)),
+            minimum=0.0,
+            maximum=1.0,
+        )
+        for row in module_contributions:
+            row_sign = 1 if str(row.get("direction", "")).strip().lower() == "long" else -1
+            if row.get("module") != "trend" or row_sign != trend_sign:
+                continue
+            current_weight = max(0.0, float(row.get("weight", 0.0) or 0.0))
+            if strong_trend_solo_weight_floor <= current_weight:
+                break
+            confidence = normalize_score(float(row.get("confidence", 0.0) or 0.0))
+            current_abs = abs(float(row.get("contribution", 0.0) or 0.0))
+            target_abs = strong_trend_solo_weight_floor * confidence
+            if target_abs > current_abs:
+                delta = target_abs - current_abs
+                net_score += trend_sign * delta
+                abs_capacity += delta
+                row["weight"] = round(strong_trend_solo_weight_floor, 4)
+                row["strong_trend_solo_weight_floor_applied"] = True
+                row["contribution"] = round(trend_sign * target_abs, 6)
+                strong_trend_solo_weight_floor_applied = True
+            break
+
     if (
         not strong_trend_solo_applied
         and len(module_contributions) == 1
@@ -754,6 +783,13 @@ def resolve_symbol_allocation(
                     6,
                 ),
                 "strong_trend_solo_score_mult_key": strong_trend_solo_score_mult_key,
+                "strong_trend_solo_weight_floor": round(
+                    float(strong_trend_solo_weight_floor),
+                    6,
+                ),
+                "strong_trend_solo_weight_floor_applied": bool(
+                    strong_trend_solo_weight_floor_applied
+                ),
                 "range_reversion_solo_applied": bool(range_reversion_solo_applied),
                 "range_reversion_solo_module": range_reversion_solo_module,
                 "range_reversion_solo_weight_floor": round(
@@ -871,6 +907,13 @@ def resolve_symbol_allocation(
                 6,
             ),
             "strong_trend_solo_score_mult_key": strong_trend_solo_score_mult_key,
+            "strong_trend_solo_weight_floor": round(
+                float(strong_trend_solo_weight_floor),
+                6,
+            ),
+            "strong_trend_solo_weight_floor_applied": bool(
+                strong_trend_solo_weight_floor_applied
+            ),
             "range_reversion_solo_applied": bool(range_reversion_solo_applied),
             "range_reversion_solo_module": range_reversion_solo_module,
             "range_reversion_solo_weight_floor": round(

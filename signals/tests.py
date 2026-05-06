@@ -904,14 +904,15 @@ class AllocatorSmcIntegrationTest(TestCase):
     ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
     ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
     ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+    ALLOCATOR_STRONG_TREND_SOLO_WEIGHT_FLOOR=0.35,
     ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS=set(),
     ALLOCATOR_NET_THRESHOLD=0.20,
     ALLOCATOR_DYNAMIC_WEIGHTS_ENABLED=False,
     META_ALLOCATOR_ENABLED=False,
     HMM_REGIME_ENABLED=False,
     LIVE_GRADUAL_ENABLED=False,
-    ALLOCATOR_LONG_SCORE_PENALTY=1.0,
-    ALLOCATOR_MODULE_WEIGHTS={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+    ALLOCATOR_LONG_SCORE_PENALTY=0.7,
+    ALLOCATOR_MODULE_WEIGHTS={"trend": 0.10, "meanrev": 0.30, "carry": 0.15, "grid": 0.20, "smc": 0.25},
     ALLOCATOR_MODULE_RISK_BUDGETS={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
 )
 class AllocatorStrongTrendSoloCycleTest(TestCase):
@@ -947,6 +948,7 @@ class AllocatorStrongTrendSoloCycleTest(TestCase):
         self.assertEqual(reasons.get("active_module_count"), 1)
         self.assertEqual(reasons.get("required_modules"), 1)
         self.assertTrue(reasons.get("strong_trend_solo_applied"))
+        self.assertTrue(reasons.get("strong_trend_solo_weight_floor_applied"))
 
 
 @override_settings(
