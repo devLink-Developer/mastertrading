@@ -3032,6 +3032,27 @@ class ExecutionVolumeGateTest(TestCase):
         self.assertAlmostEqual(float(ratio_ny or 0.0), 0.7, places=6)
 
     @override_settings(
+        ENTRY_VOLUME_FILTER_ENABLED=True,
+        ENTRY_VOLUME_FILTER_TIMEFRAME="5m",
+        ENTRY_VOLUME_FILTER_LOOKBACK=48,
+        ENTRY_VOLUME_FILTER_MIN_RATIO=0.75,
+        ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION={"overlap": 0.95},
+        ENTRY_VOLUME_FILTER_STRONG_TREND_SOLO_MIN_RATIO=0.35,
+        ENTRY_VOLUME_FILTER_FAIL_OPEN=False,
+    )
+    def test_volume_gate_relaxes_for_strong_trend_solo(self):
+        self._seed_5m_volumes([100.0] * 48 + [50.0])  # ratio=0.50
+        payload = {"reasons": {"strong_trend_solo_applied": True}}
+        allowed, ratio = _volume_gate_allowed(
+            self.inst,
+            session_name="overlap",
+            sig_payload=payload,
+        )
+        self.assertTrue(allowed)
+        self.assertAlmostEqual(float(ratio or 0.0), 0.5, places=6)
+        self.assertAlmostEqual(_volume_gate_min_ratio("overlap", payload), 0.35, places=6)
+
+    @override_settings(
         ENTRY_VOLUME_FILTER_MIN_RATIO=0.75,
         ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION={"asia": 0.60},
     )

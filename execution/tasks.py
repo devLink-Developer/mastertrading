@@ -1466,26 +1466,37 @@ def _volume_activity_ratio(instrument: Instrument, tf: str = "5m", lookback: int
     return current_vol / baseline_median
 
 
-def _volume_gate_min_ratio(session_name: str | None = None) -> float:
+def _volume_gate_min_ratio(
+    session_name: str | None = None,
+    sig_payload: dict | None = None,
+) -> float:
     base = max(0.0, float(getattr(settings, "ENTRY_VOLUME_FILTER_MIN_RATIO", 0.75) or 0.75))
     session = str(session_name or "").strip().lower()
-    if not session:
-        return base
-    raw_map = getattr(settings, "ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION", {})
-    if not isinstance(raw_map, dict):
-        return base
-    session_val = raw_map.get(session)
-    if session_val is None:
-        return base
-    try:
-        return max(0.0, float(session_val))
-    except (TypeError, ValueError):
-        return base
+    min_ratio = base
+    if session:
+        raw_map = getattr(settings, "ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION", {})
+        if isinstance(raw_map, dict):
+            session_val = raw_map.get(session)
+            if session_val is not None:
+                try:
+                    min_ratio = max(0.0, float(session_val))
+                except (TypeError, ValueError):
+                    min_ratio = base
+
+    reasons = sig_payload.get("reasons", {}) if isinstance(sig_payload, dict) else {}
+    if isinstance(reasons, dict) and bool(reasons.get("strong_trend_solo_applied", False)):
+        strong_trend_min = max(
+            0.0,
+            float(getattr(settings, "ENTRY_VOLUME_FILTER_STRONG_TREND_SOLO_MIN_RATIO", 0.35) or 0.35),
+        )
+        min_ratio = min(min_ratio, strong_trend_min)
+    return min_ratio
 
 
 def _volume_gate_allowed(
     instrument: Instrument,
     session_name: str | None = None,
+    sig_payload: dict | None = None,
 ) -> tuple[bool, float | None]:
     """
     Execution-time volume quality gate.
@@ -1495,7 +1506,7 @@ def _volume_gate_allowed(
         return True, None
     tf = str(getattr(settings, "ENTRY_VOLUME_FILTER_TIMEFRAME", "5m") or "5m").strip().lower()
     lookback = max(10, int(getattr(settings, "ENTRY_VOLUME_FILTER_LOOKBACK", 48) or 48))
-    min_ratio = _volume_gate_min_ratio(session_name=session_name)
+    min_ratio = _volume_gate_min_ratio(session_name=session_name, sig_payload=sig_payload)
     ratio = _volume_activity_ratio(instrument, tf=tf, lookback=lookback)
     if ratio is None:
         return bool(getattr(settings, "ENTRY_VOLUME_FILTER_FAIL_OPEN", True)), None
@@ -6124,11 +6135,15 @@ def _attempt_entry_open(
     volume_allowed, volume_ratio = _volume_gate_allowed(
         inst,
         session_name=current_session,
+        sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
     )
     if not volume_allowed:
         tf = str(getattr(settings, "ENTRY_VOLUME_FILTER_TIMEFRAME", "5m") or "5m").strip().lower()
         lookback = max(10, int(getattr(settings, "ENTRY_VOLUME_FILTER_LOOKBACK", 48) or 48))
-        min_ratio = _volume_gate_min_ratio(current_session)
+        min_ratio = _volume_gate_min_ratio(
+            current_session,
+            sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+        )
         if volume_ratio is None:
             logger.info(
                 "Volume gate blocked %s: insufficient %s data (session=%s need ~%d bars)",
