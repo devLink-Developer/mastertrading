@@ -893,6 +893,63 @@ class AllocatorSmcIntegrationTest(TestCase):
 
 
 @override_settings(
+    MULTI_STRATEGY_ENABLED=True,
+    MODULE_TREND_ENABLED=True,
+    MODULE_MEANREV_ENABLED=True,
+    MODULE_CARRY_ENABLED=True,
+    MODULE_GRID_ENABLED=True,
+    ALLOCATOR_ENABLED=True,
+    ALLOCATOR_INCLUDE_SMC=True,
+    ALLOCATOR_MIN_MODULES_ACTIVE=2,
+    ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+    ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+    ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+    ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS=set(),
+    ALLOCATOR_NET_THRESHOLD=0.20,
+    ALLOCATOR_DYNAMIC_WEIGHTS_ENABLED=False,
+    META_ALLOCATOR_ENABLED=False,
+    HMM_REGIME_ENABLED=False,
+    LIVE_GRADUAL_ENABLED=False,
+    ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    ALLOCATOR_MODULE_WEIGHTS={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+    ALLOCATOR_MODULE_RISK_BUDGETS={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+)
+class AllocatorStrongTrendSoloCycleTest(TestCase):
+    def test_allocator_cycle_allows_strong_trend_solo_before_min_module_block(self):
+        inst = Instrument.objects.create(
+            symbol="SOLUSDT",
+            exchange="binance",
+            base="SOL",
+            quote="USDT",
+            enabled=True,
+        )
+        Signal.objects.create(
+            strategy="mod_trend_long",
+            instrument=inst,
+            ts=datetime.now(timezone.utc),
+            payload_json={
+                "module": "trend",
+                "direction": "long",
+                "confidence": 0.95,
+                "raw_score": 0.95,
+                "reasons": {"adx_htf": 47.0},
+            },
+            score=0.95,
+        )
+
+        with patch("signals.multi_strategy.acquire_task_lock", return_value=True):
+            out = run_allocator_cycle()
+
+        self.assertIn("allocator:emitted=1", out)
+        alloc = Signal.objects.filter(instrument=inst, strategy="alloc_long").order_by("-ts").first()
+        self.assertIsNotNone(alloc)
+        reasons = (alloc.payload_json or {}).get("reasons", {})
+        self.assertEqual(reasons.get("active_module_count"), 1)
+        self.assertEqual(reasons.get("required_modules"), 1)
+        self.assertTrue(reasons.get("strong_trend_solo_applied"))
+
+
+@override_settings(
     MULTI_STRATEGY_ENABLED=False,
     MODULE_TREND_ENABLED=True,
     MODULE_MEANREV_ENABLED=True,

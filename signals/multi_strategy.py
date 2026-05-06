@@ -412,48 +412,32 @@ def run_allocator_cycle() -> str:
             from .regime import regime_risk_mult as _rrm
             inst_regime_mult = _rrm(inst.symbol)
 
-        if len(module_rows) < min_modules:
-            alloc = {
-                "direction": "flat",
-                "raw_score": 0.0,
-                "net_score": 0.0,
-                "confidence": 0.0,
-                "risk_budget_pct": 0.0,
-                "symbol_state": "blocked",
-                "reasons": {
-                    "session": session,
-                    "active_module_count": len(module_rows),
-                    "required_modules": min_modules,
-                    "module_rows": module_rows,
-                },
+        alloc = resolve_symbol_allocation(
+            module_rows,
+            threshold=threshold,
+            base_risk_pct=base_risk,
+            session_risk_mult=session_risk_mult * inst_regime_mult,
+            weights=weights,
+            risk_budgets=risk_budgets,
+            min_active_modules=min_modules,
+            symbol=inst.symbol,
+            session_name=session,
+            btc_lead_state=btc_lead_state,
+            btc_recommended_bias=btc_recommended_bias,
+        )
+        alloc["reasons"]["session"] = session
+        alloc["reasons"]["module_rows"] = module_rows
+        alloc["reasons"]["regime_risk_mult"] = round(inst_regime_mult, 4)
+        if meta_diag:
+            alloc["reasons"]["meta_allocator"] = {
+                "enabled": bool(meta_diag.get("enabled", False)),
+                "summary": meta_diag.get("summary", {}),
+                "stats": meta_diag.get("stats", {}),
+                "p4_enabled": bool(meta_diag.get("p4_enabled", False)),
+                "p4_strict_bucket_isolation": bool(meta_diag.get("p4_strict_bucket_isolation", False)),
+                "risk_budget_total": meta_diag.get("risk_budget_total"),
+                "reason": meta_diag.get("reason", ""),
             }
-        else:
-            alloc = resolve_symbol_allocation(
-                module_rows,
-                threshold=threshold,
-                base_risk_pct=base_risk,
-                session_risk_mult=session_risk_mult * inst_regime_mult,
-                weights=weights,
-                risk_budgets=risk_budgets,
-                min_active_modules=min_modules,
-                symbol=inst.symbol,
-                session_name=session,
-                btc_lead_state=btc_lead_state,
-                btc_recommended_bias=btc_recommended_bias,
-            )
-            alloc["reasons"]["session"] = session
-            alloc["reasons"]["module_rows"] = module_rows
-            alloc["reasons"]["regime_risk_mult"] = round(inst_regime_mult, 4)
-            if meta_diag:
-                alloc["reasons"]["meta_allocator"] = {
-                    "enabled": bool(meta_diag.get("enabled", False)),
-                    "summary": meta_diag.get("summary", {}),
-                    "stats": meta_diag.get("stats", {}),
-                    "p4_enabled": bool(meta_diag.get("p4_enabled", False)),
-                    "p4_strict_bucket_isolation": bool(meta_diag.get("p4_strict_bucket_isolation", False)),
-                    "risk_budget_total": meta_diag.get("risk_budget_total"),
-                    "reason": meta_diag.get("reason", ""),
-                }
         if howell_enabled:
             alloc["reasons"]["howell_liquidity"] = howell_shadow_diagnostic(
                 inst.symbol,
