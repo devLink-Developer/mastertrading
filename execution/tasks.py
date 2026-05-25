@@ -50,6 +50,7 @@ from signals.regime_mtf import (
 from signals.models import Signal
 from signals.runtime_overrides import (
     get_runtime_bool,
+    get_runtime_dict,
     get_runtime_float,
     get_runtime_int,
     get_runtime_override,
@@ -4209,6 +4210,7 @@ def _regime_adx_min_for_symbol_session(
     symbol: str,
     session_name: str,
     default_min: float,
+    raw_overrides: dict[str, Any] | None = None,
 ) -> float:
     """
     Resolve ADX gate threshold for a symbol/session with layered fallbacks:
@@ -4221,7 +4223,11 @@ def _regime_adx_min_for_symbol_session(
     sym = str(symbol or "").strip().upper()
     session = str(session_name or "").strip().lower()
     resolved = max(0.0, float(default_min or 0.0))
-    raw_overrides = getattr(settings, "MARKET_REGIME_ADX_MIN_BY_CONTEXT", {}) or {}
+    raw_overrides = (
+        raw_overrides
+        if raw_overrides is not None
+        else getattr(settings, "MARKET_REGIME_ADX_MIN_BY_CONTEXT", {}) or {}
+    )
     if not isinstance(raw_overrides, dict):
         return resolved
     for key in (f"{sym}:{session}", f"{sym}:*", f"*:{session}", "*:*"):
@@ -4240,7 +4246,15 @@ def _compute_regime_adx_gate(
 ) -> tuple[dict[str, float], set[str], float, float | None, dict[str, str], dict[str, float]]:
     _regime_adx_by_symbol: dict[str, float] = {}
     _regime_bias_by_symbol: dict[str, str] = {}
-    _regime_adx_min = float(getattr(settings, "MARKET_REGIME_ADX_MIN", 0))
+    _regime_adx_min = get_runtime_float(
+        "MARKET_REGIME_ADX_MIN",
+        float(getattr(settings, "MARKET_REGIME_ADX_MIN", 0)),
+        minimum=0.0,
+    )
+    _regime_adx_min_context = get_runtime_dict(
+        "MARKET_REGIME_ADX_MIN_BY_CONTEXT",
+        getattr(settings, "MARKET_REGIME_ADX_MIN_BY_CONTEXT", {}) or {},
+    )
     _regime_adx_min_by_symbol: dict[str, float] = {}
     try:
         from signals.modules.common import compute_adx as _compute_adx
@@ -4281,12 +4295,13 @@ def _compute_regime_adx_gate(
         )
         logger.info("Market regime ADX (1h per-instrument): %s", _adx_summary)
     _regime_blocked_symbols: set[str] = set()
-    if _regime_adx_min > 0 or bool(getattr(settings, "MARKET_REGIME_ADX_MIN_BY_CONTEXT", {})):
+    if _regime_adx_min > 0 or bool(_regime_adx_min_context):
         for _sym, _adx_val in _regime_adx_by_symbol.items():
             _effective_min = _regime_adx_min_for_symbol_session(
                 _sym,
                 current_session,
                 _regime_adx_min,
+                _regime_adx_min_context,
             )
             _regime_adx_min_by_symbol[_sym] = _effective_min
             if _effective_min > 0 and _adx_val < _effective_min:
@@ -5563,9 +5578,11 @@ def _bull_short_retrace_precheck(
         return True, "n/a"
 
     score = _to_float(sig_score)
-    min_score = max(
-        0.0,
-        min(1.0, _to_float(getattr(settings, "REGIME_BULL_SHORT_RETRACE_MIN_SCORE", 0.88))),
+    min_score = get_runtime_float(
+        "REGIME_BULL_SHORT_RETRACE_MIN_SCORE",
+        max(0.0, min(1.0, _to_float(getattr(settings, "REGIME_BULL_SHORT_RETRACE_MIN_SCORE", 0.88)))),
+        minimum=0.0,
+        maximum=1.0,
     )
     if score < min_score:
         return False, f"bull_short_low_retrace_score:{score:.3f}<{min_score:.3f}"

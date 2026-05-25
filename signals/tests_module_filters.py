@@ -53,6 +53,7 @@ class ModuleImpulseFiltersTest(SimpleTestCase):
         MODULE_TREND_HTF_ADX_MIN=5.0,
         MODULE_TREND_EMA20_PULLBACK_TOLERANCE_PCT=0.001,
         MODULE_IMPULSE_FILTER_ENABLED=False,
+        MODULE_TREND_KALMAN_ENABLED=False,
     )
     def test_trend_detector_still_blocks_when_pullback_exceeds_tolerance(self):
         df_htf = _build_df([100 + i * 0.25 for i in range(119)] + [126.9])

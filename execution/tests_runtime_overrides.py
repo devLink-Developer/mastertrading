@@ -2,7 +2,7 @@ from django.test import TestCase, override_settings
 
 from execution.ai_entry_gate import evaluate_ai_entry_gate
 from execution.ai_exit_gate import evaluate_ai_exit_gate
-from execution.tasks import _bull_short_retrace_precheck
+from execution.tasks import _bull_short_retrace_precheck, _regime_adx_min_for_symbol_session
 from signals.models import StrategyConfig
 from signals.runtime_overrides import (
     RUNTIME_OVERRIDES_VERSION,
@@ -46,6 +46,47 @@ class RuntimeOverridesIntegrationTest(TestCase):
         )
         self.assertFalse(ok)
         self.assertIn("bull_short_low_retrace_modules", reason)
+
+    @override_settings(
+        REGIME_BULL_SHORT_RETRACE_STRICT_ENABLED=True,
+        REGIME_BULL_SHORT_RETRACE_MIN_SCORE=0.88,
+        REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES=1,
+        REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES={"meanrev", "smc", "carry"},
+    )
+    def test_db_override_can_lower_bull_short_retrace_min_score(self):
+        StrategyConfig.objects.create(
+            name="REGIME_BULL_SHORT_RETRACE_MIN_SCORE",
+            version=RUNTIME_OVERRIDES_VERSION,
+            enabled=True,
+            params_json={"value": 0.82},
+        )
+        StrategyConfig.objects.create(
+            name="REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES",
+            version=RUNTIME_OVERRIDES_VERSION,
+            enabled=True,
+            params_json={"value": ["meanrev", "smc"]},
+        )
+        invalidate_runtime_overrides_cache()
+
+        ok, reason = _bull_short_retrace_precheck(
+            symbol="BTCUSDT",
+            strategy_name="alloc_short",
+            signal_direction="short",
+            regime_bias="bull",
+            sig_score=0.83,
+            sig_payload={"reasons": {"module_rows": [{"module": "meanrev"}]}},
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "ok")
+
+    def test_regime_adx_context_override_resolution(self):
+        effective = _regime_adx_min_for_symbol_session(
+            "SOLUSDT",
+            "london",
+            14.0,
+            {"SOLUSDT:*": 16.0, "*:asia": 18.0},
+        )
+        self.assertEqual(effective, 16.0)
 
     @override_settings(AI_ENTRY_GATE_ENABLED=True)
     def test_db_override_can_disable_ai_entry_gate_globally(self):

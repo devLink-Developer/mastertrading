@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 from django.conf import settings
 
+from signals.runtime_overrides import get_runtime_bool, get_runtime_float
+
 from .common import (
     bounce_pct,
     compute_adx,
@@ -33,7 +35,11 @@ def _kalman_smooth(prices: np.ndarray) -> np.ndarray | None:
     R = float(np.var(rets)) * p[-1] ** 2
     if R <= 0:
         return None
-    q_ratio = float(getattr(settings, "MODULE_TREND_KALMAN_Q_RATIO", 0.01) or 0.01)
+    q_ratio = get_runtime_float(
+        "MODULE_TREND_KALMAN_Q_RATIO",
+        float(getattr(settings, "MODULE_TREND_KALMAN_Q_RATIO", 0.01) or 0.01),
+        minimum=0.0,
+    )
     Q = R * max(1e-6, q_ratio)
 
     x = p[0]
@@ -84,11 +90,17 @@ def detect(
 
     # --- Optional Kalman-filtered level ---
     kalman_level = None
-    kalman_enabled = bool(getattr(settings, "MODULE_TREND_KALMAN_ENABLED", True))
+    kalman_slope = None
+    kalman_fallback = False
+    kf_arr = None
+    kalman_enabled = get_runtime_bool(
+        "MODULE_TREND_KALMAN_ENABLED",
+        bool(getattr(settings, "MODULE_TREND_KALMAN_ENABLED", True)),
+    )
     if kalman_enabled and len(closes) >= 50:
-        kf = _kalman_smooth(closes.values)
-        if kf is not None:
-            kalman_level = float(kf[-1])
+        kf_arr = _kalman_smooth(closes.values)
+        if kf_arr is not None:
+            kalman_level = float(kf_arr[-1])
 
     pullback_tol = max(
         0.0,
@@ -102,14 +114,19 @@ def detect(
     if not direction:
         # Kalman fallback: if EMA direction unclear but Kalman slope is decisive
         if kalman_enabled and kalman_level is not None and len(closes) >= 50:
-            kf_arr = _kalman_smooth(closes.values)
             if kf_arr is not None and len(kf_arr) >= 5:
-                slope = float(kf_arr[-1] - kf_arr[-5]) / max(1e-12, float(kf_arr[-5]))
-                slope_min = float(getattr(settings, "MODULE_TREND_KALMAN_SLOPE_MIN", 0.003) or 0.003)
-                if slope > slope_min and last >= ema50:
+                kalman_slope = float(kf_arr[-1] - kf_arr[-5]) / max(1e-12, float(kf_arr[-5]))
+                slope_min = get_runtime_float(
+                    "MODULE_TREND_KALMAN_SLOPE_MIN",
+                    float(getattr(settings, "MODULE_TREND_KALMAN_SLOPE_MIN", 0.003) or 0.003),
+                    minimum=0.0,
+                )
+                if kalman_slope > slope_min and last >= ema50:
                     direction = "long"
-                elif slope < -slope_min and last <= ema50:
+                    kalman_fallback = True
+                elif kalman_slope < -slope_min and last <= ema50:
                     direction = "short"
+                    kalman_fallback = True
     if not direction:
         return None
 
@@ -159,7 +176,12 @@ def detect(
     if kalman_enabled and kalman_level is not None:
         kl_above_ema50 = kalman_level > ema50
         if (direction == "long" and kl_above_ema50) or (direction == "short" and not kl_above_ema50):
-            kalman_boost = 0.05
+            kalman_boost = get_runtime_float(
+                "MODULE_TREND_KALMAN_BOOST",
+                float(getattr(settings, "MODULE_TREND_KALMAN_BOOST", 0.05) or 0.0),
+                minimum=0.0,
+                maximum=0.25,
+            )
             raw = min(1.0, raw + kalman_boost)
 
     # --- Volume confirmation ---
@@ -197,6 +219,10 @@ def detect(
     }
     if kalman_level is not None:
         reasons["kalman_level"] = round(kalman_level, 6)
+        if kalman_slope is not None:
+            reasons["kalman_slope"] = round(kalman_slope, 6)
+        if kalman_fallback:
+            reasons["kalman_fallback"] = True
         if kalman_boost > 0:
             reasons["kalman_boost"] = round(kalman_boost, 4)
     if vol_ratio is not None:
