@@ -148,20 +148,45 @@ class Command(BaseCommand):
         since = dj_tz.now() - timedelta(days=opts["days"])
 
         if opts["source"] == "live":
-            qs = OperationReport.objects.filter(closed_at__gte=since)
+            qs = OperationReport.objects.filter(closed_at__gte=since).select_related("instrument")
             if opts["symbol"]:
-                qs = qs.filter(symbol__icontains=opts["symbol"])
+                qs = qs.filter(instrument__symbol__icontains=opts["symbol"])
             qs = qs.order_by("opened_at")
-            trades = []
-            for r in qs:
+            reports = list(qs)
+            sig_ids = set()
+            for r in reports:
                 try:
+                    if r.signal_id:
+                        sig_ids.add(int(r.signal_id))
+                except (TypeError, ValueError):
+                    continue
+            sig_map = {}
+            if sig_ids:
+                try:
+                    from signals.models import Signal
+
+                    sig_map = {
+                        s.id: str(s.strategy or "unknown")
+                        for s in Signal.objects.filter(id__in=sig_ids).only("id", "strategy")
+                    }
+                except Exception:
+                    sig_map = {}
+            trades = []
+            for r in reports:
+                try:
+                    strategy = "unknown"
+                    if r.signal_id:
+                        try:
+                            strategy = sig_map.get(int(r.signal_id), "unknown")
+                        except (TypeError, ValueError):
+                            strategy = "unknown"
                     pnl = float(r.pnl_pct or 0)
                     trades.append({
                         "entry_ts": r.opened_at,
                         "exit_ts": r.closed_at,
                         "pnl_pct": pnl,
-                        "strategy": str(r.strategy or "unknown"),
-                        "symbol": str(r.symbol or ""),
+                        "strategy": strategy,
+                        "symbol": str(getattr(r.instrument, "symbol", "") or ""),
                         "side": str(r.side or ""),
                     })
                 except Exception:
