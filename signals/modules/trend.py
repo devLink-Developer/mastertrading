@@ -71,7 +71,12 @@ def detect(
     adx = compute_adx(df_ltf, period=14)
     if adx is None:
         return None
-    trend_min = float(getattr(settings, "MODULE_ADX_TREND_MIN", 20.0))
+    trend_min = get_runtime_float(
+        "MODULE_ADX_TREND_MIN",
+        float(getattr(settings, "MODULE_ADX_TREND_MIN", 20.0)),
+        minimum=0.0,
+        maximum=100.0,
+    )
     if adx < trend_min:
         return None
 

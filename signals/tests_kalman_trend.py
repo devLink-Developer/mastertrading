@@ -100,6 +100,32 @@ class KalmanTrendDetectorTest(TestCase):
         self.assertAlmostEqual(out["reasons"]["kalman_boost"], 0.07)
 
     @override_settings(
+        MODULE_ADX_TREND_MIN=30.0,
+        MODULE_TREND_HTF_ADX_MIN=0.0,
+        MODULE_TREND_KALMAN_ENABLED=True,
+        MODULE_IMPULSE_FILTER_ENABLED=False,
+        MODULE_TREND_VOLUME_CONFIRM_ENABLED=False,
+        MODULE_BOUNCE_BLOCK_PCT=999.0,
+    )
+    def test_trend_adx_min_db_override_is_used(self):
+        StrategyConfig.objects.create(
+            name="MODULE_ADX_TREND_MIN",
+            version=RUNTIME_OVERRIDES_VERSION,
+            enabled=True,
+            params_json={"value": 15.0},
+        )
+        invalidate_runtime_overrides_cache()
+        df_htf = _build_df([100 + i * 0.25 for i in range(120)])
+        df_ltf = _build_df([100 + i * 0.10 for i in range(120)])
+
+        with patch("signals.modules.trend.compute_adx", return_value=20.0):
+            out = trend_module.detect(df_ltf, df_htf, [], "london", symbol="BTCUSDT")
+
+        self.assertIsNotNone(out)
+        self.assertEqual(out["direction"], "long")
+        self.assertEqual(out["reasons"]["adx_ltf"], 20.0)
+
+    @override_settings(
         MODULE_ADX_TREND_MIN=5.0,
         MODULE_TREND_HTF_ADX_MIN=0.0,
         MODULE_TREND_EMA20_PULLBACK_TOLERANCE_PCT=0.0,
