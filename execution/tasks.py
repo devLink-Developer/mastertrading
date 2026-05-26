@@ -1471,11 +1471,18 @@ def _volume_gate_min_ratio(
     session_name: str | None = None,
     sig_payload: dict | None = None,
 ) -> float:
-    base = max(0.0, float(getattr(settings, "ENTRY_VOLUME_FILTER_MIN_RATIO", 0.75) or 0.75))
+    base = get_runtime_float(
+        "ENTRY_VOLUME_FILTER_MIN_RATIO",
+        max(0.0, float(getattr(settings, "ENTRY_VOLUME_FILTER_MIN_RATIO", 0.75) or 0.75)),
+        minimum=0.0,
+    )
     session = str(session_name or "").strip().lower()
     min_ratio = base
     if session:
-        raw_map = getattr(settings, "ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION", {})
+        raw_map = get_runtime_dict(
+            "ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION",
+            getattr(settings, "ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION", {}),
+        )
         if isinstance(raw_map, dict):
             session_val = raw_map.get(session)
             if session_val is not None:
@@ -1486,9 +1493,20 @@ def _volume_gate_min_ratio(
 
     reasons = sig_payload.get("reasons", {}) if isinstance(sig_payload, dict) else {}
     if isinstance(reasons, dict) and bool(reasons.get("strong_trend_solo_applied", False)):
-        strong_trend_min = max(
-            0.0,
-            float(getattr(settings, "ENTRY_VOLUME_FILTER_STRONG_TREND_SOLO_MIN_RATIO", 0.35) or 0.35),
+        strong_trend_min = get_runtime_float(
+            "ENTRY_VOLUME_FILTER_STRONG_TREND_SOLO_MIN_RATIO",
+            max(
+                0.0,
+                float(
+                    getattr(
+                        settings,
+                        "ENTRY_VOLUME_FILTER_STRONG_TREND_SOLO_MIN_RATIO",
+                        0.35,
+                    )
+                    or 0.35
+                ),
+            ),
+            minimum=0.0,
         )
         min_ratio = min(min_ratio, strong_trend_min)
     return min_ratio

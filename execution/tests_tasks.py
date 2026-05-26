@@ -11,7 +11,8 @@ from core.models import Instrument, AiFeedbackEvent
 from execution.models import OperationReport, Order
 from marketdata.models import Candle
 from risk.models import RiskEvent
-from signals.models import Signal
+from signals.models import Signal, StrategyConfig
+from signals.runtime_overrides import RUNTIME_OVERRIDES_VERSION, invalidate_runtime_overrides_cache
 from execution.tasks import (
     _ai_entry_market_fingerprint,
     _ai_entry_mark_rejected,
@@ -2962,6 +2963,11 @@ class ExecutionVolumeGateTest(TestCase):
             quote="USDT",
         )
 
+    def tearDown(self):
+        StrategyConfig.objects.filter(version=RUNTIME_OVERRIDES_VERSION).delete()
+        invalidate_runtime_overrides_cache()
+        super().tearDown()
+
     def _seed_5m_volumes(self, values: list[float]) -> None:
         start = dj_tz.now() - timedelta(minutes=5 * len(values))
         rows = []
@@ -3058,6 +3064,22 @@ class ExecutionVolumeGateTest(TestCase):
     )
     def test_volume_gate_min_ratio_falls_back_to_global(self):
         self.assertAlmostEqual(_volume_gate_min_ratio("asia"), 0.60, places=6)
+        self.assertAlmostEqual(_volume_gate_min_ratio("london"), 0.75, places=6)
+
+    @override_settings(
+        ENTRY_VOLUME_FILTER_MIN_RATIO=0.75,
+        ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION={"asia": 0.60},
+    )
+    def test_volume_gate_min_ratio_uses_runtime_session_override(self):
+        StrategyConfig.objects.create(
+            name="ENTRY_VOLUME_FILTER_MIN_RATIO_BY_SESSION",
+            version=RUNTIME_OVERRIDES_VERSION,
+            enabled=True,
+            params_json={"value": {"asia": 0.30}},
+        )
+        invalidate_runtime_overrides_cache()
+
+        self.assertAlmostEqual(_volume_gate_min_ratio("asia"), 0.30, places=6)
         self.assertAlmostEqual(_volume_gate_min_ratio("london"), 0.75, places=6)
 
 
