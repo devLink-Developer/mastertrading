@@ -20,6 +20,7 @@ from signals.feature_flags import FEATURE_KEYS, resolve_runtime_flags
 from signals.howell_liquidity import get_cached_liquidity_snapshot, howell_shadow_diagnostic
 from signals.regime_mtf import build_symbol_regime_snapshot, consolidate_lead_state, recommended_bias
 from signals.models import Signal
+from signals.runtime_overrides import get_runtime_float
 from signals.sessions import (
     get_current_session,
     get_session_risk_mult,
@@ -325,7 +326,12 @@ def run_allocator_cycle() -> str:
         except Exception as exc:
             logger.warning("meta allocator overlay failed: %s", exc)
             meta_diag = {"enabled": True, "reason": f"error:{type(exc).__name__}"}
-    threshold = float(getattr(settings, "ALLOCATOR_NET_THRESHOLD", 0.20))
+    threshold = get_runtime_float(
+        "ALLOCATOR_NET_THRESHOLD",
+        float(getattr(settings, "ALLOCATOR_NET_THRESHOLD", 0.20)),
+        minimum=0.01,
+        maximum=1.0,
+    )
     base_risk = float(getattr(settings, "RISK_PER_TRADE_PCT", 0.01))
     howell_enabled = bool(getattr(settings, "HOWELL_LIQUIDITY_ENABLED", False))
     howell_snapshot = get_cached_liquidity_snapshot() if howell_enabled else None

@@ -6,6 +6,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from core.models import Instrument
 from signals.allocator import resolve_symbol_allocation
 from signals.multi_strategy import run_allocator_cycle, _active_modules
+from signals.runtime_overrides import RUNTIME_OVERRIDES_VERSION, invalidate_runtime_overrides_cache
 from .feature_flags import FEATURE_FLAGS_VERSION, FEATURE_KEYS, resolve_runtime_flags
 from .models import Signal, StrategyConfig
 from .modules.common import strategy_module
@@ -949,6 +950,108 @@ class AllocatorStrongTrendSoloCycleTest(TestCase):
         self.assertEqual(reasons.get("required_modules"), 1)
         self.assertTrue(reasons.get("strong_trend_solo_applied"))
         self.assertTrue(reasons.get("strong_trend_solo_weight_floor_applied"))
+
+
+@override_settings(
+    MULTI_STRATEGY_ENABLED=True,
+    MODULE_TREND_ENABLED=True,
+    MODULE_MEANREV_ENABLED=False,
+    MODULE_CARRY_ENABLED=True,
+    MODULE_GRID_ENABLED=False,
+    ALLOCATOR_ENABLED=True,
+    ALLOCATOR_INCLUDE_SMC=False,
+    ALLOCATOR_MIN_MODULES_ACTIVE=2,
+    ALLOCATOR_STRONG_TREND_SOLO_ENABLED=False,
+    ALLOCATOR_NET_THRESHOLD=0.20,
+    ALLOCATOR_DYNAMIC_WEIGHTS_ENABLED=False,
+    META_ALLOCATOR_ENABLED=False,
+    HMM_REGIME_ENABLED=False,
+    LIVE_GRADUAL_ENABLED=False,
+    ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    ALLOCATOR_MODULE_WEIGHTS={
+        "trend": 0.05,
+        "meanrev": 0.0,
+        "carry": 0.14,
+        "grid": 0.0,
+        "smc": 0.0,
+    },
+    ALLOCATOR_MODULE_RISK_BUDGETS={
+        "trend": 1.0,
+        "meanrev": 0.0,
+        "carry": 1.0,
+        "grid": 0.0,
+        "smc": 0.0,
+    },
+)
+class AllocatorRuntimeThresholdCycleTest(TestCase):
+    def tearDown(self):
+        StrategyConfig.objects.filter(
+            version=RUNTIME_OVERRIDES_VERSION,
+            name="ALLOCATOR_NET_THRESHOLD",
+        ).delete()
+        invalidate_runtime_overrides_cache()
+        super().tearDown()
+
+    def test_allocator_cycle_uses_runtime_net_threshold_override(self):
+        inst = Instrument.objects.create(
+            symbol="ETHUSDT",
+            exchange="binance",
+            base="ETH",
+            quote="USDT",
+            enabled=True,
+        )
+        now = datetime.now(timezone.utc)
+        Signal.objects.create(
+            strategy="mod_trend_short",
+            instrument=inst,
+            ts=now,
+            payload_json={
+                "module": "trend",
+                "direction": "short",
+                "confidence": 1.0,
+                "raw_score": 1.0,
+                "reasons": {"adx_htf": 21.0},
+            },
+            score=1.0,
+        )
+        Signal.objects.create(
+            strategy="mod_carry_short",
+            instrument=inst,
+            ts=now,
+            payload_json={
+                "module": "carry",
+                "direction": "short",
+                "confidence": 1.0,
+                "raw_score": 1.0,
+            },
+            score=1.0,
+        )
+
+        with patch("signals.multi_strategy.acquire_task_lock", return_value=True):
+            out = run_allocator_cycle()
+
+        self.assertIn("allocator:emitted=1", out)
+        alloc = Signal.objects.filter(instrument=inst, strategy="alloc_flat").order_by("-ts").first()
+        self.assertIsNotNone(alloc)
+        self.assertEqual((alloc.payload_json or {}).get("reasons", {}).get("threshold"), 0.2)
+
+        StrategyConfig.objects.create(
+            name="ALLOCATOR_NET_THRESHOLD",
+            version=RUNTIME_OVERRIDES_VERSION,
+            enabled=True,
+            params_json={"value": 0.18},
+        )
+        invalidate_runtime_overrides_cache()
+
+        with patch("signals.multi_strategy.acquire_task_lock", return_value=True):
+            out = run_allocator_cycle()
+
+        self.assertIn("allocator:emitted=1", out)
+        alloc = Signal.objects.filter(instrument=inst, strategy="alloc_short").order_by("-ts").first()
+        self.assertIsNotNone(alloc)
+        reasons = (alloc.payload_json or {}).get("reasons", {})
+        self.assertEqual(reasons.get("threshold"), 0.18)
+        self.assertEqual(reasons.get("active_module_count"), 2)
 
 
 @override_settings(
