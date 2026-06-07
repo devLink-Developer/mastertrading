@@ -37,6 +37,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `TRAILING_ACTIVATION_R_LOWVOL`, `TRAILING_ACTIVATION_R_HIGHVOL`, `TRAILING_ACTIVATION_ATR_THRESHOLD`
 - `TRAILING_LOCKIN_MIN`, `TRAILING_LOCKIN_MAX`, `TRAILING_LOCKIN_SLOPE`
 - `BREAKEVEN_STOP_ENABLED`, `BREAKEVEN_STOP_AT_R`, `BREAKEVEN_STOP_OFFSET_PCT`
+- `BREAKEVEN_STOP_FEE_FLOOR_ENABLED`, `BREAKEVEN_STOP_FEE_FLOOR_PCT`: keep breakeven stops from becoming net-negative after estimated roundtrip fees.
 - `PARTIAL_CLOSE_AT_R`, `PARTIAL_CLOSE_PCT`
 
 ## 5) Signal quality and timing
@@ -89,7 +90,10 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `REGIME_BULL_SHORT_RETRACE_MIN_SCORE`
 - `REGIME_BULL_SHORT_RETRACE_MIN_ALLOWED_MODULES` (legacy fallback; prefer DB `StrategyConfig` override)
 - `REGIME_BULL_SHORT_RETRACE_ALLOWED_MODULES` (legacy fallback; prefer DB `StrategyConfig` override)
+- `WEAK_LONG_BEAR_WEAK_BLOCK_*`: blocks weak/countertrend longs in bearish MTF contexts, including confirmed bear + `short_bias` when configured.
 - `MAX_DAILY_TRADES`, `MAX_DAILY_TRADES_LOW_ADX`, `MAX_DAILY_TRADES_HIGH_ADX`
+- `DAILY_TRADE_SYMBOL_THROTTLE_ENABLED`: when enabled, ADX-adaptive daily trade limits are counted per symbol.
+- `MAX_DAILY_TRADES_GLOBAL_HARD_CAP`: account-level hard cap that still applies when symbol throttling is enabled.
 
 ## 7) Strategy composition and allocator
 - `MULTI_STRATEGY_ENABLED`

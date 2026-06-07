@@ -171,6 +171,11 @@ TRAILING_LOCKIN_SLOPE = max(0.0, float(os.getenv("TRAILING_LOCKIN_SLOPE", "15.0"
 BREAKEVEN_STOP_ENABLED = os.getenv("BREAKEVEN_STOP_ENABLED", "true").lower() == "true"
 BREAKEVEN_STOP_AT_R = float(os.getenv("BREAKEVEN_STOP_AT_R", "0.75"))  # move SL to entry after 0.75R in profit (was 1.0 — protect capital earlier)
 BREAKEVEN_STOP_OFFSET_PCT = float(os.getenv("BREAKEVEN_STOP_OFFSET_PCT", "0.001"))  # 0.1% buffer above entry to cover fees/slippage (was 0 — losing on BE)
+BREAKEVEN_STOP_FEE_FLOOR_ENABLED = os.getenv("BREAKEVEN_STOP_FEE_FLOOR_ENABLED", "true").lower() == "true"
+BREAKEVEN_STOP_FEE_FLOOR_PCT = max(
+    0.0,
+    float(os.getenv("BREAKEVEN_STOP_FEE_FLOOR_PCT", str(TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT))),
+)
 BREAKEVEN_WINDOW_MINUTES = int(os.getenv("BREAKEVEN_WINDOW_MINUTES", "0"))  # 0 = disabled (no time filter)
 TRAILING_STATE_TTL_SECONDS = max(60, int(os.getenv("TRAILING_STATE_TTL_SECONDS", "172800")))
 TRAILING_SL_MIN_MOVE_PCT = max(0.0, float(os.getenv("TRAILING_SL_MIN_MOVE_PCT", "0.0002")))
@@ -418,6 +423,13 @@ MAX_DAILY_TRADES_HIGH_ADX = int(os.getenv("MAX_DAILY_TRADES_HIGH_ADX", "10"))  #
 MAX_DAILY_TRADES_LOW_ADX_THRESHOLD = float(os.getenv("MAX_DAILY_TRADES_LOW_ADX_THRESHOLD", "20"))
 MAX_DAILY_TRADES_HIGH_ADX_THRESHOLD = float(os.getenv("MAX_DAILY_TRADES_HIGH_ADX_THRESHOLD", "25"))
 DAILY_TRADE_COUNT_TTL_SECONDS = max(60, int(os.getenv("DAILY_TRADE_COUNT_TTL_SECONDS", "90000")))
+DAILY_TRADE_SYMBOL_THROTTLE_ENABLED = (
+    os.getenv("DAILY_TRADE_SYMBOL_THROTTLE_ENABLED", "true").lower() == "true"
+)
+MAX_DAILY_TRADES_GLOBAL_HARD_CAP = max(
+    0,
+    int(os.getenv("MAX_DAILY_TRADES_GLOBAL_HARD_CAP", str(MAX_DAILY_TRADES_HIGH_ADX))),
+)
 
 # -- Global market regime gate (BTC 1h ADX) --
 # Block ALL new entries when BTC 1h ADX is below this threshold (choppy macro).
@@ -990,13 +1002,13 @@ WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES = _parse_lower_set(
     os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES", "bear_confirmed")
 )
 WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES = _parse_lower_set(
-    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES", "bear_weak")
+    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES", "bear_confirmed,bear_weak")
 )
 WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES = _parse_lower_set(
-    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES", "transition")
+    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES", "bear_confirmed,transition")
 )
 WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES = _parse_lower_set(
-    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES", "balanced")
+    os.getenv("WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES", "short_bias,balanced")
 )
 WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_ENABLED = os.getenv(
     "WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_ENABLED", "false"

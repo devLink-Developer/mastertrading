@@ -1826,42 +1826,78 @@ def _tp_sl_gate_pnl_pct(pnl_pct_gross: float) -> tuple[float, float]:
     return pnl_pct_gross - fee_pct_estimate, fee_pct_estimate
 
 
+def _breakeven_stop_offset_pct() -> float:
+    """
+    Effective breakeven stop buffer.
+
+    Production envs can still carry BREAKEVEN_STOP_OFFSET_PCT=0 from older
+    deployments. Keep the configured offset, but floor it at the estimated
+    roundtrip fee so a "breakeven" stop is not predictably net-negative.
+    """
+    configured = max(0.0, _to_float(getattr(settings, "BREAKEVEN_STOP_OFFSET_PCT", 0.0)))
+    if not bool(getattr(settings, "BREAKEVEN_STOP_FEE_FLOOR_ENABLED", True)):
+        return configured
+    fee_floor = max(
+        0.0,
+        _to_float(
+            getattr(
+                settings,
+                "BREAKEVEN_STOP_FEE_FLOOR_PCT",
+                getattr(settings, "TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT", 0.0010),
+            )
+        ),
+    )
+    return max(configured, fee_floor)
+
+
 # ---------------------------------------------------------------------------
 # Daily trade count limiter (risk-management skill: 95% success rate)
 # "Trade count inversely correlates with performance in flat markets"
 # ---------------------------------------------------------------------------
 
-def _daily_trade_count_key() -> str:
-    """Redis key for today's trade count."""
-    return f"risk:daily_trades:{dj_tz.now().strftime('%Y-%m-%d')}"
+def _daily_trade_count_key(symbol: str | None = None) -> str:
+    """Redis key for today's trade count.
+
+    The base key is the account-level hard cap. Symbol keys keep the ADX-adaptive
+    throttle from letting one low-ADX instrument block every other market.
+    """
+    day = dj_tz.now().strftime("%Y-%m-%d")
+    sym = str(symbol or "").strip().upper()
+    if sym and bool(getattr(settings, "DAILY_TRADE_SYMBOL_THROTTLE_ENABLED", True)):
+        return f"risk:daily_trades:{day}:{sym}"
+    return f"risk:daily_trades:{day}"
 
 
-def _get_daily_trade_count() -> int:
+def _get_daily_trade_count(symbol: str | None = None) -> int:
     """Return number of new entries opened today."""
     client = _redis_client()
     if client is None:
         return 0
     try:
-        raw = client.get(_daily_trade_count_key())
+        raw = client.get(_daily_trade_count_key(symbol))
         return int(raw) if raw is not None else 0
     except Exception:
         return 0
 
 
-def _increment_daily_trade_count() -> None:
+def _increment_daily_trade_count(symbol: str | None = None) -> None:
     """Increment today's trade counter after opening a new position."""
     client = _redis_client()
     if client is None:
         return
     try:
-        key = _daily_trade_count_key()
+        keys = [_daily_trade_count_key()]
+        sym_key = _daily_trade_count_key(symbol)
+        if sym_key not in keys:
+            keys.append(sym_key)
         ttl_seconds = max(
             60,
             int(getattr(settings, "DAILY_TRADE_COUNT_TTL_SECONDS", 86400 + 3600) or (86400 + 3600)),
         )
         pipe = client.pipeline()
-        pipe.incr(key)
-        pipe.expire(key, ttl_seconds)
+        for key in keys:
+            pipe.incr(key)
+            pipe.expire(key, ttl_seconds)
         pipe.execute()
     except Exception:
         pass
@@ -2874,8 +2910,7 @@ def _check_trailing_stop(
             if bool(microvol_profile.get("active")):
                 be_at_r *= max(0.1, min(float(microvol_profile.get("breakeven_r_mult", 0.50) or 0.50), 1.0))
             if be_at_r > 0 and max_r >= be_at_r:
-                be_offset = float(getattr(settings, "BREAKEVEN_STOP_OFFSET_PCT", 0.0) or 0.0)
-                be_offset = max(0.0, be_offset)
+                be_offset = _breakeven_stop_offset_pct()
                 be_price = entry_price * (1 + be_offset) if is_long else entry_price * (1 - be_offset)
 
                 # Basic sanity: ensure BE stop is on the correct side of the market to avoid immediate triggers.
@@ -5812,16 +5847,41 @@ def _attempt_entry_open(
     if not allow_scale_entry:
         htf_adx_for_limit = regime_adx_by_symbol.get(inst.symbol, market_regime_adx)
         daily_limit = _max_daily_trades_for_adx(htf_adx_for_limit)
-        daily_count = _get_daily_trade_count()
-        if daily_count >= daily_limit:
-            logger.info(
-                "Daily trade limit reached: %d/%d (adx=%.1f) Ã¢â‚¬â€ blocking entry on %s",
-                daily_count,
-                daily_limit,
-                htf_adx_for_limit or 0,
-                inst.symbol,
+        if bool(getattr(settings, "DAILY_TRADE_SYMBOL_THROTTLE_ENABLED", True)):
+            global_cap = max(
+                0,
+                int(getattr(settings, "MAX_DAILY_TRADES_GLOBAL_HARD_CAP", 0) or 0),
             )
-            return 0, 0.0
+            global_count = _get_daily_trade_count()
+            if global_cap > 0 and global_count >= global_cap:
+                logger.info(
+                    "Global daily trade hard cap reached: %d/%d - blocking entry on %s",
+                    global_count,
+                    global_cap,
+                    inst.symbol,
+                )
+                return 0, 0.0
+            daily_count = _get_daily_trade_count(inst.symbol)
+            if daily_count >= daily_limit:
+                logger.info(
+                    "Symbol daily trade limit reached: %s %d/%d (adx=%.1f) - blocking entry",
+                    inst.symbol,
+                    daily_count,
+                    daily_limit,
+                    htf_adx_for_limit or 0,
+                )
+                return 0, 0.0
+        else:
+            daily_count = _get_daily_trade_count()
+            if daily_count >= daily_limit:
+                logger.info(
+                    "Daily trade limit reached: %d/%d (adx=%.1f) - blocking entry on %s",
+                    daily_count,
+                    daily_limit,
+                    htf_adx_for_limit or 0,
+                    inst.symbol,
+                )
+                return 0, 0.0
 
     sig_score = _to_float(getattr(sig, "score", 0.0))
     if session_policy_enabled and session_dead_zone_block and is_dead_session(current_session):
@@ -6850,7 +6910,7 @@ def _attempt_entry_open(
         if placed is not None:
             _remember_protective_stop_price(symbol, order.opened_at, fill_price or last_price, sl_price)
         if not allow_scale_entry:
-            _increment_daily_trade_count()
+            _increment_daily_trade_count(inst.symbol)
 
         notify_trade_opened(
             inst.symbol, side, float(qty), last_price,

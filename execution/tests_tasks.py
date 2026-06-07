@@ -46,6 +46,9 @@ from execution.tasks import (
     _asia_weak_short_precheck,
     _dead_session_strong_trend_breakout_override,
     _post_tp_alt_reentry_quality_precheck,
+    _daily_trade_count_key,
+    _get_daily_trade_count,
+    _increment_daily_trade_count,
     _ny_open_weak_long_precheck,
     _long_bias_short_precheck,
     _symbol_health_precheck,
@@ -57,6 +60,7 @@ from execution.tasks import (
     _log_operation,
     _normalize_order_qty,
     _actual_stop_risk_amount,
+    _breakeven_stop_offset_pct,
     _cleanup_orphan_reduce_only_orders,
     _position_root_correlation,
     _position_origin_refs,
@@ -90,11 +94,36 @@ class _DummyRedis:
         self.store: dict[str, str] = {}
         self.expiry: dict[str, int] = {}
 
+    class _Pipeline:
+        def __init__(self, parent):
+            self.parent = parent
+            self.ops = []
+
+        def incr(self, key: str):
+            self.ops.append(("incr", key, None))
+            return self
+
+        def expire(self, key: str, seconds: int):
+            self.ops.append(("expire", key, int(seconds)))
+            return self
+
+        def execute(self):
+            for op, key, value in self.ops:
+                if op == "incr":
+                    self.parent.incr(key)
+                elif op == "expire":
+                    self.parent.expire(key, value)
+            return True
+
     def ping(self):
         return True
 
     def get(self, key: str):
         return self.store.get(key)
+
+    def incr(self, key: str):
+        self.store[key] = str(int(self.store.get(key, "0")) + 1)
+        return int(self.store[key])
 
     def set(self, key: str, value, nx: bool = False, ex: int | None = None):
         if nx and key in self.store:
@@ -113,6 +142,9 @@ class _DummyRedis:
             return False
         self.expiry[key] = int(seconds)
         return True
+
+    def pipeline(self):
+        return self._Pipeline(self)
 
 
 class _DummyAdapter:
@@ -146,6 +178,46 @@ class _DummyAdapter:
     @staticmethod
     def fetch_ticker(_symbol: str):
         return {"last": 100.0}
+
+
+class DailyTradeCounterTest(TestCase):
+    @override_settings(
+        DAILY_TRADE_SYMBOL_THROTTLE_ENABLED=True,
+        DAILY_TRADE_COUNT_TTL_SECONDS=90000,
+    )
+    def test_daily_counter_tracks_global_and_symbol_keys(self):
+        redis = _DummyRedis()
+        fixed_now = datetime(2026, 6, 7, 13, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("execution.tasks._redis_client", return_value=redis),
+            patch("execution.tasks.dj_tz.now", return_value=fixed_now),
+        ):
+            _increment_daily_trade_count("btcusdt")
+            _increment_daily_trade_count("ETHUSDT")
+            _increment_daily_trade_count("BTCUSDT")
+
+            self.assertEqual(_get_daily_trade_count(), 3)
+            self.assertEqual(_get_daily_trade_count("BTCUSDT"), 2)
+            self.assertEqual(_get_daily_trade_count("ETHUSDT"), 1)
+            self.assertEqual(_daily_trade_count_key("btcusdt"), "risk:daily_trades:2026-06-07:BTCUSDT")
+            self.assertEqual(redis.expiry["risk:daily_trades:2026-06-07"], 90000)
+            self.assertEqual(redis.expiry["risk:daily_trades:2026-06-07:BTCUSDT"], 90000)
+
+    @override_settings(DAILY_TRADE_SYMBOL_THROTTLE_ENABLED=False)
+    def test_daily_counter_preserves_global_key_when_symbol_scope_disabled(self):
+        redis = _DummyRedis()
+        fixed_now = datetime(2026, 6, 7, 13, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("execution.tasks._redis_client", return_value=redis),
+            patch("execution.tasks.dj_tz.now", return_value=fixed_now),
+        ):
+            _increment_daily_trade_count("BTCUSDT")
+
+            self.assertEqual(_get_daily_trade_count(), 1)
+            self.assertEqual(_get_daily_trade_count("BTCUSDT"), 1)
+            self.assertEqual(list(redis.store.keys()), ["risk:daily_trades:2026-06-07"])
 
 
 class _DummyAdapterPrecisionError:
@@ -551,6 +623,30 @@ class TaskHelpersTest(TestCase):
         pnl_gate, fee_est = _tp_sl_gate_pnl_pct(0.0100)
         self.assertAlmostEqual(fee_est, 0.0, places=8)
         self.assertAlmostEqual(pnl_gate, 0.0100, places=8)
+
+    @override_settings(
+        BREAKEVEN_STOP_OFFSET_PCT=0.0,
+        BREAKEVEN_STOP_FEE_FLOOR_ENABLED=True,
+        BREAKEVEN_STOP_FEE_FLOOR_PCT=0.0010,
+    )
+    def test_breakeven_stop_offset_uses_fee_floor_when_env_zero(self):
+        self.assertAlmostEqual(_breakeven_stop_offset_pct(), 0.0010, places=8)
+
+    @override_settings(
+        BREAKEVEN_STOP_OFFSET_PCT=0.0015,
+        BREAKEVEN_STOP_FEE_FLOOR_ENABLED=True,
+        BREAKEVEN_STOP_FEE_FLOOR_PCT=0.0010,
+    )
+    def test_breakeven_stop_offset_keeps_higher_configured_buffer(self):
+        self.assertAlmostEqual(_breakeven_stop_offset_pct(), 0.0015, places=8)
+
+    @override_settings(
+        BREAKEVEN_STOP_OFFSET_PCT=0.0,
+        BREAKEVEN_STOP_FEE_FLOOR_ENABLED=False,
+        BREAKEVEN_STOP_FEE_FLOOR_PCT=0.0010,
+    )
+    def test_breakeven_stop_offset_fee_floor_can_be_disabled(self):
+        self.assertAlmostEqual(_breakeven_stop_offset_pct(), 0.0, places=8)
 
     @override_settings(
         FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED=True,
@@ -1676,6 +1772,31 @@ class TaskHelpersTest(TestCase):
             trend_context_direction="long",
             trend_context_is_strong=True,
         )
+        self.assertFalse(ok)
+        self.assertIn("weak_long_bear_weak", reason)
+
+    @override_settings(
+        WEAK_LONG_BEAR_WEAK_BLOCK_ENABLED=True,
+        WEAK_LONG_BEAR_WEAK_BLOCK_MONTHLY_REGIMES={"bear_confirmed"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_DAILY_REGIMES={"bear_confirmed", "bear_weak", "transition"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_LEAD_STATES={"bear_confirmed", "transition"},
+        WEAK_LONG_BEAR_WEAK_BLOCK_RECOMMENDED_BIASES={"short_bias", "balanced"},
+        WEAK_LONG_BEAR_WEAK_ADX_OVERRIDE_ENABLED=False,
+    )
+    def test_weak_long_bear_weak_precheck_blocks_confirmed_bear_short_bias_long(self):
+        ok, reason = _weak_long_bear_weak_precheck(
+            strategy_name="alloc_long",
+            signal_direction="long",
+            current_session="overlap",
+            monthly_regime="bear_confirmed",
+            daily_regime="bear_confirmed",
+            btc_lead_state="bear_confirmed",
+            btc_recommended_bias="short_bias",
+            symbol_adx_1h=31.0,
+            trend_context_direction="long",
+            trend_context_is_strong=True,
+        )
+
         self.assertFalse(ok)
         self.assertIn("weak_long_bear_weak", reason)
 
