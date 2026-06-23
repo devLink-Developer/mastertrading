@@ -619,6 +619,28 @@ class TaskHelpersTest(TestCase):
         self.assertAlmostEqual(fee_est, 0.0010, places=8)
         self.assertAlmostEqual(pnl_gate, 0.0090, places=8)
 
+    @override_settings(
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_tp_sl_gate_pnl_pct_uses_runtime_fee_override(self):
+        StrategyConfig.objects.create(
+            name="TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT",
+            version=RUNTIME_OVERRIDES_VERSION,
+            enabled=True,
+            params_json={"value": 0.0015},
+        )
+        invalidate_runtime_overrides_cache()
+
+        try:
+            pnl_gate, fee_est = _tp_sl_gate_pnl_pct(0.0100)
+
+            self.assertAlmostEqual(fee_est, 0.0015, places=8)
+            self.assertAlmostEqual(pnl_gate, 0.0085, places=8)
+        finally:
+            StrategyConfig.objects.filter(version=RUNTIME_OVERRIDES_VERSION).delete()
+            invalidate_runtime_overrides_cache()
+
     @override_settings(TP_SL_FEE_ADJUST_ENABLED=False)
     def test_tp_sl_gate_pnl_pct_can_be_disabled(self):
         pnl_gate, fee_est = _tp_sl_gate_pnl_pct(0.0100)
@@ -632,6 +654,28 @@ class TaskHelpersTest(TestCase):
     )
     def test_breakeven_stop_offset_uses_fee_floor_when_env_zero(self):
         self.assertAlmostEqual(_breakeven_stop_offset_pct(), 0.0010, places=8)
+
+    @override_settings(
+        BREAKEVEN_STOP_OFFSET_PCT=0.0,
+        BREAKEVEN_STOP_FEE_FLOOR_ENABLED=True,
+        BREAKEVEN_STOP_FEE_FLOOR_PCT=0.0010,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_breakeven_stop_offset_uses_runtime_fee_floor(self):
+        StrategyConfig.objects.create(
+            name="BREAKEVEN_STOP_FEE_FLOOR_PCT",
+            version=RUNTIME_OVERRIDES_VERSION,
+            enabled=True,
+            params_json={"value": 0.0012},
+        )
+        invalidate_runtime_overrides_cache()
+
+        try:
+            self.assertAlmostEqual(_breakeven_stop_offset_pct(), 0.0012, places=8)
+        finally:
+            StrategyConfig.objects.filter(version=RUNTIME_OVERRIDES_VERSION).delete()
+            invalidate_runtime_overrides_cache()
 
     @override_settings(
         BREAKEVEN_STOP_OFFSET_PCT=0.0015,
@@ -683,6 +727,23 @@ class TaskHelpersTest(TestCase):
         self.assertFalse(defer)
         self.assertGreater(pnl_net, 0.0)
         self.assertIn("net_ok", reason)
+
+    @override_settings(
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED=True,
+        FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT=0.0005,
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES=20.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_flat_signal_timeout_requires_minimum_net_profit(self):
+        defer, reason, pnl_net, _ = _flat_signal_timeout_fee_defer_decision(
+            pnl_pct_gross=0.0012,
+            flat_minutes=10.0,
+            timeout_minutes=10.0,
+        )
+        self.assertTrue(defer)
+        self.assertAlmostEqual(pnl_net, 0.0002, places=8)
+        self.assertIn("fee_not_covered", reason)
 
     @override_settings(
         FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED=True,
@@ -786,6 +847,22 @@ class TaskHelpersTest(TestCase):
         self.assertTrue(defer)
         self.assertLess(pnl_net, 0.0)
         self.assertAlmostEqual(fee_est, 0.0010, places=8)
+        self.assertIn("fee_not_covered", reason)
+
+    @override_settings(
+        TREND_KILLER_FEE_AWARE_ENABLED=True,
+        TREND_KILLER_MIN_NET_PNL_PCT=0.0005,
+        TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES=5.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_trend_killer_requires_minimum_net_profit(self):
+        defer, reason, pnl_net, _ = _trend_killer_fee_defer_decision(
+            pnl_pct_gross=0.0012,
+            age_minutes=1.0,
+        )
+        self.assertTrue(defer)
+        self.assertAlmostEqual(pnl_net, 0.0002, places=8)
         self.assertIn("fee_not_covered", reason)
 
     @override_settings(

@@ -146,7 +146,7 @@ FLAT_SIGNAL_TIMEOUT_MINUTES = max(1.0, float(os.getenv("FLAT_SIGNAL_TIMEOUT_MINU
 FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED = (
     os.getenv("FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED", "true").lower() == "true"
 )
-FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT = float(os.getenv("FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT", "0.0"))
+FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT = float(os.getenv("FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT", "0.0005"))
 FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES = max(
     0.0,
     float(os.getenv("FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES", "20")),
@@ -182,11 +182,11 @@ TRAILING_LOCKIN_MAX = max(TRAILING_LOCKIN_MIN, min(1.0, float(os.getenv("TRAILIN
 TRAILING_LOCKIN_SLOPE = max(0.0, float(os.getenv("TRAILING_LOCKIN_SLOPE", "15.0")))
 BREAKEVEN_STOP_ENABLED = os.getenv("BREAKEVEN_STOP_ENABLED", "true").lower() == "true"
 BREAKEVEN_STOP_AT_R = float(os.getenv("BREAKEVEN_STOP_AT_R", "0.75"))  # move SL to entry after 0.75R in profit (was 1.0 — protect capital earlier)
-BREAKEVEN_STOP_OFFSET_PCT = float(os.getenv("BREAKEVEN_STOP_OFFSET_PCT", "0.001"))  # 0.1% buffer above entry to cover fees/slippage (was 0 — losing on BE)
+BREAKEVEN_STOP_OFFSET_PCT = float(os.getenv("BREAKEVEN_STOP_OFFSET_PCT", "0.0012"))  # 0.12% buffer above entry to cover fees/slippage (was 0 — losing on BE)
 BREAKEVEN_STOP_FEE_FLOOR_ENABLED = os.getenv("BREAKEVEN_STOP_FEE_FLOOR_ENABLED", "true").lower() == "true"
 BREAKEVEN_STOP_FEE_FLOOR_PCT = max(
     0.0,
-    float(os.getenv("BREAKEVEN_STOP_FEE_FLOOR_PCT", str(TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT))),
+    float(os.getenv("BREAKEVEN_STOP_FEE_FLOOR_PCT", "0.0012")),
 )
 BREAKEVEN_WINDOW_MINUTES = int(os.getenv("BREAKEVEN_WINDOW_MINUTES", "0"))  # 0 = disabled (no time filter)
 TRAILING_STATE_TTL_SECONDS = max(60, int(os.getenv("TRAILING_STATE_TTL_SECONDS", "172800")))
@@ -508,7 +508,7 @@ UPTREND_SHORT_KILLER_ENABLED = os.getenv("UPTREND_SHORT_KILLER_ENABLED", "true")
 # -- Downtrend long killer (symmetry to protect longs when HTF flips bearish) --
 DOWNTREND_LONG_KILLER_ENABLED = os.getenv("DOWNTREND_LONG_KILLER_ENABLED", "true").lower() == "true"
 TREND_KILLER_FEE_AWARE_ENABLED = os.getenv("TREND_KILLER_FEE_AWARE_ENABLED", "true").lower() == "true"
-TREND_KILLER_MIN_NET_PNL_PCT = float(os.getenv("TREND_KILLER_MIN_NET_PNL_PCT", "0.0"))
+TREND_KILLER_MIN_NET_PNL_PCT = float(os.getenv("TREND_KILLER_MIN_NET_PNL_PCT", "0.0005"))
 TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES = max(
     0.0,
     float(os.getenv("TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES", "5")),

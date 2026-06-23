@@ -1810,6 +1810,23 @@ def _volatility_adjusted_risk(symbol: str, atr_pct: float | None, base_risk: flo
     return _shared_volatility_adjusted_risk(symbol, atr_pct, base_risk)
 
 
+def _tp_sl_fee_adjust_enabled() -> bool:
+    return get_runtime_bool(
+        "TP_SL_FEE_ADJUST_ENABLED",
+        bool(getattr(settings, "TP_SL_FEE_ADJUST_ENABLED", True)),
+    )
+
+
+def _roundtrip_fee_pct_estimate() -> float:
+    if not _tp_sl_fee_adjust_enabled():
+        return 0.0
+    return get_runtime_float(
+        "TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT",
+        float(getattr(settings, "TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT", 0.0010) or 0.0010),
+        minimum=0.0,
+    )
+
+
 def _tp_sl_gate_pnl_pct(pnl_pct_gross: float) -> tuple[float, float]:
     """
     Return (pnl_pct_for_gate, fee_pct_estimate).
@@ -1817,12 +1834,7 @@ def _tp_sl_gate_pnl_pct(pnl_pct_gross: float) -> tuple[float, float]:
     The TP/SL gate can use a conservative net estimate by discounting
     an expected roundtrip fee from the live (gross) pnl%.
     """
-    fee_pct_estimate = 0.0
-    if bool(getattr(settings, "TP_SL_FEE_ADJUST_ENABLED", True)):
-        fee_pct_estimate = max(
-            0.0,
-            float(getattr(settings, "TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT", 0.0010) or 0.0010),
-        )
+    fee_pct_estimate = _roundtrip_fee_pct_estimate()
     return pnl_pct_gross - fee_pct_estimate, fee_pct_estimate
 
 
@@ -1834,11 +1846,18 @@ def _breakeven_stop_offset_pct() -> float:
     deployments. Keep the configured offset, but floor it at the estimated
     roundtrip fee so a "breakeven" stop is not predictably net-negative.
     """
-    configured = max(0.0, _to_float(getattr(settings, "BREAKEVEN_STOP_OFFSET_PCT", 0.0)))
-    if not bool(getattr(settings, "BREAKEVEN_STOP_FEE_FLOOR_ENABLED", True)):
+    configured = get_runtime_float(
+        "BREAKEVEN_STOP_OFFSET_PCT",
+        _to_float(getattr(settings, "BREAKEVEN_STOP_OFFSET_PCT", 0.0)),
+        minimum=0.0,
+    )
+    if not get_runtime_bool(
+        "BREAKEVEN_STOP_FEE_FLOOR_ENABLED",
+        bool(getattr(settings, "BREAKEVEN_STOP_FEE_FLOOR_ENABLED", True)),
+    ):
         return configured
-    fee_floor = max(
-        0.0,
+    fee_floor = get_runtime_float(
+        "BREAKEVEN_STOP_FEE_FLOOR_PCT",
         _to_float(
             getattr(
                 settings,
@@ -1846,8 +1865,9 @@ def _breakeven_stop_offset_pct() -> float:
                 getattr(settings, "TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT", 0.0010),
             )
         ),
+        minimum=0.0,
     )
-    return max(configured, fee_floor)
+    return max(configured, fee_floor, _roundtrip_fee_pct_estimate())
 
 
 # ---------------------------------------------------------------------------

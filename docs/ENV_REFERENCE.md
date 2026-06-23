@@ -29,15 +29,15 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `ATR_MULT_SL`, `ATR_MULT_TP`: legacy/global ATR multipliers.
 - `ATR_MULT_TP_LONG`, `ATR_MULT_TP_SHORT`: directional TP asymmetry.
 - `MIN_SL_PCT`, `TAKE_PROFIT_MIN_PCT`: hard floors.
-- `TP_SL_FEE_ADJUST_ENABLED`: include estimated fees in TP/SL decisions.
-- `TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT`: gate-level roundtrip fee estimate.
+- `TP_SL_FEE_ADJUST_ENABLED`: include estimated fees in TP/SL decisions; DB runtime override supported.
+- `TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT`: gate-level roundtrip fee estimate; DB runtime override supported.
 - `ORDER_FEE_FALLBACK_ENABLED`, `ORDER_FEE_FALLBACK_TAKER_PCT`: estimate per-side order fees when the exchange response omits them.
 - `TRAILING_STOP_ENABLED`, `TRAILING_STOP_ACTIVATION_R`, `TRAILING_STOP_LOCK_IN_PCT`
 - `TRAILING_ADAPTIVE_ENABLED`
 - `TRAILING_ACTIVATION_R_LOWVOL`, `TRAILING_ACTIVATION_R_HIGHVOL`, `TRAILING_ACTIVATION_ATR_THRESHOLD`
 - `TRAILING_LOCKIN_MIN`, `TRAILING_LOCKIN_MAX`, `TRAILING_LOCKIN_SLOPE`
 - `BREAKEVEN_STOP_ENABLED`, `BREAKEVEN_STOP_AT_R`, `BREAKEVEN_STOP_OFFSET_PCT`
-- `BREAKEVEN_STOP_FEE_FLOOR_ENABLED`, `BREAKEVEN_STOP_FEE_FLOOR_PCT`: keep breakeven stops from becoming net-negative after estimated roundtrip fees.
+- `BREAKEVEN_STOP_FEE_FLOOR_ENABLED`, `BREAKEVEN_STOP_FEE_FLOOR_PCT`: keep breakeven stops from becoming net-negative after estimated roundtrip fees; DB runtime override supported.
 - `PARTIAL_CLOSE_AT_R`, `PARTIAL_CLOSE_PCT`
 
 ## 5) Signal quality and timing
@@ -52,7 +52,8 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `POST_TP_ALT_REENTRY_MAX_TREND_VOLUME_PENALTY`
 - `POST_TP_ALT_REENTRY_MIN_NET_SCORE`
 - `FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED`: defer flat-timeout closes when gross PnL is positive but estimated net PnL is still below target after fees.
-- `FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT`, `FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES`
+- `FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT`: minimum estimated net PnL required before voluntarily closing a gross-positive flat-timeout position; default `0.0005` means +0.05% after fees.
+- `FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES`
 - `FLAT_SIGNAL_EARLY_EXIT_ENABLED`: close flat-signal positions early when the trade has stayed flat and never developed enough MFE.
 - `FLAT_SIGNAL_EARLY_EXIT_MINUTES`, `FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R`, `FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT`
 - `LONG_BIAS_SHORT_BLOCK_ENABLED`
@@ -172,6 +173,9 @@ This document lists high-impact variables only. Keep secrets out of git.
 ## 8) Guardrail killers
 - `UPTREND_SHORT_KILLER_ENABLED`
 - `DOWNTREND_LONG_KILLER_ENABLED`
+- `TREND_KILLER_FEE_AWARE_ENABLED`
+- `TREND_KILLER_MIN_NET_PNL_PCT`: minimum estimated net PnL required before voluntarily closing a gross-positive trend-killer exit; default `0.0005`.
+- `TREND_KILLER_FEE_AWARE_MAX_DEFER_MINUTES`
 
 ## 9) Optional ML/AI overlay switches
 - `ML_ENTRY_FILTER_ENABLED`
