@@ -151,6 +151,18 @@ FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES = max(
     0.0,
     float(os.getenv("FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES", "20")),
 )
+FLAT_SIGNAL_EARLY_EXIT_ENABLED = os.getenv("FLAT_SIGNAL_EARLY_EXIT_ENABLED", "true").lower() == "true"
+FLAT_SIGNAL_EARLY_EXIT_MINUTES = max(
+    1.0,
+    float(os.getenv("FLAT_SIGNAL_EARLY_EXIT_MINUTES", "5")),
+)
+FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R = max(
+    0.0,
+    float(os.getenv("FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R", "0.25")),
+)
+FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT = float(
+    os.getenv("FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT", "0.001")
+)
 
 # -- New: Trailing stop / partial close --
 TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"

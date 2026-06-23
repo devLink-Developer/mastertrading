@@ -53,6 +53,8 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `POST_TP_ALT_REENTRY_MIN_NET_SCORE`
 - `FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED`: defer flat-timeout closes when gross PnL is positive but estimated net PnL is still below target after fees.
 - `FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT`, `FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES`
+- `FLAT_SIGNAL_EARLY_EXIT_ENABLED`: close flat-signal positions early when the trade has stayed flat and never developed enough MFE.
+- `FLAT_SIGNAL_EARLY_EXIT_MINUTES`, `FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R`, `FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT`
 - `LONG_BIAS_SHORT_BLOCK_ENABLED`
 - `LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES`
 - `LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES`

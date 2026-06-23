@@ -29,6 +29,7 @@ from execution.tasks import (
     _corr_guard_positions_snapshot,
     _extract_trigger_price,
     _extract_fee_usdt,
+    _flat_signal_early_exit_decision,
     _flat_signal_timeout_fee_defer_decision,
     _resolve_order_fee_usdt,
     _grid_structural_sl_tp_hints,
@@ -716,6 +717,59 @@ class TaskHelpersTest(TestCase):
         self.assertFalse(defer)
         self.assertLess(pnl_net, 0.0)
         self.assertIn("max_defer_reached", reason)
+
+    @override_settings(
+        FLAT_SIGNAL_EARLY_EXIT_ENABLED=True,
+        FLAT_SIGNAL_EARLY_EXIT_MINUTES=5.0,
+        FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R=0.25,
+        FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT=0.0010,
+    )
+    def test_flat_signal_early_exit_closes_dead_low_mfe_trade(self):
+        close, reason, mfe_r = _flat_signal_early_exit_decision(
+            pnl_pct_gross=-0.0015,
+            flat_minutes=5.0,
+            max_fav_pct=0.0010,
+            sl_ref_pct=0.0120,
+        )
+
+        self.assertTrue(close)
+        self.assertAlmostEqual(mfe_r, 0.083333, places=5)
+        self.assertIn("early_flat_no_mfe", reason)
+
+    @override_settings(
+        FLAT_SIGNAL_EARLY_EXIT_ENABLED=True,
+        FLAT_SIGNAL_EARLY_EXIT_MINUTES=5.0,
+        FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R=0.25,
+        FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT=0.0010,
+    )
+    def test_flat_signal_early_exit_waits_before_minute_gate(self):
+        close, reason, _ = _flat_signal_early_exit_decision(
+            pnl_pct_gross=-0.0020,
+            flat_minutes=4.9,
+            max_fav_pct=0.0,
+            sl_ref_pct=0.0120,
+        )
+
+        self.assertFalse(close)
+        self.assertIn("early_exit_wait", reason)
+
+    @override_settings(
+        FLAT_SIGNAL_EARLY_EXIT_ENABLED=True,
+        FLAT_SIGNAL_EARLY_EXIT_MINUTES=5.0,
+        FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R=0.25,
+        FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT=0.0010,
+    )
+    def test_flat_signal_early_exit_keeps_trade_with_mfe(self):
+        close, reason, mfe_r = _flat_signal_early_exit_decision(
+            pnl_pct_gross=-0.0005,
+            flat_minutes=6.0,
+            max_fav_pct=0.0040,
+            sl_ref_pct=0.0120,
+        )
+
+        self.assertFalse(close)
+        self.assertGreater(mfe_r, 0.25)
+        self.assertIn("early_exit_mfe_ok", reason)
 
     @override_settings(
         TREND_KILLER_FEE_AWARE_ENABLED=True,

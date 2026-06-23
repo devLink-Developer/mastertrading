@@ -5293,6 +5293,74 @@ def _flat_signal_timeout_fee_defer_decision(
     ), pnl_pct_net, fee_pct_estimate
 
 
+def _flat_signal_early_exit_decision(
+    pnl_pct_gross: float,
+    flat_minutes: float,
+    max_fav_pct: float,
+    sl_ref_pct: float,
+) -> tuple[bool, str, float]:
+    """Close dead flat signals early when the trade never developed."""
+    if not get_runtime_bool(
+        "FLAT_SIGNAL_EARLY_EXIT_ENABLED",
+        bool(getattr(settings, "FLAT_SIGNAL_EARLY_EXIT_ENABLED", True)),
+    ):
+        mfe_r = (max(0.0, max_fav_pct) / sl_ref_pct) if sl_ref_pct > 0 else 0.0
+        return False, "early_exit_disabled", mfe_r
+
+    early_minutes = get_runtime_float(
+        "FLAT_SIGNAL_EARLY_EXIT_MINUTES",
+        float(getattr(settings, "FLAT_SIGNAL_EARLY_EXIT_MINUTES", 5.0)),
+        minimum=1.0,
+    )
+    if flat_minutes < early_minutes:
+        mfe_r = (max(0.0, max_fav_pct) / sl_ref_pct) if sl_ref_pct > 0 else 0.0
+        return False, f"early_exit_wait:{flat_minutes:.1f}<{early_minutes:.1f}", mfe_r
+
+    max_mfe_r = get_runtime_float(
+        "FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R",
+        float(getattr(settings, "FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R", 0.25)),
+        minimum=0.0,
+    )
+    max_gross_pnl = get_runtime_float(
+        "FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT",
+        float(getattr(settings, "FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT", 0.001)),
+    )
+    sl_ref = max(1e-6, float(sl_ref_pct or 0.0))
+    mfe_r = max(0.0, float(max_fav_pct or 0.0)) / sl_ref
+    if mfe_r > max_mfe_r:
+        return False, f"early_exit_mfe_ok:{mfe_r:.3f}>{max_mfe_r:.3f}", mfe_r
+    if pnl_pct_gross > max_gross_pnl:
+        return False, f"early_exit_pnl_ok:{pnl_pct_gross:.6f}>{max_gross_pnl:.6f}", mfe_r
+
+    return True, (
+        f"early_flat_no_mfe:flat={flat_minutes:.1f}:"
+        f"mfe_r={mfe_r:.3f}<={max_mfe_r:.3f}:"
+        f"gross={pnl_pct_gross:.6f}<={max_gross_pnl:.6f}"
+    ), mfe_r
+
+
+def _position_mfe_state(symbol: str, opened_at, entry_price: float) -> tuple[float, float, float]:
+    """Return (mfe_r, max_fav_pct, sl_ref_pct) from Redis trail state."""
+    max_fav = 0.0
+    sl_ref = 0.0
+    try:
+        client = _redis_client()
+        if client is not None:
+            state_key = _position_state_key(symbol, opened_at, entry_price)
+            max_fav = max(0.0, _to_float(client.get(f"trail:max_fav:{state_key}")))
+            sl_ref = max(0.0, _to_float(client.get(f"trail:sl_pct:{state_key}")))
+    except Exception:
+        max_fav = 0.0
+        sl_ref = 0.0
+    if sl_ref <= 0:
+        sl_ref = max(
+            _to_float(getattr(settings, "STOP_LOSS_PCT", 0.0)),
+            _to_float(getattr(settings, "MIN_SL_PCT", 0.0)),
+            1e-6,
+        )
+    return max_fav / sl_ref if sl_ref > 0 else 0.0, max_fav, sl_ref
+
+
 def _trend_killer_fee_defer_decision(
     pnl_pct_gross: float,
     age_minutes: float,
@@ -7948,12 +8016,24 @@ def _manage_open_position(
         if flat_timeout_enabled and last and entry_price and abs(current_qty) > 0:
             flat_seconds = _track_flat_signal(symbol)
             flat_minutes = flat_seconds / 60.0
+            close_side = "sell" if current_qty > 0 else "buy"
+            close_qty = abs(current_qty)
+            trade_side = "buy" if current_qty > 0 else "sell"
+            pnl_flat = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
+            pnl_abs_flat = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+            _, max_fav_pct, sl_ref_pct = _position_mfe_state(symbol, pos_opened_at, entry_price)
+            early_exit_close, early_exit_reason, early_mfe_r = _flat_signal_early_exit_decision(
+                pnl_flat,
+                flat_minutes,
+                max_fav_pct,
+                sl_ref_pct,
+            )
+            close_reason_detail = early_exit_reason
+            flat_close_sub_reason = ""
+            pnl_flat_net, fee_pct_estimate = _tp_sl_gate_pnl_pct(pnl_flat)
+
             if flat_minutes >= flat_timeout_minutes:
-                close_side = "sell" if current_qty > 0 else "buy"
-                close_qty = abs(current_qty)
-                trade_side = "buy" if current_qty > 0 else "sell"
-                pnl_flat = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
-                pnl_abs_flat = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
+                early_exit_close = False
                 defer_fee_close, fee_gate_reason, pnl_flat_net, fee_pct_estimate = (
                     _flat_signal_timeout_fee_defer_decision(
                         pnl_flat,
@@ -7961,6 +8041,7 @@ def _manage_open_position(
                         flat_timeout_minutes,
                     )
                 )
+                close_reason_detail = fee_gate_reason
                 if defer_fee_close:
                     logger.info(
                         "Flat signal timeout deferred on %s: flat=%.1f min gross=%.4f%% "
@@ -7973,17 +8054,35 @@ def _manage_open_position(
                         fee_gate_reason,
                     )
                     return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+            elif early_exit_close:
+                flat_close_sub_reason = "early_no_mfe"
+                logger.info(
+                    "Flat signal early exit on %s: flat=%.1f min gross=%.4f%% "
+                    "net_est=%.4f%% fee_est=%.4f%% mfe_r=%.3f reason=%s",
+                    symbol,
+                    flat_minutes,
+                    pnl_flat * 100,
+                    pnl_flat_net * 100,
+                    fee_pct_estimate * 100,
+                    early_mfe_r,
+                    early_exit_reason,
+                )
+            else:
+                return True, allow_scale_entry, scale_parent_correlation, scale_add_index
+
+            if flat_minutes >= flat_timeout_minutes or early_exit_close:
                 dur_min = (dj_tz.now() - pos_opened_at).total_seconds() / 60 if pos_opened_at else 0
                 logger.info(
-                    "Flat signal timeout on %s: flat for %.1f min (threshold %.1f min), "
-                    "closing gross=%.4f%% net_est=%.4f%% fee_est=%.4f%% reason=%s",
+                    "Flat signal close on %s: flat for %.1f min (timeout %.1f min), "
+                    "closing gross=%.4f%% net_est=%.4f%% fee_est=%.4f%% mfe_r=%.3f reason=%s",
                     symbol,
                     flat_minutes,
                     flat_timeout_minutes,
                     pnl_flat * 100,
                     pnl_flat_net * 100,
                     fee_pct_estimate * 100,
-                    fee_gate_reason,
+                    early_mfe_r,
+                    close_reason_detail,
                 )
                 try:
                     close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
@@ -8006,6 +8105,7 @@ def _manage_open_position(
                         fee_usdt=close_fee,
                         opened_at=pos_opened_at,
                         contract_size=contract_size,
+                        close_sub_reason=flat_close_sub_reason,
                     )
                     notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                         report,
