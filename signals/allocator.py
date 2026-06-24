@@ -122,8 +122,12 @@ def _trend_context(
         "found": False,
         "direction": "flat",
         "confidence": 0.0,
+        "confidence_min_effective": 0.0,
         "adx_htf": 0.0,
         "adx_min_effective": 0.0,
+        "volume_ratio": 0.0,
+        "volume_min_effective": 0.0,
+        "volume_ok_for_solo": True,
         "is_strong": False,
     }
     for sig in module_signals:
@@ -141,6 +145,9 @@ def _trend_context(
                 reasons.get("adx_htf", reasons.get("htf_adx", 0.0)),
                 default=0.0,
             )
+            volume_ratio = _safe_float(reasons.get("volume_ratio", 0.0), default=0.0)
+        else:
+            volume_ratio = 0.0
         if not bool(best["found"]) or confidence >= float(best["confidence"]):
             best.update(
                 {
@@ -148,29 +155,77 @@ def _trend_context(
                     "direction": direction,
                     "confidence": confidence,
                     "adx_htf": adx_htf,
+                    "volume_ratio": volume_ratio,
                 }
             )
 
     if not bool(best["found"]):
         return best
 
-    adx_min = max(
-        0.0, float(getattr(settings, "ALLOCATOR_STRONG_TREND_ADX_MIN", 25.0))
+    adx_min = get_runtime_float(
+        "ALLOCATOR_STRONG_TREND_ADX_MIN",
+        max(0.0, float(getattr(settings, "ALLOCATOR_STRONG_TREND_ADX_MIN", 25.0))),
+        minimum=0.0,
     )
     adx_min = _context_float_override(
-        getattr(settings, "ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT", {}),
+        get_runtime_dict(
+            "ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT",
+            getattr(settings, "ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT", {}),
+        ),
         symbol=symbol,
         session_name=session_name,
         default=adx_min,
     )
-    conf_min = max(
-        0.0,
-        min(
-            1.0,
-            float(getattr(settings, "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN", 0.80)),
-        ),
+    conf_min = get_runtime_float(
+        "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN",
+        float(getattr(settings, "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN", 0.80)),
+        minimum=0.0,
+        maximum=1.0,
     )
+    conf_min = _context_float_override(
+        get_runtime_dict(
+            "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN_BY_CONTEXT",
+            getattr(settings, "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN_BY_CONTEXT", {}),
+        ),
+        symbol=symbol,
+        session_name=session_name,
+        default=conf_min,
+    )
+    conf_min = max(0.0, min(1.0, float(conf_min)))
+    volume_min = get_runtime_float(
+        "ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO",
+        max(
+            0.0,
+            float(
+                getattr(
+                    settings,
+                    "ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO",
+                    getattr(settings, "MODULE_TREND_VOLUME_MIN_RATIO", 0.8),
+                )
+                or 0.8
+            ),
+        ),
+        minimum=0.0,
+    )
+    volume_min = _context_float_override(
+        get_runtime_dict(
+            "ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO_BY_CONTEXT",
+            getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO_BY_CONTEXT", {}),
+        ),
+        symbol=symbol,
+        session_name=session_name,
+        default=volume_min,
+    )
+    require_volume = get_runtime_bool(
+        "ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM",
+        bool(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM", False)),
+    )
+    volume_ratio = max(0.0, float(best.get("volume_ratio", 0.0) or 0.0))
+    volume_ok = (not require_volume) or (volume_ratio > 0.0 and volume_ratio >= volume_min)
     best["adx_min_effective"] = adx_min
+    best["confidence_min_effective"] = conf_min
+    best["volume_min_effective"] = volume_min
+    best["volume_ok_for_solo"] = bool(volume_ok)
     best["is_strong"] = bool(
         float(best["adx_htf"]) >= adx_min and float(best["confidence"]) >= conf_min
     )
@@ -410,6 +465,8 @@ def resolve_symbol_allocation(
     strong_trend_solo_score_mult_key = ""
     strong_trend_solo_weight_floor = 0.0
     strong_trend_solo_weight_floor_applied = False
+    strong_trend_solo_blocked_by_volume = False
+    requires_no_opposing_carry = False
     range_reversion_solo_applied = False
     range_reversion_solo_module = ""
     range_reversion_solo_weight_floor = 0.0
@@ -600,13 +657,23 @@ def resolve_symbol_allocation(
         ),
     )
     opposing_carry_present = False
-    if (
-        bool(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_ENABLED", True))
+    strong_trend_volume_ok = bool(trend_ctx.get("volume_ok_for_solo", True))
+    solo_disabled_sessions = get_runtime_str_list(
+        "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS",
+        getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS", set()) or set(),
+    )
+    strong_trend_solo_base_allowed = (
+        get_runtime_bool(
+            "ALLOCATOR_STRONG_TREND_SOLO_ENABLED",
+            bool(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_ENABLED", True)),
+        )
         and strong_trend
         and trend_sign != 0
-        and str(session_name or "").strip().lower()
-        not in set(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS", set()) or set())
-    ):
+        and str(session_name or "").strip().lower() not in solo_disabled_sessions
+    )
+    if strong_trend_solo_base_allowed and not strong_trend_volume_ok:
+        strong_trend_solo_blocked_by_volume = True
+    if strong_trend_solo_base_allowed and strong_trend_volume_ok:
         trend_present_same_dir = any(
             row.get("module") == "trend"
             and (
@@ -623,12 +690,15 @@ def resolve_symbol_allocation(
             == (-trend_sign)
             for row in module_contributions
         )
-        requires_no_opposing_carry = bool(
-            getattr(
-                settings,
-                "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
-                False,
-            )
+        requires_no_opposing_carry = get_runtime_bool(
+            "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
+            bool(
+                getattr(
+                    settings,
+                    "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
+                    False,
+                )
+            ),
         )
         if trend_present_same_dir and (
             not requires_no_opposing_carry or not opposing_carry_present
@@ -754,29 +824,27 @@ def resolve_symbol_allocation(
                     "is_strong": bool(trend_ctx.get("is_strong", False)),
                     "direction": str(trend_ctx.get("direction", "flat")),
                     "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
+                    "confidence_min_effective": round(
+                        float(trend_ctx.get("confidence_min_effective", 0.0)),
+                        4,
+                    ),
                     "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
                     "adx_min_effective": round(
                         float(trend_ctx.get("adx_min_effective", 0.0)),
                         4,
                     ),
+                    "volume_ratio": round(float(trend_ctx.get("volume_ratio", 0.0)), 4),
+                    "volume_min_effective": round(
+                        float(trend_ctx.get("volume_min_effective", 0.0)),
+                        4,
+                    ),
+                    "volume_ok_for_solo": bool(trend_ctx.get("volume_ok_for_solo", True)),
                 },
-                "strong_trend_solo_requires_no_opposing_carry": bool(
-                    getattr(
-                        settings,
-                        "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
-                        False,
-                    )
-                ),
+                "strong_trend_solo_requires_no_opposing_carry": bool(requires_no_opposing_carry),
                 "strong_trend_solo_blocked_by_opposing_carry": bool(
-                    opposing_carry_present
-                    and bool(
-                        getattr(
-                            settings,
-                            "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
-                            False,
-                        )
-                    )
+                    opposing_carry_present and requires_no_opposing_carry
                 ),
+                "strong_trend_solo_blocked_by_volume": bool(strong_trend_solo_blocked_by_volume),
                 "strong_trend_solo_applied": bool(strong_trend_solo_applied),
                 "strong_trend_solo_score_mult": round(
                     float(strong_trend_solo_score_mult),
@@ -878,29 +946,27 @@ def resolve_symbol_allocation(
                 "is_strong": bool(trend_ctx.get("is_strong", False)),
                 "direction": str(trend_ctx.get("direction", "flat")),
                 "confidence": round(float(trend_ctx.get("confidence", 0.0)), 4),
+                "confidence_min_effective": round(
+                    float(trend_ctx.get("confidence_min_effective", 0.0)),
+                    4,
+                ),
                 "adx_htf": round(float(trend_ctx.get("adx_htf", 0.0)), 4),
                 "adx_min_effective": round(
                     float(trend_ctx.get("adx_min_effective", 0.0)),
                     4,
                 ),
+                "volume_ratio": round(float(trend_ctx.get("volume_ratio", 0.0)), 4),
+                "volume_min_effective": round(
+                    float(trend_ctx.get("volume_min_effective", 0.0)),
+                    4,
+                ),
+                "volume_ok_for_solo": bool(trend_ctx.get("volume_ok_for_solo", True)),
             },
-            "strong_trend_solo_requires_no_opposing_carry": bool(
-                getattr(
-                    settings,
-                    "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
-                    False,
-                )
-            ),
+            "strong_trend_solo_requires_no_opposing_carry": bool(requires_no_opposing_carry),
             "strong_trend_solo_blocked_by_opposing_carry": bool(
-                opposing_carry_present
-                and bool(
-                    getattr(
-                        settings,
-                        "ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
-                        False,
-                    )
-                )
+                opposing_carry_present and requires_no_opposing_carry
             ),
+            "strong_trend_solo_blocked_by_volume": bool(strong_trend_solo_blocked_by_volume),
             "strong_trend_solo_applied": bool(strong_trend_solo_applied),
             "strong_trend_solo_score_mult": round(
                 float(strong_trend_solo_score_mult),

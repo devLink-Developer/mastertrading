@@ -474,6 +474,73 @@ class AllocatorWeightingTest(TestCase):
         ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
         ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
         ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN_BY_CONTEXT={"*:asia": 0.90},
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_blocks_context_weak_strong_trend_solo(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "short",
+                    "confidence": 0.8009,
+                    "reasons": {"adx_htf": 31.4759, "volume_ratio": 1.2172},
+                }
+            ],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            symbol="BTCUSDT",
+            session_name="asia",
+        )
+        self.assertEqual(out["direction"], "flat")
+        self.assertEqual(out["symbol_state"], "blocked")
+        trend_ctx = out.get("reasons", {}).get("trend_context", {})
+        self.assertFalse(bool(trend_ctx.get("is_strong", False)))
+        self.assertAlmostEqual(float(trend_ctx.get("confidence_min_effective", 0.0)), 0.90, places=6)
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM=True,
+        ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO=0.8,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_blocks_strong_trend_solo_with_weak_volume(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "short",
+                    "confidence": 0.948,
+                    "reasons": {"adx_htf": 52.5578, "volume_ratio": 0.7544},
+                }
+            ],
+            threshold=0.05,
+            base_risk_pct=0.01,
+            session_risk_mult=1.0,
+            weights={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+            symbol="DOGEUSDT",
+            session_name="asia",
+        )
+        self.assertEqual(out["direction"], "flat")
+        self.assertEqual(out["symbol_state"], "blocked")
+        self.assertTrue(out["reasons"]["strong_trend_solo_blocked_by_volume"])
+        trend_ctx = out.get("reasons", {}).get("trend_context", {})
+        self.assertTrue(bool(trend_ctx.get("is_strong", False)))
+        self.assertFalse(bool(trend_ctx.get("volume_ok_for_solo", True)))
+        self.assertAlmostEqual(float(trend_ctx.get("volume_min_effective", 0.0)), 0.8, places=6)
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
         ALLOCATOR_STRONG_TREND_SOLO_SCORE_MULT_BY_CONTEXT={"ENAUSDT:ny": 1.35},
         ALLOCATOR_LONG_SCORE_PENALTY=1.0,
     )
