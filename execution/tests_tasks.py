@@ -66,6 +66,7 @@ from execution.tasks import (
     _position_root_correlation,
     _position_origin_refs,
     _remember_protective_stop_price,
+    _report_pnl_for_notification,
     _order_is_reduce_only,
     _release_task_lock,
     _reconcile_sl,
@@ -831,6 +832,38 @@ class TaskHelpersTest(TestCase):
         self.assertFalse(close)
         self.assertGreater(mfe_r, 0.25)
         self.assertIn("early_exit_mfe_ok", reason)
+
+    @override_settings(
+        FLAT_SIGNAL_EARLY_EXIT_ENABLED=True,
+        FLAT_SIGNAL_EARLY_EXIT_MINUTES=5.0,
+        FLAT_SIGNAL_EARLY_EXIT_MAX_MFE_R=0.25,
+        FLAT_SIGNAL_EARLY_EXIT_MAX_GROSS_PNL_PCT=0.0010,
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_ENABLED=True,
+        FLAT_SIGNAL_TIMEOUT_MIN_NET_PNL_PCT=0.0005,
+        FLAT_SIGNAL_TIMEOUT_FEE_AWARE_MAX_DEFER_MINUTES=20.0,
+        TP_SL_FEE_ADJUST_ENABLED=True,
+        TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
+    )
+    def test_flat_signal_early_exit_fee_gate_defers_micro_gross_win(self):
+        close, reason, mfe_r = _flat_signal_early_exit_decision(
+            pnl_pct_gross=0.000132,
+            flat_minutes=5.0,
+            max_fav_pct=0.0001,
+            sl_ref_pct=0.0120,
+        )
+        defer, fee_reason, pnl_net, fee_est = _flat_signal_timeout_fee_defer_decision(
+            pnl_pct_gross=0.000132,
+            flat_minutes=5.0,
+            timeout_minutes=10.0,
+        )
+
+        self.assertTrue(close)
+        self.assertLess(mfe_r, 0.25)
+        self.assertIn("early_flat_no_mfe", reason)
+        self.assertTrue(defer)
+        self.assertLess(pnl_net, 0.0)
+        self.assertAlmostEqual(fee_est, 0.0010, places=8)
+        self.assertIn("fee_not_covered", fee_reason)
 
     @override_settings(
         TREND_KILLER_FEE_AWARE_ENABLED=True,
@@ -2680,7 +2713,7 @@ class OperationReportFeeNetTest(TestCase):
             reduce_only=False,
         )
 
-        _log_operation(
+        report = _log_operation(
             inst=inst,
             side="buy",
             qty=1.0,
@@ -2696,9 +2729,44 @@ class OperationReportFeeNetTest(TestCase):
         )
 
         op = OperationReport.objects.get(instrument=inst)
+        self.assertEqual(report, op)
         self.assertAlmostEqual(float(op.pnl_abs), 1.5, places=8)
         self.assertAlmostEqual(float(op.fee_usdt), 0.5, places=8)
         self.assertEqual(op.outcome, OperationReport.Outcome.WIN)
+
+    @override_settings(ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False)
+    def test_report_pnl_for_notification_uses_fee_adjusted_report(self):
+        inst = Instrument.objects.create(
+            symbol="LINKUSDT",
+            exchange="bingx",
+            base="LINK",
+            quote="USDT",
+        )
+        report = _log_operation(
+            inst=inst,
+            side="sell",
+            qty=0.3,
+            entry_price=7.602,
+            exit_price=7.601,
+            reason="flat_signal_timeout",
+            signal_id="link-flat",
+            correlation_id="link-flat",
+            leverage=10.0,
+            fee_usdt=0.00228075,
+            opened_at=None,
+            contract_size=1.0,
+            close_sub_reason="early_no_mfe",
+        )
+
+        notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
+            report,
+            pnl_pct_fallback=0.000132,
+            pnl_abs_fallback=0.0003,
+        )
+
+        self.assertLess(float(report.pnl_abs), 0.0)
+        self.assertLess(notify_pnl_pct, 0.0)
+        self.assertLess(notify_pnl_abs, 0.0)
 
     @override_settings(
         ML_ENTRY_FILTER_RETRAIN_ON_OPERATION_ENABLED=False,

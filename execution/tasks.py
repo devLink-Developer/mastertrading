@@ -3216,7 +3216,7 @@ def _log_operation(
     }
 
     if existing_op is None:
-        OperationReport.objects.create(
+        report = OperationReport.objects.create(
             instrument=inst,
             side=side,
             **report_payload,
@@ -3225,6 +3225,7 @@ def _log_operation(
         for field_name, value in report_payload.items():
             setattr(existing_op, field_name, value)
         existing_op.save()
+        report = existing_op
     try:
         client = _redis_client()
         if client is not None:
@@ -3239,6 +3240,7 @@ def _log_operation(
     except Exception:
         pass
     _queue_ml_retrain_after_operation(inst.symbol, settings.MODE, reason)
+    return report
 
 
 def _operation_reason_priority(reason_text: str, sub_reason_text: str) -> int:
@@ -8075,6 +8077,26 @@ def _manage_open_position(
                     )
                     return True, allow_scale_entry, scale_parent_correlation, scale_add_index
             elif early_exit_close:
+                defer_fee_close, fee_gate_reason, pnl_flat_net, fee_pct_estimate = (
+                    _flat_signal_timeout_fee_defer_decision(
+                        pnl_flat,
+                        flat_minutes,
+                        flat_timeout_minutes,
+                    )
+                )
+                if defer_fee_close:
+                    logger.info(
+                        "Flat signal early exit deferred on %s: flat=%.1f min gross=%.4f%% "
+                        "net_est=%.4f%% fee_est=%.4f%% mfe_r=%.3f reason=%s",
+                        symbol,
+                        flat_minutes,
+                        pnl_flat * 100,
+                        pnl_flat_net * 100,
+                        fee_pct_estimate * 100,
+                        early_mfe_r,
+                        fee_gate_reason,
+                    )
+                    return True, allow_scale_entry, scale_parent_correlation, scale_add_index
                 flat_close_sub_reason = "early_no_mfe"
                 logger.info(
                     "Flat signal early exit on %s: flat=%.1f min gross=%.4f%% "
