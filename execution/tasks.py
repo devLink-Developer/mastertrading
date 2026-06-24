@@ -4137,6 +4137,33 @@ def _evaluate_balance_and_guardrails(
     return can_open, free_usdt, equity_usdt, eff_lev, total_notional, leverage
 
 
+def _operation_equity_loss_pct(op: OperationReport) -> float | None:
+    try:
+        equity_before = float(op.equity_before or 0)
+        pnl_abs = float(op.pnl_abs or 0)
+    except (TypeError, ValueError):
+        return None
+    if equity_before <= 0:
+        return None
+    return abs(pnl_abs) / equity_before * 100.0
+
+
+def _operation_counts_for_consecutive_loss_breaker(
+    op: OperationReport,
+    min_loss_equity_pct: float,
+) -> bool:
+    outcome = str(op.outcome or "").strip().lower()
+    if outcome != str(OperationReport.Outcome.LOSS):
+        return True
+    threshold = max(0.0, float(min_loss_equity_pct or 0.0))
+    if threshold <= 0:
+        return True
+    loss_equity_pct = _operation_equity_loss_pct(op)
+    if loss_equity_pct is None:
+        return True
+    return loss_equity_pct >= threshold
+
+
 def _apply_circuit_breaker_gate(
     can_open: bool,
     equity_usdt: float,
@@ -4221,23 +4248,38 @@ def _apply_circuit_breaker_gate(
                     recent_ops_qs = recent_ops_qs.filter(
                         closed_at__gte=dj_tz.now() - timedelta(hours=window_hours)
                     )
-                recent_ops = list(
-                    recent_ops_qs[:cb.max_consecutive_losses].values_list("outcome", flat=True)
+                min_loss_equity_pct = get_runtime_float(
+                    "CIRCUIT_BREAKER_CONSECUTIVE_LOSS_MIN_EQUITY_PCT",
+                    getattr(settings, "CIRCUIT_BREAKER_CONSECUTIVE_LOSS_MIN_EQUITY_PCT", 0.0),
+                    minimum=0.0,
                 )
+                scan_limit = min(100, max(cb.max_consecutive_losses, cb.max_consecutive_losses * 5))
+                recent_ops: list[str] = []
+                for op in recent_ops_qs.only("outcome", "pnl_abs", "equity_before")[:scan_limit]:
+                    if not _operation_counts_for_consecutive_loss_breaker(op, min_loss_equity_pct):
+                        continue
+                    recent_ops.append(str(op.outcome or "").strip().lower())
+                    if len(recent_ops) >= cb.max_consecutive_losses:
+                        break
                 if len(recent_ops) >= cb.max_consecutive_losses and all(o == "loss" for o in recent_ops):
                     cb.is_tripped = True
                     cb.tripped_at = dj_tz.now()
+                    material_label = " material" if min_loss_equity_pct > 0 else ""
                     if window_hours > 0:
                         cb.trip_reason = (
-                            f"{cb.max_consecutive_losses} consecutive losses in {window_hours:.0f}h"
+                            f"{cb.max_consecutive_losses}{material_label} consecutive losses "
+                            f"in {window_hours:.0f}h"
                         )
                     else:
-                        cb.trip_reason = f"{cb.max_consecutive_losses} consecutive losses"
+                        cb.trip_reason = f"{cb.max_consecutive_losses}{material_label} consecutive losses"
                     cb.save(update_fields=["is_tripped", "tripped_at", "trip_reason"])
                     _create_risk_event(
                         "circuit_breaker_consec_losses",
                         "critical",
-                        details={"count": cb.max_consecutive_losses},
+                        details={
+                            "count": cb.max_consecutive_losses,
+                            "min_loss_equity_pct": min_loss_equity_pct,
+                        },
                         risk_ns=risk_ns,
                     )
                     notify_kill_switch(cb.trip_reason)

@@ -10,7 +10,7 @@ from django.utils import timezone as dj_tz
 from core.models import Instrument, AiFeedbackEvent
 from execution.models import OperationReport, Order
 from marketdata.models import Candle
-from risk.models import RiskEvent
+from risk.models import CircuitBreakerConfig, RiskEvent
 from signals.models import Signal, StrategyConfig
 from signals.runtime_overrides import RUNTIME_OVERRIDES_VERSION, invalidate_runtime_overrides_cache
 from execution.tasks import (
@@ -68,6 +68,8 @@ from execution.tasks import (
     _remember_protective_stop_price,
     _report_pnl_for_notification,
     _order_is_reduce_only,
+    _apply_circuit_breaker_gate,
+    _operation_counts_for_consecutive_loss_breaker,
     _release_task_lock,
     _reconcile_sl,
     _resolve_signal_direction,
@@ -335,6 +337,118 @@ class TaskHelpersTest(TestCase):
             self.assertEqual(dd2, -0.01)
             self.assertFalse(meta2.get("emit_event", True))
             dd_mock.assert_called_once()
+
+    def test_consecutive_loss_breaker_counts_material_losses_only(self):
+        tiny_loss = OperationReport(
+            outcome=OperationReport.Outcome.LOSS,
+            pnl_abs=Decimal("-0.02"),
+            equity_before=Decimal("100"),
+        )
+        material_loss = OperationReport(
+            outcome=OperationReport.Outcome.LOSS,
+            pnl_abs=Decimal("-0.06"),
+            equity_before=Decimal("100"),
+        )
+        win = OperationReport(
+            outcome=OperationReport.Outcome.WIN,
+            pnl_abs=Decimal("0.01"),
+            equity_before=Decimal("100"),
+        )
+
+        self.assertFalse(_operation_counts_for_consecutive_loss_breaker(tiny_loss, 0.05))
+        self.assertTrue(_operation_counts_for_consecutive_loss_breaker(material_loss, 0.05))
+        self.assertTrue(_operation_counts_for_consecutive_loss_breaker(win, 0.05))
+
+    def _create_circuit_breaker_report(
+        self,
+        inst: Instrument,
+        pnl_abs: str,
+        minutes_ago: int,
+    ) -> OperationReport:
+        now = dj_tz.now()
+        return OperationReport.objects.create(
+            instrument=inst,
+            side=Order.OrderSide.SELL,
+            qty=Decimal("1"),
+            entry_price=Decimal("1"),
+            exit_price=Decimal("1"),
+            pnl_abs=Decimal(pnl_abs),
+            pnl_pct=Decimal("0"),
+            notional_usdt=Decimal("10"),
+            fee_usdt=Decimal("0"),
+            leverage=Decimal("1"),
+            equity_before=Decimal("100"),
+            equity_after=Decimal("100") + Decimal(pnl_abs),
+            mode="live",
+            opened_at=now - timedelta(minutes=minutes_ago + 5),
+            closed_at=now - timedelta(minutes=minutes_ago),
+            outcome=OperationReport.Outcome.LOSS,
+            reason="flat_signal_timeout",
+            close_sub_reason="early_no_mfe",
+        )
+
+    @override_settings(
+        CIRCUIT_BREAKER_CONSECUTIVE_LOSS_MIN_EQUITY_PCT=0.05,
+        CIRCUIT_BREAKER_CONSECUTIVE_LOSS_WINDOW_HOURS=24,
+    )
+    def test_circuit_breaker_ignores_sub_threshold_loss_streak(self):
+        inst = Instrument.objects.create(symbol="CBTINYUSDT", exchange="bingx", base="CBT", quote="USDT")
+        cb = CircuitBreakerConfig.get()
+        cb.enabled = True
+        cb.is_tripped = False
+        cb.max_consecutive_losses = 3
+        cb.cooldown_minutes_after_trigger = 1440
+        cb.max_daily_dd_pct = 99
+        cb.max_total_dd_pct = 99
+        cb.peak_equity = 100
+        cb.save()
+        for idx, pnl_abs in enumerate(["-0.02", "-0.03", "-0.04"], start=1):
+            self._create_circuit_breaker_report(inst, pnl_abs, idx)
+
+        with (
+            patch("execution.tasks._redis_client", return_value=None),
+            patch("execution.tasks.notify_kill_switch") as notify_mock,
+            patch("execution.tasks.get_runtime_float", side_effect=lambda _name, default, **_kwargs: default),
+        ):
+            can_open = _apply_circuit_breaker_gate(True, 100.0, "test")
+
+        cb.refresh_from_db()
+        self.assertTrue(can_open)
+        self.assertFalse(cb.is_tripped)
+        self.assertFalse(RiskEvent.objects.filter(kind="circuit_breaker_consec_losses").exists())
+        notify_mock.assert_not_called()
+
+    @override_settings(
+        CIRCUIT_BREAKER_CONSECUTIVE_LOSS_MIN_EQUITY_PCT=0.05,
+        CIRCUIT_BREAKER_CONSECUTIVE_LOSS_WINDOW_HOURS=24,
+    )
+    def test_circuit_breaker_trips_on_material_loss_streak(self):
+        inst = Instrument.objects.create(symbol="CBMATLUSDT", exchange="bingx", base="CBM", quote="USDT")
+        cb = CircuitBreakerConfig.get()
+        cb.enabled = True
+        cb.is_tripped = False
+        cb.max_consecutive_losses = 3
+        cb.cooldown_minutes_after_trigger = 1440
+        cb.max_daily_dd_pct = 99
+        cb.max_total_dd_pct = 99
+        cb.peak_equity = 100
+        cb.save()
+        for idx, pnl_abs in enumerate(["-0.06", "-0.07", "-0.08"], start=1):
+            self._create_circuit_breaker_report(inst, pnl_abs, idx)
+
+        with (
+            patch("execution.tasks._redis_client", return_value=None),
+            patch("execution.tasks.notify_kill_switch") as notify_mock,
+            patch("execution.tasks.get_runtime_float", side_effect=lambda _name, default, **_kwargs: default),
+        ):
+            can_open = _apply_circuit_breaker_gate(True, 100.0, "test")
+
+        cb.refresh_from_db()
+        self.assertFalse(can_open)
+        self.assertTrue(cb.is_tripped)
+        self.assertIn("3 material consecutive losses", cb.trip_reason)
+        self.assertTrue(RiskEvent.objects.filter(kind="circuit_breaker_consec_losses").exists())
+        notify_mock.assert_called_once()
 
     def test_market_min_qty_prefers_market_limits(self):
         market = {"limits": {"amount": {"min": 0.2}}}

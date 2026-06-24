@@ -427,6 +427,10 @@ CIRCUIT_BREAKER_CONSECUTIVE_LOSS_WINDOW_HOURS = max(
     0.0,
     float(os.getenv("CIRCUIT_BREAKER_CONSECUTIVE_LOSS_WINDOW_HOURS", "24")),
 )
+CIRCUIT_BREAKER_CONSECUTIVE_LOSS_MIN_EQUITY_PCT = max(
+    0.0,
+    float(os.getenv("CIRCUIT_BREAKER_CONSECUTIVE_LOSS_MIN_EQUITY_PCT", "0")),
+)
 
 # -- Daily trade count limit (risk-management skill: 95% success rate) --
 MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "6"))  # max new entries per day across all instruments
