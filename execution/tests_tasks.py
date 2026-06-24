@@ -845,17 +845,21 @@ class TaskHelpersTest(TestCase):
         TP_SL_ESTIMATED_ROUNDTRIP_FEE_PCT=0.0010,
     )
     def test_flat_signal_early_exit_fee_gate_defers_micro_gross_win(self):
-        close, reason, mfe_r = _flat_signal_early_exit_decision(
-            pnl_pct_gross=0.000132,
-            flat_minutes=5.0,
-            max_fav_pct=0.0001,
-            sl_ref_pct=0.0120,
-        )
-        defer, fee_reason, pnl_net, fee_est = _flat_signal_timeout_fee_defer_decision(
-            pnl_pct_gross=0.000132,
-            flat_minutes=5.0,
-            timeout_minutes=10.0,
-        )
+        with (
+            patch("execution.tasks.get_runtime_bool", side_effect=lambda _name, default: default),
+            patch("execution.tasks.get_runtime_float", side_effect=lambda _name, default, **_kwargs: default),
+        ):
+            close, reason, mfe_r = _flat_signal_early_exit_decision(
+                pnl_pct_gross=0.000132,
+                flat_minutes=5.0,
+                max_fav_pct=0.0001,
+                sl_ref_pct=0.0120,
+            )
+            defer, fee_reason, pnl_net, fee_est = _flat_signal_timeout_fee_defer_decision(
+                pnl_pct_gross=0.000132,
+                flat_minutes=5.0,
+                timeout_minutes=10.0,
+            )
 
         self.assertTrue(close)
         self.assertLess(mfe_r, 0.25)
