@@ -4985,6 +4985,93 @@ def _symbol_health_precheck(inst: Instrument) -> tuple[bool, str]:
     )
 
 
+def _symbol_side_health_precheck(inst: Instrument, side: str) -> tuple[bool, str]:
+    if not get_runtime_bool(
+        "SYMBOL_SIDE_HEALTH_GUARD_ENABLED",
+        bool(getattr(settings, "SYMBOL_SIDE_HEALTH_GUARD_ENABLED", False)),
+    ):
+        return True, "disabled"
+
+    side_txt = str(side or "").strip().lower()
+    if side_txt not in {"buy", "sell"}:
+        return True, "invalid_side"
+
+    symbol = str(getattr(inst, "symbol", "") or "").strip().upper()
+    exempt_symbols = get_runtime_str_list(
+        "SYMBOL_SIDE_HEALTH_GUARD_EXEMPT_SYMBOLS",
+        getattr(settings, "SYMBOL_SIDE_HEALTH_GUARD_EXEMPT_SYMBOLS", set()),
+    )
+    if symbol.lower() in exempt_symbols:
+        return True, "exempt"
+
+    lookback_hours = get_runtime_int(
+        "SYMBOL_SIDE_HEALTH_GUARD_LOOKBACK_HOURS",
+        int(getattr(settings, "SYMBOL_SIDE_HEALTH_GUARD_LOOKBACK_HOURS", 48) or 48),
+        minimum=1,
+    )
+    min_trades = get_runtime_int(
+        "SYMBOL_SIDE_HEALTH_GUARD_MIN_TRADES",
+        int(getattr(settings, "SYMBOL_SIDE_HEALTH_GUARD_MIN_TRADES", 3) or 3),
+        minimum=1,
+    )
+    min_pf = get_runtime_float(
+        "SYMBOL_SIDE_HEALTH_GUARD_MIN_PROFIT_FACTOR",
+        float(getattr(settings, "SYMBOL_SIDE_HEALTH_GUARD_MIN_PROFIT_FACTOR", 0.70) or 0.70),
+        minimum=0.0,
+    )
+    min_expectancy_pct = get_runtime_float(
+        "SYMBOL_SIDE_HEALTH_GUARD_MIN_EXPECTANCY_PCT",
+        float(getattr(settings, "SYMBOL_SIDE_HEALTH_GUARD_MIN_EXPECTANCY_PCT", 0.0)),
+    )
+
+    cutoff = dj_tz.now() - timedelta(hours=lookback_hours)
+    reset_at = _parse_symbol_health_reset_at(
+        get_runtime_override(
+            "SYMBOL_SIDE_HEALTH_GUARD_RESET_AT",
+            getattr(settings, "SYMBOL_SIDE_HEALTH_GUARD_RESET_AT", ""),
+        )
+    )
+    if reset_at is not None and reset_at > cutoff:
+        cutoff = reset_at
+
+    reports = list(
+        OperationReport.objects.filter(
+            instrument=inst,
+            side=side_txt,
+            closed_at__gte=cutoff,
+        )
+        .order_by("-closed_at")
+        .values_list("pnl_pct", flat=True)
+    )
+    sample_size = len(reports)
+    reset_suffix = f":reset={reset_at.isoformat()}" if reset_at is not None else ""
+    if sample_size < min_trades:
+        return True, f"insufficient_sample:{symbol}:{side_txt}:{sample_size}<{min_trades}{reset_suffix}"
+
+    pnls = [_to_float(pnl) for pnl in reports]
+    gross_win = sum(pnl for pnl in pnls if pnl > 0)
+    gross_loss = abs(sum(pnl for pnl in pnls if pnl < 0))
+    profit_factor = (
+        float("inf")
+        if gross_win > 0 and gross_loss <= 0
+        else (gross_win / gross_loss if gross_loss > 0 else 0.0)
+    )
+    expectancy_pct = sum(pnls) / sample_size if sample_size else 0.0
+    total_pct = sum(pnls)
+
+    if profit_factor < min_pf or expectancy_pct < min_expectancy_pct:
+        return False, (
+            f"symbol_side_health:{symbol}:{side_txt}:n={sample_size}:"
+            f"pf={profit_factor:.3f}:expect={expectancy_pct * 100:.3f}%:"
+            f"pnl={total_pct * 100:.3f}%{reset_suffix}"
+        )
+    return True, (
+        f"healthy_side:{symbol}:{side_txt}:n={sample_size}:"
+        f"pf={profit_factor:.3f}:expect={expectancy_pct * 100:.3f}%:"
+        f"pnl={total_pct * 100:.3f}%{reset_suffix}"
+    )
+
+
 def _dead_session_strong_trend_breakout_override(
     *,
     strategy_name: str,
@@ -6213,6 +6300,16 @@ def _attempt_entry_open(
             "Symbol health guard blocked entry on %s: reason=%s",
             inst.symbol,
             symbol_health_reason,
+        )
+        return 0, 0.0
+
+    symbol_side_health_ok, symbol_side_health_reason = _symbol_side_health_precheck(inst, side)
+    if not symbol_side_health_ok:
+        logger.info(
+            "Symbol side health guard blocked entry on %s %s: reason=%s",
+            inst.symbol,
+            side,
+            symbol_side_health_reason,
         )
         return 0, 0.0
 

@@ -53,6 +53,7 @@ from execution.tasks import (
     _ny_open_weak_long_precheck,
     _long_bias_short_precheck,
     _symbol_health_precheck,
+    _symbol_side_health_precheck,
     _weak_short_transition_precheck,
     _weak_long_bear_weak_precheck,
     _is_no_position_error,
@@ -1778,16 +1779,24 @@ class TaskHelpersTest(TestCase):
         self.assertTrue(ok)
         self.assertIn("countertrend_short_ok", reason)
 
-    def _create_symbol_health_report(self, inst, pnl_abs: float, minutes_ago: int):
+    def _create_symbol_health_report(
+        self,
+        inst,
+        pnl_abs: float,
+        minutes_ago: int,
+        *,
+        side: str = "buy",
+        pnl_pct: float | None = None,
+    ):
         now = dj_tz.now()
         return OperationReport.objects.create(
             instrument=inst,
-            side="buy",
+            side=side,
             qty=Decimal("1"),
             entry_price=Decimal("1"),
             exit_price=Decimal("1"),
             pnl_abs=Decimal(str(pnl_abs)),
-            pnl_pct=Decimal("0"),
+            pnl_pct=Decimal(str(pnl_pct if pnl_pct is not None else 0)),
             notional_usdt=Decimal("10"),
             fee_usdt=Decimal("0"),
             leverage=Decimal("1"),
@@ -1873,6 +1882,69 @@ class TaskHelpersTest(TestCase):
 
         self.assertTrue(ok)
         self.assertIn("healthy:DOGEUSDT", reason)
+
+    @override_settings(
+        SYMBOL_SIDE_HEALTH_GUARD_ENABLED=True,
+        SYMBOL_SIDE_HEALTH_GUARD_LOOKBACK_HOURS=48,
+        SYMBOL_SIDE_HEALTH_GUARD_MIN_TRADES=3,
+        SYMBOL_SIDE_HEALTH_GUARD_MIN_PROFIT_FACTOR=0.70,
+        SYMBOL_SIDE_HEALTH_GUARD_MIN_EXPECTANCY_PCT=0.0,
+        SYMBOL_SIDE_HEALTH_GUARD_EXEMPT_SYMBOLS=set(),
+        SYMBOL_SIDE_HEALTH_GUARD_RESET_AT="",
+    )
+    def test_symbol_side_health_precheck_blocks_only_losing_side(self):
+        inst = Instrument.objects.create(symbol="LINKUSDT", exchange="bingx", base="LINK", quote="USDT")
+        for idx, pnl_pct in enumerate([-0.006, -0.004, -0.003], start=1):
+            self._create_symbol_health_report(
+                inst,
+                pnl_abs=pnl_pct * 10,
+                pnl_pct=pnl_pct,
+                minutes_ago=idx,
+                side="sell",
+            )
+        for idx, pnl_pct in enumerate([0.004, 0.003, -0.001], start=10):
+            self._create_symbol_health_report(
+                inst,
+                pnl_abs=pnl_pct * 10,
+                pnl_pct=pnl_pct,
+                minutes_ago=idx,
+                side="buy",
+            )
+
+        sell_ok, sell_reason = _symbol_side_health_precheck(inst, "sell")
+        buy_ok, buy_reason = _symbol_side_health_precheck(inst, "buy")
+
+        self.assertFalse(sell_ok)
+        self.assertIn("symbol_side_health:LINKUSDT:sell", sell_reason)
+        self.assertTrue(buy_ok)
+        self.assertIn("healthy_side:LINKUSDT:buy", buy_reason)
+
+    def test_symbol_side_health_precheck_reset_at_ignores_older_side_losses(self):
+        inst = Instrument.objects.create(symbol="ETHUSDT", exchange="bingx", base="ETH", quote="USDT")
+        for idx, pnl_pct in enumerate([-0.006, -0.004, -0.003], start=30):
+            self._create_symbol_health_report(
+                inst,
+                pnl_abs=pnl_pct * 10,
+                pnl_pct=pnl_pct,
+                minutes_ago=idx,
+                side="sell",
+            )
+
+        reset_at = (dj_tz.now() - timedelta(minutes=10)).isoformat()
+        with override_settings(
+            SYMBOL_SIDE_HEALTH_GUARD_ENABLED=True,
+            SYMBOL_SIDE_HEALTH_GUARD_LOOKBACK_HOURS=48,
+            SYMBOL_SIDE_HEALTH_GUARD_MIN_TRADES=3,
+            SYMBOL_SIDE_HEALTH_GUARD_MIN_PROFIT_FACTOR=0.70,
+            SYMBOL_SIDE_HEALTH_GUARD_MIN_EXPECTANCY_PCT=0.0,
+            SYMBOL_SIDE_HEALTH_GUARD_EXEMPT_SYMBOLS=set(),
+            SYMBOL_SIDE_HEALTH_GUARD_RESET_AT=reset_at,
+        ):
+            ok, reason = _symbol_side_health_precheck(inst, "sell")
+
+        self.assertTrue(ok)
+        self.assertIn("insufficient_sample:ETHUSDT:sell:0<3", reason)
+        self.assertIn("reset=", reason)
 
     @override_settings(
         NY_OPEN_WEAK_LONG_BLOCK_ENABLED=True,
