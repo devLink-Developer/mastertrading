@@ -1789,6 +1789,14 @@ class TaskHelpersTest(TestCase):
         pnl_pct: float | None = None,
     ):
         now = dj_tz.now()
+        outcome = OperationReport.Outcome.BE
+        reason = "near_breakeven"
+        if pnl_abs > 0:
+            outcome = OperationReport.Outcome.WIN
+            reason = "tp"
+        elif pnl_abs < 0:
+            outcome = OperationReport.Outcome.LOSS
+            reason = "sl"
         return OperationReport.objects.create(
             instrument=inst,
             side=side,
@@ -1803,8 +1811,8 @@ class TaskHelpersTest(TestCase):
             mode="live",
             opened_at=now - timedelta(minutes=minutes_ago + 5),
             closed_at=now - timedelta(minutes=minutes_ago),
-            outcome=OperationReport.Outcome.WIN if pnl_abs > 0 else OperationReport.Outcome.LOSS,
-            reason="tp" if pnl_abs > 0 else "sl",
+            outcome=outcome,
+            reason=reason,
         )
 
     @override_settings(
@@ -1882,6 +1890,31 @@ class TaskHelpersTest(TestCase):
 
         self.assertTrue(ok)
         self.assertIn("healthy:DOGEUSDT", reason)
+
+    @override_settings(
+        SYMBOL_SIDE_HEALTH_GUARD_ENABLED=True,
+        SYMBOL_SIDE_HEALTH_GUARD_LOOKBACK_HOURS=48,
+        SYMBOL_SIDE_HEALTH_GUARD_MIN_TRADES=3,
+        SYMBOL_SIDE_HEALTH_GUARD_MIN_PROFIT_FACTOR=0.70,
+        SYMBOL_SIDE_HEALTH_GUARD_MIN_EXPECTANCY_PCT=0.0,
+        SYMBOL_SIDE_HEALTH_GUARD_EXEMPT_SYMBOLS=set(),
+        SYMBOL_SIDE_HEALTH_GUARD_RESET_AT="",
+    )
+    def test_symbol_side_health_precheck_allows_breakeven_side(self):
+        inst = Instrument.objects.create(symbol="XRPUSDT", exchange="bingx", base="XRP", quote="USDT")
+        for idx in range(1, 4):
+            self._create_symbol_health_report(
+                inst,
+                pnl_abs=0.0,
+                pnl_pct=0.0,
+                minutes_ago=idx,
+                side="sell",
+            )
+
+        ok, reason = _symbol_side_health_precheck(inst, "sell")
+
+        self.assertTrue(ok)
+        self.assertIn("healthy_side:XRPUSDT:sell", reason)
 
     @override_settings(
         SYMBOL_SIDE_HEALTH_GUARD_ENABLED=True,

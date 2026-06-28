@@ -103,6 +103,13 @@ def _to_float(val) -> float:
         return 0.0
 
 
+def _profit_factor_from_pnls(pnls: list[float]) -> tuple[float, float, float]:
+    gross_win = sum(pnl for pnl in pnls if pnl > 0)
+    gross_loss = abs(sum(pnl for pnl in pnls if pnl < 0))
+    profit_factor = float("inf") if gross_loss <= 0 else gross_win / gross_loss
+    return profit_factor, gross_win, gross_loss
+
+
 def _is_valid_equity_value(equity: float) -> bool:
     return math.isfinite(equity) and equity > 0
 
@@ -4964,13 +4971,7 @@ def _symbol_health_precheck(inst: Instrument) -> tuple[bool, str]:
         return True, f"insufficient_sample:{sample_size}<{min_trades}{reset_suffix}"
 
     pnls = [_to_float(pnl) for pnl in reports]
-    gross_win = sum(pnl for pnl in pnls if pnl > 0)
-    gross_loss = abs(sum(pnl for pnl in pnls if pnl < 0))
-    profit_factor = (
-        float("inf")
-        if gross_win > 0 and gross_loss <= 0
-        else (gross_win / gross_loss if gross_loss > 0 else 0.0)
-    )
+    profit_factor, _, _ = _profit_factor_from_pnls(pnls)
     expectancy = sum(pnls) / sample_size if sample_size else 0.0
     total_pnl = sum(pnls)
 
@@ -5049,13 +5050,7 @@ def _symbol_side_health_precheck(inst: Instrument, side: str) -> tuple[bool, str
         return True, f"insufficient_sample:{symbol}:{side_txt}:{sample_size}<{min_trades}{reset_suffix}"
 
     pnls = [_to_float(pnl) for pnl in reports]
-    gross_win = sum(pnl for pnl in pnls if pnl > 0)
-    gross_loss = abs(sum(pnl for pnl in pnls if pnl < 0))
-    profit_factor = (
-        float("inf")
-        if gross_win > 0 and gross_loss <= 0
-        else (gross_win / gross_loss if gross_loss > 0 else 0.0)
-    )
+    profit_factor, _, _ = _profit_factor_from_pnls(pnls)
     expectancy_pct = sum(pnls) / sample_size if sample_size else 0.0
     total_pct = sum(pnls)
 
@@ -5692,13 +5687,7 @@ def _symbol_heat_guard(symbol: str, side: str = "") -> tuple[float, str]:
     pnls = [_to_float(pnl) for pnl in recent]
     wins = sum(1 for pnl in pnls if pnl > 0)
     wr = wins / len(pnls)
-    gross_win = sum(pnl for pnl in pnls if pnl > 0)
-    gross_loss = abs(sum(pnl for pnl in pnls if pnl < 0))
-    profit_factor = (
-        float("inf")
-        if gross_win > 0 and gross_loss <= 0
-        else (gross_win / gross_loss if gross_loss > 0 else 0.0)
-    )
+    profit_factor, _, _ = _profit_factor_from_pnls(pnls)
     expectancy_pct = sum(pnls) / len(pnls) if pnls else 0.0
     risk_mult = 1.0
 
