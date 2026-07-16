@@ -881,6 +881,7 @@ class LiveGradualModuleSelectionTest(SimpleTestCase):
             FEATURE_KEYS["meanrev"]: True,
             FEATURE_KEYS["carry"]: True,
             FEATURE_KEYS["grid"]: True,
+            FEATURE_KEYS["smc"]: False,
             FEATURE_KEYS["allocator"]: True,
             FEATURE_KEYS["multi"]: True,
         }
@@ -899,6 +900,7 @@ class LiveGradualModuleSelectionTest(SimpleTestCase):
             FEATURE_KEYS["trend"]: True,
             FEATURE_KEYS["meanrev"]: True,
             FEATURE_KEYS["carry"]: True,
+            FEATURE_KEYS["smc"]: True,
             FEATURE_KEYS["allocator"]: True,
             FEATURE_KEYS["multi"]: True,
         }
@@ -917,6 +919,7 @@ class LiveGradualModuleSelectionTest(SimpleTestCase):
             FEATURE_KEYS["trend"]: True,
             FEATURE_KEYS["meanrev"]: True,
             FEATURE_KEYS["carry"]: True,
+            FEATURE_KEYS["smc"]: True,
             FEATURE_KEYS["allocator"]: True,
             FEATURE_KEYS["multi"]: True,
         }

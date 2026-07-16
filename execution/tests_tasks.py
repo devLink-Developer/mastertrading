@@ -54,6 +54,7 @@ from execution.tasks import (
     _long_bias_short_precheck,
     _symbol_health_precheck,
     _symbol_side_health_precheck,
+    _entry_quality_profile_precheck,
     _weak_short_transition_precheck,
     _weak_long_bear_weak_precheck,
     _is_no_position_error,
@@ -1978,6 +1979,100 @@ class TaskHelpersTest(TestCase):
         self.assertTrue(ok)
         self.assertIn("insufficient_sample:ETHUSDT:sell:0<3", reason)
         self.assertIn("reset=", reason)
+
+    @override_settings(
+        ENTRY_QUALITY_PROFILE_ENABLED=True,
+        ENTRY_QUALITY_PROFILE_ALLOWED_SYMBOLS={"linkusdt", "dogeusdt"},
+        ENTRY_QUALITY_PROFILE_ALLOWED_SESSIONS={"london"},
+        ENTRY_QUALITY_PROFILE_ALLOWED_MODULE_SETS={"carry+trend"},
+        ENTRY_QUALITY_PROFILE_MIN_NET_SCORE=0.22,
+    )
+    def test_entry_quality_profile_allows_exact_evidence_backed_profile(self):
+        inst = Instrument.objects.create(
+            symbol="LINKUSDT", exchange="bingx", base="LINK", quote="USDT"
+        )
+        ok, reason = _entry_quality_profile_precheck(
+            inst=inst,
+            strategy_name="alloc_short",
+            current_session="london",
+            sig_payload={
+                "net_score": -0.25,
+                "reasons": {
+                    "session": "london",
+                    "module_rows": [
+                        {"module": "trend", "direction": "short"},
+                        {"module": "carry", "direction": "short"},
+                    ],
+                },
+            },
+        )
+
+        self.assertTrue(ok)
+        self.assertIn("entry_quality_profile_ok:linkusdt:london:carry+trend", reason)
+
+    @override_settings(
+        ENTRY_QUALITY_PROFILE_ENABLED=True,
+        ENTRY_QUALITY_PROFILE_ALLOWED_SYMBOLS={"linkusdt", "dogeusdt"},
+        ENTRY_QUALITY_PROFILE_ALLOWED_SESSIONS={"london"},
+        ENTRY_QUALITY_PROFILE_ALLOWED_MODULE_SETS={"carry+trend"},
+        ENTRY_QUALITY_PROFILE_MIN_NET_SCORE=0.22,
+    )
+    def test_entry_quality_profile_blocks_context_module_and_score_drift(self):
+        inst = Instrument.objects.create(
+            symbol="XRPUSDT", exchange="bingx", base="XRP", quote="USDT"
+        )
+        payload = {
+            "net_score": -0.21,
+            "reasons": {
+                "session": "ny",
+                "module_rows": [
+                    {"module": "trend", "direction": "short"},
+                    {"module": "smc", "direction": "short"},
+                ],
+            },
+        }
+
+        ok, reason = _entry_quality_profile_precheck(
+            inst=inst,
+            strategy_name="alloc_short",
+            current_session="ny",
+            sig_payload=payload,
+        )
+        self.assertFalse(ok)
+        self.assertIn("entry_quality_profile_symbol:xrpusdt", reason)
+
+        inst.symbol = "LINKUSDT"
+        ok, reason = _entry_quality_profile_precheck(
+            inst=inst,
+            strategy_name="alloc_short",
+            current_session="ny",
+            sig_payload=payload,
+        )
+        self.assertFalse(ok)
+        self.assertIn("entry_quality_profile_session:ny", reason)
+
+        payload["reasons"]["session"] = "london"
+        ok, reason = _entry_quality_profile_precheck(
+            inst=inst,
+            strategy_name="alloc_short",
+            current_session="london",
+            sig_payload=payload,
+        )
+        self.assertFalse(ok)
+        self.assertIn("entry_quality_profile_modules:smc+trend", reason)
+
+        payload["reasons"]["module_rows"] = [
+            {"module": "carry", "direction": "short"},
+            {"module": "trend", "direction": "short"},
+        ]
+        ok, reason = _entry_quality_profile_precheck(
+            inst=inst,
+            strategy_name="alloc_short",
+            current_session="london",
+            sig_payload=payload,
+        )
+        self.assertFalse(ok)
+        self.assertIn("entry_quality_profile_score:0.2100<0.2200", reason)
 
     @override_settings(
         NY_OPEN_WEAK_LONG_BLOCK_ENABLED=True,

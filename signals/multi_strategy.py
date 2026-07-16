@@ -203,7 +203,7 @@ def _active_modules(flags: dict[str, bool]) -> list[str]:
         modules.append("carry")
     if flags.get(FEATURE_KEYS["grid"], False):
         modules.append("grid")
-    if bool(getattr(settings, "ALLOCATOR_INCLUDE_SMC", False)):
+    if flags.get(FEATURE_KEYS["smc"], False):
         modules.append("smc")
     if bool(getattr(settings, "LIVE_GRADUAL_ENABLED", True)):
         cap = max(1, int(getattr(settings, "LIVE_GRADUAL_MAX_MODULES", len(modules))))

@@ -5067,6 +5067,91 @@ def _symbol_side_health_precheck(inst: Instrument, side: str) -> tuple[bool, str
     )
 
 
+def _entry_quality_profile_precheck(
+    *,
+    inst: Instrument,
+    strategy_name: str,
+    current_session: str,
+    sig_payload: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    """Fail-closed allowlist for a deliberately narrow, evidence-backed live profile."""
+    if not get_runtime_bool(
+        "ENTRY_QUALITY_PROFILE_ENABLED",
+        bool(getattr(settings, "ENTRY_QUALITY_PROFILE_ENABLED", False)),
+    ):
+        return True, "disabled"
+
+    symbol = str(getattr(inst, "symbol", "") or "").strip().lower()
+    allowed_symbols = get_runtime_str_list(
+        "ENTRY_QUALITY_PROFILE_ALLOWED_SYMBOLS",
+        getattr(settings, "ENTRY_QUALITY_PROFILE_ALLOWED_SYMBOLS", set()),
+    )
+    if not allowed_symbols:
+        return False, "entry_quality_profile_config_missing:allowed_symbols"
+    if symbol not in allowed_symbols:
+        return False, f"entry_quality_profile_symbol:{symbol or 'unknown'}"
+
+    payload = sig_payload if isinstance(sig_payload, dict) else {}
+    reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
+    signal_session = str(reasons.get("session") or current_session or "").strip().lower()
+    allowed_sessions = get_runtime_str_list(
+        "ENTRY_QUALITY_PROFILE_ALLOWED_SESSIONS",
+        getattr(settings, "ENTRY_QUALITY_PROFILE_ALLOWED_SESSIONS", set()),
+    )
+    if not allowed_sessions:
+        return False, "entry_quality_profile_config_missing:allowed_sessions"
+    if signal_session not in allowed_sessions:
+        return False, f"entry_quality_profile_session:{signal_session or 'unknown'}"
+
+    def _normalize_module_set(value: str) -> str:
+        parts = {
+            part.strip().lower()
+            for part in re.split(r"[+|]", str(value or ""))
+            if part.strip()
+        }
+        return "+".join(sorted(parts))
+
+    allowed_module_sets = {
+        normalized
+        for normalized in (
+            _normalize_module_set(value)
+            for value in get_runtime_str_list(
+                "ENTRY_QUALITY_PROFILE_ALLOWED_MODULE_SETS",
+                getattr(settings, "ENTRY_QUALITY_PROFILE_ALLOWED_MODULE_SETS", set()),
+            )
+        )
+        if normalized
+    }
+    if not allowed_module_sets:
+        return False, "entry_quality_profile_config_missing:allowed_module_sets"
+    actual_module_set = _normalize_module_set(
+        "+".join(_signal_active_modules(payload, strategy_name))
+    )
+    if actual_module_set not in allowed_module_sets:
+        return False, f"entry_quality_profile_modules:{actual_module_set or 'none'}"
+
+    min_net_score = get_runtime_float(
+        "ENTRY_QUALITY_PROFILE_MIN_NET_SCORE",
+        float(getattr(settings, "ENTRY_QUALITY_PROFILE_MIN_NET_SCORE", 0.0) or 0.0),
+        minimum=0.0,
+    )
+    net_score = abs(
+        _to_float(
+            payload.get(
+                "net_score",
+                reasons.get("net_score", payload.get("raw_score", payload.get("confidence", 0.0))),
+            )
+        )
+    )
+    if net_score < min_net_score:
+        return False, f"entry_quality_profile_score:{net_score:.4f}<{min_net_score:.4f}"
+
+    return True, (
+        f"entry_quality_profile_ok:{symbol}:{signal_session}:"
+        f"{actual_module_set}:score={net_score:.4f}"
+    )
+
+
 def _dead_session_strong_trend_breakout_override(
     *,
     strategy_name: str,
@@ -6280,6 +6365,21 @@ def _attempt_entry_open(
             inst.symbol,
             btc_recommended_bias,
             long_bias_short_reason,
+        )
+        return 0, 0.0
+
+    entry_quality_ok, entry_quality_reason = _entry_quality_profile_precheck(
+        inst=inst,
+        strategy_name=strategy_name,
+        current_session=current_session,
+        sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+    )
+    if not entry_quality_ok:
+        logger.info(
+            "Entry quality profile blocked entry on %s %s: reason=%s",
+            inst.symbol,
+            side,
+            entry_quality_reason,
         )
         return 0, 0.0
 

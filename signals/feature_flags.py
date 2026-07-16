@@ -15,6 +15,7 @@ FEATURE_KEYS = {
     "carry": "feature_mod_carry",
     "grid": "feature_mod_grid",
     "microvol": "feature_mod_microvol",
+    "smc": "feature_mod_smc",
     "allocator": "feature_allocator",
 }
 
@@ -27,6 +28,7 @@ def feature_flag_defaults() -> dict[str, bool]:
         FEATURE_KEYS["carry"]: bool(getattr(settings, "MODULE_CARRY_ENABLED", True)),
         FEATURE_KEYS["grid"]: bool(getattr(settings, "MODULE_GRID_ENABLED", False)),
         FEATURE_KEYS["microvol"]: bool(getattr(settings, "MODULE_MICROVOL_ENABLED", False)),
+        FEATURE_KEYS["smc"]: bool(getattr(settings, "ALLOCATOR_INCLUDE_SMC", False)),
         FEATURE_KEYS["allocator"]: bool(getattr(settings, "ALLOCATOR_ENABLED", True)),
     }
 
