@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from html import escape
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,8 @@ def _build_performance_report(window_minutes: int) -> str:
     service = str(runtime.get("service") or "unknown").upper()
     env = "DEMO" if bool(runtime.get("sandbox")) else "LIVE"
     asset = str(runtime.get("primary_asset") or "USDT")
+    account_alias = str(runtime.get("account_alias") or "cuenta").strip()
+    account_label = escape(account_alias.replace("_", " ").title())
 
     signals_qs = Signal.objects.filter(ts__gte=since)
     alloc_long = int(signals_qs.filter(strategy="alloc_long").count())
@@ -134,7 +137,7 @@ def _build_performance_report(window_minutes: int) -> str:
     pnl_abs = _to_float(ops_qs.aggregate(total=Sum("pnl_abs")).get("total"))
     win_rate = (wins / (wins + losses) * 100.0) if (wins + losses) > 0 else 0.0
 
-    open_positions_qs = Position.objects.filter(is_open=True)
+    open_positions_qs = Position.objects.filter(is_open=True).select_related("instrument")
     open_positions = int(open_positions_qs.count())
     unrealized = _to_float(open_positions_qs.aggregate(total=Sum("unrealized_pnl")).get("total"))
 
@@ -143,28 +146,79 @@ def _build_performance_report(window_minutes: int) -> str:
     free = _to_float(getattr(snap, "free_usdt", 0.0))
     lev = _to_float(getattr(snap, "eff_leverage", 0.0))
 
-    pnl_icon = "\U0001F7E2" if pnl_abs >= 0 else "\U0001F534"
-    unrealized_icon = "\U0001F7E2" if unrealized >= 0 else "\U0001F534"
+    baseline = (
+        BalanceSnapshot.objects.filter(created_at__lte=since)
+        .order_by("-created_at")
+        .first()
+    )
+    if baseline is None:
+        baseline = (
+            BalanceSnapshot.objects.filter(created_at__gte=since)
+            .order_by("created_at")
+            .first()
+        )
+    baseline_equity = _to_float(getattr(baseline, "equity_usdt", equity))
+    equity_change = equity - baseline_equity
+    equity_change_pct = (equity_change / baseline_equity * 100.0) if baseline_equity > 0 else 0.0
+
+    def _pnl_icon(value: float) -> str:
+        if value > 0:
+            return "\U0001F7E2"
+        if value < 0:
+            return "\U0001F534"
+        return "\u26AA"
+
+    position_lines: list[str] = []
+    for position in open_positions_qs.order_by("instrument__symbol")[:5]:
+        symbol = escape(str(position.instrument.symbol or ""))
+        side_label = "LONG" if str(position.side).lower() == Position.Side.LONG else "SHORT"
+        pos_pnl = _to_float(position.unrealized_pnl)
+        pos_pnl_pct = _to_float(position.pnl_pct) * 100.0
+        position_lines.append(
+            f"\u2022 {symbol} \u00B7 {side_label} \u00B7 "
+            f"{_pnl_icon(pos_pnl)} {pos_pnl:+.4f} {asset} ({pos_pnl_pct:+.2f}%)"
+        )
+    if open_positions > len(position_lines):
+        position_lines.append(f"\u2022 y {open_positions - len(position_lines)} posici\u00F3n(es) m\u00E1s")
+    if not position_lines:
+        position_lines.append("Sin posiciones abiertas.")
+
+    win_rate_text = f"{win_rate:.1f}%" if (wins + losses) > 0 else "\u2014"
 
     lines = [
-        f"\U0001F4CA <b>Reporte {window_minutes}m</b>",
-        f"<b>Env:</b> {service} {env}",
-        f"<b>Ventana:</b> {window_minutes}m",
+        f"\U0001F4CA <b>Resumen {account_label} \u00B7 \u00FAltimos {window_minutes} min</b>",
+        f"{service} {env} \u00B7 {now.strftime('%Y-%m-%d %H:%M')} UTC",
         "",
-        "<b>Senales</b>",
+        "\U0001F4B0 <b>Cuenta</b>",
+        f"Equity: <b>{equity:.2f} {asset}</b>",
+        f"Disponible: {free:.2f} {asset} \u00B7 Exposici\u00F3n: {lev:.2f}x",
         (
-            f"mod trend={mod_trend} | meanrev={mod_meanrev} | carry={mod_carry} | grid={mod_grid} | smc={smc}\n"
-            f"alloc long={alloc_long} short={alloc_short} flat={alloc_flat}"
+            f"{_pnl_icon(equity_change)} Variaci\u00F3n de equity: "
+            f"{equity_change:+.4f} {asset} ({equity_change_pct:+.2f}%)"
         ),
         "",
-        "<b>Ejecucion</b>",
-        f"orders filled={orders_filled} rejected={orders_rejected}",
-        f"ops cerradas={ops_count} ({wins}W/{losses}L/{be}BE) WR={win_rate:.1f}%",
-        f"{pnl_icon} pnl cerrada={pnl_abs:+.4f} {asset}",
-        f"{unrealized_icon} pnl abierta={unrealized:+.4f} {asset} | open_pos={open_positions}",
+        "\U0001F4C8 <b>Resultado</b>",
+        f"{_pnl_icon(pnl_abs)} Cerrado: {pnl_abs:+.4f} {asset}",
+        f"{_pnl_icon(unrealized)} Abierto: {unrealized:+.4f} {asset}",
+        (
+            f"Operaciones cerradas: {ops_count} "
+            f"({wins} ganadas \u00B7 {losses} perdidas \u00B7 {be} neutras)"
+        ),
+        f"Acierto: {win_rate_text}",
         "",
-        f"<b>Cuenta:</b> equity={equity:.2f} {asset} | free={free:.2f} {asset} | lev={lev:.2f}x",
-        f"<b>Hora:</b> {now.strftime('%Y-%m-%d %H:%M:%S')} UTC",
+        f"\U0001F4CD <b>Posiciones abiertas ({open_positions})</b>",
+        *position_lines,
+        "",
+        "\u2699\uFE0F <b>Actividad</b>",
+        f"\u00D3rdenes: {orders_filled} ejecutadas \u00B7 {orders_rejected} rechazadas",
+        (
+            f"Decisiones: {alloc_long} compra \u00B7 {alloc_short} venta \u00B7 "
+            f"{alloc_flat} sin entrada"
+        ),
+        (
+            f"Motores: Tendencia {mod_trend} \u00B7 Reversi\u00F3n {mod_meanrev} \u00B7 "
+            f"Carry {mod_carry} \u00B7 Grid {mod_grid} \u00B7 SMC {smc}"
+        ),
     ]
     return "\n".join(lines)
 
