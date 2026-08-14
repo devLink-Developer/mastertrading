@@ -10,6 +10,20 @@ services:
       - .env.eudy
     environment:
       USE_SQLITE: "false"
+      # Eudy-only recovery overlay. The base/Ricardo compose is intentionally unchanged.
+      EUDY_RECOVERY_ENABLED: "true"
+      EUDY_RECOVERY_ACCOUNT_ALIASES: "eudy"
+      EUDY_RECOVERY_BYPASS_STATIC_PROFILE: "true"
+      EUDY_EDGE_GUARD_LOOKBACK_DAYS: "120"
+      EUDY_EDGE_GUARD_MAX_TRADES: "60"
+      EUDY_EDGE_GUARD_MIN_TRADES: "12"
+      EUDY_EDGE_GUARD_MIN_PROFIT_FACTOR: "1.15"
+      EUDY_EDGE_GUARD_MIN_EXPECTANCY_PCT: "0.0"
+      EUDY_EDGE_GUARD_EXPLORATION_RISK_MULT: "0.50"
+      EUDY_EDGE_GUARD_RESET_AT: "2026-04-30T00:00:00Z"
+      EUDY_RECOVERY_FLAT_TIMEOUT_ENABLED: "true"
+      EUDY_RECOVERY_FLAT_TIMEOUT_MINUTES: "120"
+      EUDY_RECOVERY_FLAT_EARLY_EXIT_ENABLED: "false"
     depends_on:
       postgres:
         condition: service_healthy
@@ -26,6 +40,19 @@ services:
       - .env.eudy
     environment:
       USE_SQLITE: "false"
+      EUDY_RECOVERY_ENABLED: "true"
+      EUDY_RECOVERY_ACCOUNT_ALIASES: "eudy"
+      EUDY_RECOVERY_BYPASS_STATIC_PROFILE: "true"
+      EUDY_EDGE_GUARD_LOOKBACK_DAYS: "120"
+      EUDY_EDGE_GUARD_MAX_TRADES: "60"
+      EUDY_EDGE_GUARD_MIN_TRADES: "12"
+      EUDY_EDGE_GUARD_MIN_PROFIT_FACTOR: "1.15"
+      EUDY_EDGE_GUARD_MIN_EXPECTANCY_PCT: "0.0"
+      EUDY_EDGE_GUARD_EXPLORATION_RISK_MULT: "0.50"
+      EUDY_EDGE_GUARD_RESET_AT: "2026-04-30T00:00:00Z"
+      EUDY_RECOVERY_FLAT_TIMEOUT_ENABLED: "true"
+      EUDY_RECOVERY_FLAT_TIMEOUT_MINUTES: "120"
+      EUDY_RECOVERY_FLAT_EARLY_EXIT_ENABLED: "false"
     depends_on:
       postgres:
         condition: service_healthy

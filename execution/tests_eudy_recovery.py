@@ -1,0 +1,197 @@
+from decimal import Decimal
+from unittest.mock import patch
+
+from django.test import TestCase, override_settings
+from django.utils import timezone as dj_tz
+
+from core.models import Instrument
+from execution.eudy_recovery import (
+    classify_eudy_edge_sample,
+    evaluate_eudy_edge_guard,
+)
+from execution.models import OperationReport
+from execution.tasks import _entry_quality_profile_precheck, _flat_signal_policy
+
+
+class EudyRecoveryClassifierTests(TestCase):
+    def test_insufficient_sample_explores_at_reduced_risk(self):
+        decision = classify_eudy_edge_sample(
+            [0.002, -0.001],
+            min_trades=3,
+            min_profit_factor=1.15,
+            min_expectancy_pct=0.0,
+            exploration_risk_mult=0.5,
+            context="transition_sell",
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.status, "explore")
+        self.assertEqual(decision.risk_mult, 0.5)
+
+    def test_positive_net_sample_restores_normal_risk(self):
+        decision = classify_eudy_edge_sample(
+            [0.006, 0.004, -0.002, 0.003],
+            min_trades=4,
+            min_profit_factor=1.15,
+            min_expectancy_pct=0.0,
+            exploration_risk_mult=0.5,
+            context="transition_sell",
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.status, "validated")
+        self.assertEqual(decision.risk_mult, 1.0)
+        self.assertGreater(decision.profit_factor, 1.15)
+
+    def test_negative_net_sample_is_blocked(self):
+        decision = classify_eudy_edge_sample(
+            [0.002, -0.004, -0.003, 0.001],
+            min_trades=4,
+            min_profit_factor=1.15,
+            min_expectancy_pct=0.0,
+            exploration_risk_mult=0.5,
+            context="bear_buy",
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.status, "blocked")
+        self.assertEqual(decision.risk_mult, 0.0)
+
+
+@override_settings(
+    MODE="live",
+    EUDY_RECOVERY_ENABLED=True,
+    EUDY_RECOVERY_ACCOUNT_ALIASES={"eudy"},
+    EUDY_RECOVERY_BYPASS_STATIC_PROFILE=True,
+    EUDY_EDGE_GUARD_LOOKBACK_DAYS=120,
+    EUDY_EDGE_GUARD_MAX_TRADES=60,
+    EUDY_EDGE_GUARD_MIN_TRADES=3,
+    EUDY_EDGE_GUARD_MIN_PROFIT_FACTOR=1.15,
+    EUDY_EDGE_GUARD_MIN_EXPECTANCY_PCT=0.0,
+    EUDY_EDGE_GUARD_EXPLORATION_RISK_MULT=0.5,
+    EUDY_EDGE_GUARD_RESET_AT="",
+)
+class EudyRecoveryIntegrationTests(TestCase):
+    def setUp(self):
+        self.inst = Instrument.objects.create(
+            symbol="LINKUSDT",
+            exchange="bingx",
+            base="LINK",
+            quote="USDT",
+        )
+
+    def _report(
+        self,
+        pnl_pct: float,
+        *,
+        daily_regime: str = "transition",
+        lead: str = "transition",
+        bias: str = "balanced",
+        side: str = "sell",
+    ) -> None:
+        pnl_abs = Decimal(str(pnl_pct * 100.0))
+        OperationReport.objects.create(
+            instrument=self.inst,
+            side=side,
+            qty=Decimal("1"),
+            entry_price=Decimal("100"),
+            exit_price=Decimal("100"),
+            pnl_abs=pnl_abs,
+            pnl_pct=Decimal(str(pnl_pct)),
+            outcome=(
+                OperationReport.Outcome.WIN
+                if pnl_pct > 0
+                else OperationReport.Outcome.LOSS
+            ),
+            reason="tp" if pnl_pct > 0 else "sl",
+            mode="live",
+            daily_regime=daily_regime,
+            btc_lead_state=lead,
+            recommended_bias=bias,
+            closed_at=dj_tz.now(),
+        )
+
+    def test_guard_uses_exact_regime_bias_and_side_cohort(self):
+        self._report(0.006)
+        self._report(0.004)
+        self._report(-0.002)
+        # This large loss belongs to another cohort and must not contaminate it.
+        self._report(-0.50, daily_regime="bear_confirmed")
+
+        decision = evaluate_eudy_edge_guard(
+            account_alias="eudy",
+            side="sell",
+            daily_regime="transition",
+            btc_lead_state="transition",
+            recommended_bias="balanced",
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.status, "validated")
+        self.assertEqual(decision.sample_size, 3)
+
+    def test_non_eudy_account_is_always_bypassed(self):
+        decision = evaluate_eudy_edge_guard(
+            account_alias="rortigoza",
+            side="buy",
+            daily_regime="bear_confirmed",
+            btc_lead_state="bear_confirmed",
+            recommended_bias="short_bias",
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.status, "bypass")
+        self.assertEqual(decision.risk_mult, 1.0)
+
+    @override_settings(
+        FLAT_SIGNAL_TIMEOUT_ENABLED=True,
+        FLAT_SIGNAL_TIMEOUT_MINUTES=10,
+        FLAT_SIGNAL_EARLY_EXIT_ENABLED=True,
+        EUDY_RECOVERY_FLAT_TIMEOUT_ENABLED=True,
+        EUDY_RECOVERY_FLAT_TIMEOUT_MINUTES=120,
+        EUDY_RECOVERY_FLAT_EARLY_EXIT_ENABLED=False,
+    )
+    def test_flat_policy_is_extended_only_for_eudy(self):
+        with (
+            patch(
+                "execution.tasks.get_runtime_bool",
+                side_effect=lambda _key, fallback: fallback,
+            ),
+            patch(
+                "execution.tasks.get_runtime_float",
+                side_effect=lambda _key, fallback, **_kwargs: fallback,
+            ),
+        ):
+            self.assertEqual(_flat_signal_policy("eudy"), (True, 120.0, False))
+            self.assertEqual(_flat_signal_policy("rortigoza"), (True, 10.0, True))
+
+    @override_settings(
+        ENTRY_QUALITY_PROFILE_ENABLED=True,
+        ENTRY_QUALITY_PROFILE_ALLOWED_SYMBOLS=set(),
+        ENTRY_QUALITY_PROFILE_ALLOWED_SESSIONS=set(),
+        ENTRY_QUALITY_PROFILE_ALLOWED_MODULE_SETS=set(),
+    )
+    def test_eudy_bypasses_stale_static_entry_profile_only(self):
+        with patch(
+            "execution.tasks.get_runtime_bool",
+            side_effect=lambda _key, fallback: fallback,
+        ):
+            eudy_ok, eudy_reason = _entry_quality_profile_precheck(
+                inst=self.inst,
+                strategy_name="alloc_short",
+                current_session="london",
+                sig_payload={},
+                account_alias="eudy",
+            )
+            ricardo_ok, ricardo_reason = _entry_quality_profile_precheck(
+                inst=self.inst,
+                strategy_name="alloc_short",
+                current_session="london",
+                sig_payload={},
+                account_alias="rortigoza",
+            )
+
+        self.assertTrue(eudy_ok)
+        self.assertEqual(eudy_reason, "eudy_recovery_bypass_static_profile")
+        self.assertFalse(ricardo_ok)
+        self.assertIn("config_missing:allowed_symbols", ricardo_reason)

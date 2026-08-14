@@ -70,6 +70,10 @@ from risk.notifications import (
 from execution.ml_entry_filter import load_model, predict_entry_success_probability
 from execution.ai_entry_gate import evaluate_ai_entry_gate
 from execution.ai_exit_gate import evaluate_ai_exit_gate
+from execution.eudy_recovery import (
+    evaluate_eudy_edge_guard,
+    is_eudy_recovery_account,
+)
 from execution.risk_policy import (
     max_daily_trades_for_adx as _shared_max_daily_trades_for_adx,
     volatility_adjusted_risk as _shared_volatility_adjusted_risk,
@@ -5073,8 +5077,18 @@ def _entry_quality_profile_precheck(
     strategy_name: str,
     current_session: str,
     sig_payload: dict[str, Any] | None,
+    account_alias: str = "",
 ) -> tuple[bool, str]:
     """Fail-closed allowlist for a deliberately narrow, evidence-backed live profile."""
+    if (
+        is_eudy_recovery_account(account_alias)
+        and get_runtime_bool(
+            "EUDY_RECOVERY_BYPASS_STATIC_PROFILE",
+            bool(getattr(settings, "EUDY_RECOVERY_BYPASS_STATIC_PROFILE", False)),
+        )
+    ):
+        return True, "eudy_recovery_bypass_static_profile"
+
     if not get_runtime_bool(
         "ENTRY_QUALITY_PROFILE_ENABLED",
         bool(getattr(settings, "ENTRY_QUALITY_PROFILE_ENABLED", False)),
@@ -5444,6 +5458,37 @@ def _cross_symbol_correlation_guard(
 
 def _flat_signal_since_key(symbol: str) -> str:
     return f"flat_signal_since:{symbol}"
+
+
+def _flat_signal_policy(account_alias: str) -> tuple[bool, float, bool]:
+    """Return (timeout_enabled, timeout_minutes, early_exit_enabled)."""
+    enabled = bool(getattr(settings, "FLAT_SIGNAL_TIMEOUT_ENABLED", True))
+    timeout_minutes = max(
+        1.0,
+        float(getattr(settings, "FLAT_SIGNAL_TIMEOUT_MINUTES", 10)),
+    )
+    early_exit_enabled = get_runtime_bool(
+        "FLAT_SIGNAL_EARLY_EXIT_ENABLED",
+        bool(getattr(settings, "FLAT_SIGNAL_EARLY_EXIT_ENABLED", True)),
+    )
+    if not is_eudy_recovery_account(account_alias):
+        return enabled, timeout_minutes, early_exit_enabled
+
+    return (
+        get_runtime_bool(
+            "EUDY_RECOVERY_FLAT_TIMEOUT_ENABLED",
+            bool(getattr(settings, "EUDY_RECOVERY_FLAT_TIMEOUT_ENABLED", True)),
+        ),
+        get_runtime_float(
+            "EUDY_RECOVERY_FLAT_TIMEOUT_MINUTES",
+            float(getattr(settings, "EUDY_RECOVERY_FLAT_TIMEOUT_MINUTES", 120.0)),
+            minimum=1.0,
+        ),
+        get_runtime_bool(
+            "EUDY_RECOVERY_FLAT_EARLY_EXIT_ENABLED",
+            bool(getattr(settings, "EUDY_RECOVERY_FLAT_EARLY_EXIT_ENABLED", False)),
+        ),
+    )
 
 
 def _track_flat_signal(symbol: str) -> float:
@@ -6373,6 +6418,7 @@ def _attempt_entry_open(
         strategy_name=strategy_name,
         current_session=current_session,
         sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+        account_alias=account_alias,
     )
     if not entry_quality_ok:
         logger.info(
@@ -6382,6 +6428,31 @@ def _attempt_entry_open(
             entry_quality_reason,
         )
         return 0, 0.0
+
+    eudy_edge = evaluate_eudy_edge_guard(
+        account_alias=account_alias,
+        side=side,
+        daily_regime=str(mtf_symbol_snapshot.get("daily_regime", "") or ""),
+        btc_lead_state=btc_lead_state,
+        recommended_bias=btc_recommended_bias,
+    )
+    if not eudy_edge.allowed:
+        logger.info(
+            "Eudy edge guard blocked entry on %s %s: %s",
+            inst.symbol,
+            side,
+            eudy_edge.reason,
+        )
+        return 0, 0.0
+    if eudy_edge.risk_mult < 1.0:
+        logger.info(
+            "Eudy edge guard reduced risk on %s %s: mult=%.2f status=%s reason=%s",
+            inst.symbol,
+            side,
+            eudy_edge.risk_mult,
+            eudy_edge.status,
+            eudy_edge.reason,
+        )
 
     symbol_health_ok, symbol_health_reason = _symbol_health_precheck(inst)
     if not symbol_health_ok:
@@ -6836,6 +6907,8 @@ def _attempt_entry_open(
             min(float(getattr(settings, "PYRAMID_RISK_SCALE", 0.6) or 0.6), 1.0),
         )
         effective_risk_pct *= pyramid_risk_scale
+    if eudy_edge.risk_mult < 1.0:
+        effective_risk_pct *= max(0.0, min(float(eudy_edge.risk_mult), 1.0))
     if effective_risk_pct <= 0:
         return 0, 0.0
 
@@ -8261,8 +8334,9 @@ def _manage_open_position(
 
     if signal_direction == "flat":
         # -- Flat-signal timeout: close position if flat persists too long --
-        flat_timeout_enabled = bool(getattr(settings, "FLAT_SIGNAL_TIMEOUT_ENABLED", True))
-        flat_timeout_minutes = max(1.0, float(getattr(settings, "FLAT_SIGNAL_TIMEOUT_MINUTES", 10)))
+        flat_timeout_enabled, flat_timeout_minutes, flat_early_exit_enabled = _flat_signal_policy(
+            account_alias
+        )
         if flat_timeout_enabled and last and entry_price and abs(current_qty) > 0:
             flat_seconds = _track_flat_signal(symbol)
             flat_minutes = flat_seconds / 60.0
@@ -8272,12 +8346,17 @@ def _manage_open_position(
             pnl_flat = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
             pnl_abs_flat = (last - entry_price) * close_qty * contract_size * (1 if current_qty > 0 else -1)
             _, max_fav_pct, sl_ref_pct = _position_mfe_state(symbol, pos_opened_at, entry_price)
-            early_exit_close, early_exit_reason, early_mfe_r = _flat_signal_early_exit_decision(
-                pnl_flat,
-                flat_minutes,
-                max_fav_pct,
-                sl_ref_pct,
-            )
+            if flat_early_exit_enabled:
+                early_exit_close, early_exit_reason, early_mfe_r = _flat_signal_early_exit_decision(
+                    pnl_flat,
+                    flat_minutes,
+                    max_fav_pct,
+                    sl_ref_pct,
+                )
+            else:
+                early_exit_close = False
+                early_exit_reason = "account_early_exit_disabled"
+                early_mfe_r = (max_fav_pct / sl_ref_pct) if sl_ref_pct > 0 else 0.0
             close_reason_detail = early_exit_reason
             flat_close_sub_reason = ""
             pnl_flat_net, fee_pct_estimate = _tp_sl_gate_pnl_pct(pnl_flat)

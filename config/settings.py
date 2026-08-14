@@ -1037,6 +1037,49 @@ ENTRY_QUALITY_PROFILE_MIN_NET_SCORE = max(
     float(os.getenv("ENTRY_QUALITY_PROFILE_MIN_NET_SCORE", "0.0")),
 )
 
+# Eudy-only recovery overlay. It stays inert on every other account and stack.
+EUDY_RECOVERY_ENABLED = os.getenv("EUDY_RECOVERY_ENABLED", "false").lower() == "true"
+EUDY_RECOVERY_ACCOUNT_ALIASES = _parse_lower_set(
+    os.getenv("EUDY_RECOVERY_ACCOUNT_ALIASES", "eudy")
+)
+EUDY_RECOVERY_BYPASS_STATIC_PROFILE = os.getenv(
+    "EUDY_RECOVERY_BYPASS_STATIC_PROFILE", "false"
+).lower() == "true"
+EUDY_EDGE_GUARD_LOOKBACK_DAYS = max(
+    1,
+    int(os.getenv("EUDY_EDGE_GUARD_LOOKBACK_DAYS", "120")),
+)
+EUDY_EDGE_GUARD_MAX_TRADES = max(
+    1,
+    int(os.getenv("EUDY_EDGE_GUARD_MAX_TRADES", "60")),
+)
+EUDY_EDGE_GUARD_MIN_TRADES = max(
+    1,
+    int(os.getenv("EUDY_EDGE_GUARD_MIN_TRADES", "12")),
+)
+EUDY_EDGE_GUARD_MIN_PROFIT_FACTOR = max(
+    0.0,
+    float(os.getenv("EUDY_EDGE_GUARD_MIN_PROFIT_FACTOR", "1.15")),
+)
+EUDY_EDGE_GUARD_MIN_EXPECTANCY_PCT = float(
+    os.getenv("EUDY_EDGE_GUARD_MIN_EXPECTANCY_PCT", "0.0")
+)
+EUDY_EDGE_GUARD_EXPLORATION_RISK_MULT = max(
+    0.0,
+    min(1.0, float(os.getenv("EUDY_EDGE_GUARD_EXPLORATION_RISK_MULT", "0.50"))),
+)
+EUDY_EDGE_GUARD_RESET_AT = os.getenv("EUDY_EDGE_GUARD_RESET_AT", "").strip()
+EUDY_RECOVERY_FLAT_TIMEOUT_ENABLED = os.getenv(
+    "EUDY_RECOVERY_FLAT_TIMEOUT_ENABLED", "true"
+).lower() == "true"
+EUDY_RECOVERY_FLAT_TIMEOUT_MINUTES = max(
+    1.0,
+    float(os.getenv("EUDY_RECOVERY_FLAT_TIMEOUT_MINUTES", "120")),
+)
+EUDY_RECOVERY_FLAT_EARLY_EXIT_ENABLED = os.getenv(
+    "EUDY_RECOVERY_FLAT_EARLY_EXIT_ENABLED", "false"
+).lower() == "true"
+
 
 WEEKDAY_CONTEXT_ENABLED = os.getenv("WEEKDAY_CONTEXT_ENABLED", "true").lower() == "true"
 ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS = _parse_session_set(
