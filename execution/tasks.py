@@ -71,6 +71,7 @@ from execution.ml_entry_filter import load_model, predict_entry_success_probabil
 from execution.ai_entry_gate import evaluate_ai_entry_gate
 from execution.ai_exit_gate import evaluate_ai_exit_gate
 from execution.eudy_recovery import (
+    eudy_exploration_risk_integrity_allows,
     evaluate_eudy_edge_guard,
     is_eudy_recovery_account,
 )
@@ -7076,6 +7077,35 @@ def _attempt_entry_open(
         if actual_stop_risk_amount > 0 and target_risk_amount > 0
         else 0.0
     )
+    exploration_risk_ok, exploration_risk_reason = eudy_exploration_risk_integrity_allows(
+        account_alias=account_alias,
+        edge_status=eudy_edge.status,
+        actual_risk_mult=actual_risk_mult,
+    )
+    if not exploration_risk_ok:
+        _record_min_qty_risk_guard_event(
+            inst,
+            qty=qty,
+            risk_qty=risk_qty,
+            min_qty=min_qty,
+            actual_risk_amount=actual_stop_risk_amount,
+            target_risk_amount=target_risk_amount,
+            risk_multiplier=actual_risk_mult,
+            stop_distance_pct=stop_dist,
+        )
+        logger.info(
+            "Eudy exploration risk integrity blocked %s %s: qty=%.10f risk_qty=%.10f "
+            "min_qty=%.10f risk_actual=%.5f risk_target=%.5f %s",
+            symbol,
+            side,
+            qty,
+            risk_qty,
+            min_qty,
+            actual_stop_risk_amount,
+            target_risk_amount,
+            exploration_risk_reason,
+        )
+        return 0, 0.0
     absolute_cap_allows, actual_risk_pct, absolute_cap_pct = _min_qty_absolute_risk_cap_allows(
         actual_risk_amount=actual_stop_risk_amount,
         equity_usdt=equity_usdt,

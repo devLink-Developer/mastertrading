@@ -1,19 +1,20 @@
 from decimal import Decimal
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone as dj_tz
 
 from core.models import Instrument
 from execution.eudy_recovery import (
     classify_eudy_edge_sample,
+    eudy_exploration_risk_integrity_allows,
     evaluate_eudy_edge_guard,
 )
 from execution.models import OperationReport
 from execution.tasks import _entry_quality_profile_precheck, _flat_signal_policy
 
 
-class EudyRecoveryClassifierTests(TestCase):
+class EudyRecoveryClassifierTests(SimpleTestCase):
     def test_insufficient_sample_explores_at_reduced_risk(self):
         decision = classify_eudy_edge_sample(
             [0.002, -0.001],
@@ -27,6 +28,72 @@ class EudyRecoveryClassifierTests(TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.status, "explore")
         self.assertEqual(decision.risk_mult, 0.5)
+        self.assertGreater(decision.profit_factor, 1.0)
+
+    def test_negative_early_sample_brakes_before_full_validation_window(self):
+        decision = classify_eudy_edge_sample(
+            [0.008957, -0.006797, 0.002905, -0.011923],
+            min_trades=12,
+            min_profit_factor=1.15,
+            min_expectancy_pct=0.0,
+            exploration_risk_mult=0.5,
+            context="transition_bear_short",
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.status, "exploration_brake")
+        self.assertEqual(decision.risk_mult, 0.0)
+        self.assertLess(decision.profit_factor, 1.0)
+        self.assertLess(decision.expectancy_pct, 0.0)
+
+    def test_positive_early_sample_keeps_reduced_risk(self):
+        decision = classify_eudy_edge_sample(
+            [0.004, -0.002, 0.003, -0.001],
+            min_trades=12,
+            min_profit_factor=1.15,
+            min_expectancy_pct=0.0,
+            exploration_risk_mult=0.5,
+            context="transition_bear_short",
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.status, "explore")
+        self.assertEqual(decision.risk_mult, 0.5)
+
+    @override_settings(
+        EUDY_RECOVERY_ENABLED=True,
+        EUDY_RECOVERY_ACCOUNT_ALIASES={"eudy"},
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+    )
+    def test_min_qty_cannot_erase_eudy_exploration_risk_reduction(self):
+        allowed, reason = eudy_exploration_risk_integrity_allows(
+            account_alias="eudy",
+            edge_status="explore",
+            actual_risk_mult=10.25,
+        )
+
+        self.assertFalse(allowed)
+        self.assertIn("min_qty_block", reason)
+
+    @override_settings(
+        EUDY_RECOVERY_ENABLED=True,
+        EUDY_RECOVERY_ACCOUNT_ALIASES={"eudy"},
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+    )
+    def test_risk_integrity_does_not_change_ricardo_or_validated_eudy(self):
+        ricardo_allowed, _ = eudy_exploration_risk_integrity_allows(
+            account_alias="rortigoza",
+            edge_status="explore",
+            actual_risk_mult=10.25,
+        )
+        validated_allowed, _ = eudy_exploration_risk_integrity_allows(
+            account_alias="eudy",
+            edge_status="validated",
+            actual_risk_mult=10.25,
+        )
+
+        self.assertTrue(ricardo_allowed)
+        self.assertTrue(validated_allowed)
 
     def test_positive_net_sample_restores_normal_risk(self):
         decision = classify_eudy_edge_sample(

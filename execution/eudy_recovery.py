@@ -58,21 +58,48 @@ def classify_eudy_edge_sample(
     pnls = [float(value or 0.0) for value in pnl_pct_values]
     sample_size = len(pnls)
     exploration_mult = max(0.0, min(float(exploration_risk_mult), 1.0))
+    required_trades = max(1, int(min_trades))
+    profit_factor = _profit_factor(pnls)
+    expectancy_pct = sum(pnls) / sample_size if sample_size else 0.0
 
-    if sample_size < max(1, int(min_trades)):
+    if sample_size < required_trades:
+        # Exploration must react before the full validation sample when the
+        # first outcomes already show negative edge. Four trades is enough to
+        # apply a brake, but not enough to promote the cohort to full risk.
+        brake_min_trades = min(4, required_trades)
+        brake_profit_factor = min(1.0, float(min_profit_factor))
+        if sample_size >= brake_min_trades and (
+            profit_factor < brake_profit_factor
+            or expectancy_pct < float(min_expectancy_pct)
+        ):
+            return EudyEdgeDecision(
+                allowed=False,
+                risk_mult=0.0,
+                status="exploration_brake",
+                reason=(
+                    f"eudy_edge_exploration_brake:{context}:n={sample_size}<{required_trades}:"
+                    f"pf={profit_factor:.3f},required={brake_profit_factor:.3f}:"
+                    f"expect={expectancy_pct * 100:.3f}%,"
+                    f"required={float(min_expectancy_pct) * 100:.3f}%"
+                ),
+                sample_size=sample_size,
+                profit_factor=profit_factor,
+                expectancy_pct=expectancy_pct,
+            )
         return EudyEdgeDecision(
             allowed=exploration_mult > 0,
             risk_mult=exploration_mult,
             status="explore",
             reason=(
                 f"eudy_edge_explore:{context}:"
-                f"n={sample_size}<{max(1, int(min_trades))}:mult={exploration_mult:.2f}"
+                f"n={sample_size}<{required_trades}:pf={profit_factor:.3f}:"
+                f"expect={expectancy_pct * 100:.3f}%:mult={exploration_mult:.2f}"
             ),
             sample_size=sample_size,
+            profit_factor=profit_factor,
+            expectancy_pct=expectancy_pct,
         )
 
-    profit_factor = _profit_factor(pnls)
-    expectancy_pct = sum(pnls) / sample_size
     if profit_factor >= float(min_profit_factor) and expectancy_pct >= float(min_expectancy_pct):
         return EudyEdgeDecision(
             allowed=True,
@@ -99,6 +126,38 @@ def classify_eudy_edge_sample(
         sample_size=sample_size,
         profit_factor=profit_factor,
         expectancy_pct=expectancy_pct,
+    )
+
+
+def eudy_exploration_risk_integrity_allows(
+    *,
+    account_alias: str,
+    edge_status: str,
+    actual_risk_mult: float,
+) -> tuple[bool, str]:
+    """Keep reduced-risk exploration from being erased by exchange min_qty."""
+    if not is_eudy_recovery_account(account_alias):
+        return True, "eudy_exploration_risk_integrity_bypass"
+
+    status = _normalize(edge_status)
+    if status not in {"explore", "telemetry_error"}:
+        return True, f"eudy_exploration_risk_integrity_not_exploring:{status or 'unknown'}"
+
+    # Reuse the dynamic allowlist's watch boundary. Beyond it the exchange
+    # minimum quantity no longer represents the intended exploratory risk.
+    max_risk_mult = max(
+        1.0,
+        float(getattr(settings, "MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER", 2.0)),
+    )
+    risk_mult = max(0.0, float(actual_risk_mult or 0.0))
+    if risk_mult > max_risk_mult:
+        return (
+            False,
+            f"eudy_exploration_min_qty_block:risk_mult={risk_mult:.2f}>max={max_risk_mult:.2f}",
+        )
+    return (
+        True,
+        f"eudy_exploration_risk_integrity_ok:risk_mult={risk_mult:.2f}<=max={max_risk_mult:.2f}",
     )
 
 
