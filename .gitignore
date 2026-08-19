@@ -13,6 +13,7 @@ env/
 # Django / local runtime
 db.sqlite3
 celerybeat-schedule
+celerybeat-schedule-*
 
 # Environment and secrets
 .env

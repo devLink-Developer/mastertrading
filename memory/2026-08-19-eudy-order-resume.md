@@ -18,7 +18,7 @@ The latest production audit, through 2026-08-18 12:46 UTC, showed:
 - Meta weights assigned only 27.9% combined weight to the two active modules; 72.1% remained assigned to inactive modules.
 - Recent trend/carry metrics were negative, so lowering the global threshold or disabling guards was rejected.
 
-Fresh server access was unavailable in the managed offline sandbox because the SSH key and network were not exposed to its user. No production state is claimed after the audit cutoff until post-deploy verification runs.
+Server access became available later in the session from the notebook and production was re-audited during deployment.
 
 ## Root cause
 
@@ -69,3 +69,28 @@ Post-deploy verification must confirm:
 - Directional signals reach execution when their cohort guard allows them.
 - Actual stop risk remains at or below 0.30% equity.
 - Ricardo containers and compose project were not restarted.
+
+## Production deployment
+
+- Deployed commit `453675a` on 2026-08-19 at approximately 16:21 UTC.
+- Server path: `/opt/trading_bot_eudy`.
+- Compose project: `trading_bot_eudy`.
+- Rebuilt/recreated only Eudy `web`, `worker` and `beat`.
+- Ricardo/main containers retained their 12-day uptime and were not restarted.
+- 25 targeted tests passed inside the Eudy web container before recreation.
+- Eudy web returned HTTP 200 after recreation.
+- Effective compose and DB-first runtime settings both resolve the absolute cap to enabled at `0.003`.
+- Fresh allocator payloads report `score_weight_source=pre_meta_eudy_recovery`.
+- Logs contained 0 `ERROR`, `CRITICAL`, `Traceback` or `Exception` matches after deployment.
+
+### First live candidate after deploy
+
+- BTC emitted `alloc_long` at approximately `0.240` from 16:22 through 16:28 UTC.
+- Execution reached the Eudy edge guard and allowed reduced-risk exploration (`0.50x`).
+- No order was forced because the independent volume-quality gate measured `0.21x` versus the NY minimum `0.90x`.
+- This confirms the allocator deadlock is removed. The remaining no-order decision was an explicit market-quality rejection, not a lost signal or exchange failure.
+
+### Operational hygiene
+
+- Added `celerybeat-schedule-*` to `.gitignore`; Eudy beat creates `celerybeat-schedule-eudy` in the bind-mounted repository.
+- The web startup still reports a pre-existing warning that `signals` model state differs from migrations. No migration was added by this change, and all runtime checks passed; track separately.
