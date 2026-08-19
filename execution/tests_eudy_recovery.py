@@ -12,6 +12,8 @@ from execution.eudy_recovery import (
 )
 from execution.models import OperationReport
 from execution.tasks import _entry_quality_profile_precheck, _flat_signal_policy
+from signals.models import Signal
+from signals.multi_strategy import run_allocator_cycle
 
 
 class EudyRecoveryClassifierTests(SimpleTestCase):
@@ -80,6 +82,22 @@ class EudyRecoveryClassifierTests(SimpleTestCase):
         EUDY_RECOVERY_ACCOUNT_ALIASES={"eudy"},
         MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
     )
+    def test_absolute_cap_preserves_bounded_tiny_account_exploration(self):
+        allowed, reason = eudy_exploration_risk_integrity_allows(
+            account_alias="eudy",
+            edge_status="explore",
+            actual_risk_mult=10.25,
+            absolute_cap_allows=True,
+        )
+
+        self.assertTrue(allowed)
+        self.assertIn("absolute_cap", reason)
+
+    @override_settings(
+        EUDY_RECOVERY_ENABLED=True,
+        EUDY_RECOVERY_ACCOUNT_ALIASES={"eudy"},
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+    )
     def test_risk_integrity_does_not_change_ricardo_or_validated_eudy(self):
         ricardo_allowed, _ = eudy_exploration_risk_integrity_allows(
             account_alias="rortigoza",
@@ -123,6 +141,163 @@ class EudyRecoveryClassifierTests(SimpleTestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.status, "blocked")
         self.assertEqual(decision.risk_mult, 0.0)
+
+
+@override_settings(
+    MULTI_STRATEGY_ENABLED=True,
+    MODULE_TREND_ENABLED=True,
+    MODULE_MEANREV_ENABLED=False,
+    MODULE_CARRY_ENABLED=True,
+    MODULE_GRID_ENABLED=False,
+    ALLOCATOR_ENABLED=True,
+    ALLOCATOR_INCLUDE_SMC=False,
+    ALLOCATOR_MIN_MODULES_ACTIVE=2,
+    ALLOCATOR_STRONG_TREND_SOLO_ENABLED=False,
+    ALLOCATOR_NET_THRESHOLD=0.20,
+    ALLOCATOR_DYNAMIC_WEIGHTS_ENABLED=False,
+    META_ALLOCATOR_ENABLED=True,
+    HMM_REGIME_ENABLED=False,
+    LIVE_GRADUAL_ENABLED=False,
+    FEATURE_FLAGS_SOURCE="env",
+    EUDY_RECOVERY_ENABLED=True,
+    ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_ENABLED=True,
+    ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_LEAD_STATES={"transition"},
+    ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_RECOMMENDED_BIASES={"balanced"},
+    ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_MULT=0.65,
+    ALLOCATOR_MODULE_WEIGHTS={
+        "trend": 0.25,
+        "meanrev": 0.20,
+        "carry": 0.15,
+        "grid": 0.15,
+        "smc": 0.25,
+    },
+    ALLOCATOR_MODULE_RISK_BUDGETS={
+        "trend": 0.25,
+        "meanrev": 0.20,
+        "carry": 0.15,
+        "grid": 0.15,
+        "smc": 0.25,
+    },
+)
+class EudyAllocatorRecoveryTests(TestCase):
+    _META_OVERLAY = {
+        "weights": {
+            "trend": 0.202422,
+            "meanrev": 0.240217,
+            "carry": 0.076928,
+            "grid": 0.180163,
+            "smc": 0.300271,
+        },
+        "risk_budgets": {
+            "trend": 0.10,
+            "meanrev": 0.20,
+            "carry": 0.05,
+            "grid": 0.15,
+            "smc": 0.25,
+        },
+        "diag": {"enabled": True, "summary": {}},
+    }
+
+    def _seed_aligned_signals(self) -> Instrument:
+        inst = Instrument.objects.create(
+            symbol="ADAUSDT",
+            exchange="bingx",
+            base="ADA",
+            quote="USDT",
+            enabled=True,
+        )
+        now = dj_tz.now()
+        Signal.objects.create(
+            strategy="mod_trend_short",
+            instrument=inst,
+            ts=now,
+            payload_json={
+                "module": "trend",
+                "direction": "short",
+                "confidence": 0.577,
+                "raw_score": 0.577,
+                "reasons": {"adx_htf": 24.0, "volume_ratio": 1.0},
+            },
+            score=0.577,
+        )
+        Signal.objects.create(
+            strategy="mod_carry_short",
+            instrument=inst,
+            ts=now,
+            payload_json={
+                "module": "carry",
+                "direction": "short",
+                "confidence": 0.9795,
+                "raw_score": 0.9795,
+            },
+            score=0.9795,
+        )
+        return inst
+
+    def _run_allocator(self) -> str:
+        with (
+            patch("signals.multi_strategy.acquire_task_lock", return_value=True),
+            patch(
+                "signals.allocator.get_runtime_bool",
+                side_effect=lambda _key, fallback: fallback,
+            ),
+            patch(
+                "signals.allocator.get_runtime_float",
+                side_effect=lambda _key, fallback, **_kwargs: fallback,
+            ),
+            patch(
+                "signals.allocator.get_runtime_str_list",
+                side_effect=lambda _key, fallback: set(fallback or set()),
+            ),
+            patch(
+                "signals.multi_strategy.get_runtime_float",
+                side_effect=lambda _key, fallback, **_kwargs: fallback,
+            ),
+            patch(
+                "signals.multi_strategy.compute_meta_allocator_overlay",
+                return_value=self._META_OVERLAY,
+            ),
+            patch(
+                "signals.multi_strategy._btc_allocator_context",
+                return_value=("transition", "balanced"),
+            ),
+        ):
+            return run_allocator_cycle()
+
+    def test_meta_overlay_limits_risk_without_suppressing_actionable_signal(self):
+        inst = self._seed_aligned_signals()
+        out = self._run_allocator()
+
+        self.assertIn("allocator:emitted=1", out)
+        alloc = Signal.objects.filter(
+            instrument=inst,
+            strategy="alloc_short",
+        ).first()
+        self.assertIsNotNone(alloc)
+        self.assertGreater(abs(float(alloc.payload_json["net_score"])), 0.20)
+        self.assertAlmostEqual(
+            float(alloc.payload_json["reasons"]["budget_mix"]),
+            0.106675,
+            places=5,
+        )
+        meta = alloc.payload_json["reasons"]["meta_allocator"]
+        self.assertEqual(meta["score_weight_source"], "pre_meta_eudy_recovery")
+
+    @override_settings(EUDY_RECOVERY_ENABLED=False)
+    def test_non_eudy_stack_keeps_meta_weights_for_signal_scoring(self):
+        inst = self._seed_aligned_signals()
+        out = self._run_allocator()
+
+        self.assertIn("allocator:emitted=1", out)
+        alloc = Signal.objects.filter(
+            instrument=inst,
+            strategy="alloc_flat",
+        ).first()
+        self.assertIsNotNone(alloc)
+        self.assertLess(abs(float(alloc.payload_json["net_score"])), 0.20)
+        meta = alloc.payload_json["reasons"]["meta_allocator"]
+        self.assertEqual(meta["score_weight_source"], "meta_overlay")
 
 
 @override_settings(

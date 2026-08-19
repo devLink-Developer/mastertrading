@@ -134,6 +134,7 @@ def eudy_exploration_risk_integrity_allows(
     account_alias: str,
     edge_status: str,
     actual_risk_mult: float,
+    absolute_cap_allows: bool = False,
 ) -> tuple[bool, str]:
     """Keep reduced-risk exploration from being erased by exchange min_qty."""
     if not is_eudy_recovery_account(account_alias):
@@ -151,6 +152,12 @@ def eudy_exploration_risk_integrity_allows(
     )
     risk_mult = max(0.0, float(actual_risk_mult or 0.0))
     if risk_mult > max_risk_mult:
+        if bool(absolute_cap_allows):
+            return (
+                True,
+                "eudy_exploration_absolute_cap_ok:"
+                f"risk_mult={risk_mult:.2f}>max={max_risk_mult:.2f}",
+            )
         return (
             False,
             f"eudy_exploration_min_qty_block:risk_mult={risk_mult:.2f}>max={max_risk_mult:.2f}",

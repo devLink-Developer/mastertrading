@@ -7077,10 +7077,15 @@ def _attempt_entry_open(
         if actual_stop_risk_amount > 0 and target_risk_amount > 0
         else 0.0
     )
+    absolute_cap_allows, actual_risk_pct, absolute_cap_pct = _min_qty_absolute_risk_cap_allows(
+        actual_risk_amount=actual_stop_risk_amount,
+        equity_usdt=equity_usdt,
+    )
     exploration_risk_ok, exploration_risk_reason = eudy_exploration_risk_integrity_allows(
         account_alias=account_alias,
         edge_status=eudy_edge.status,
         actual_risk_mult=actual_risk_mult,
+        absolute_cap_allows=absolute_cap_allows,
     )
     if not exploration_risk_ok:
         _record_min_qty_risk_guard_event(
@@ -7106,10 +7111,6 @@ def _attempt_entry_open(
             exploration_risk_reason,
         )
         return 0, 0.0
-    absolute_cap_allows, actual_risk_pct, absolute_cap_pct = _min_qty_absolute_risk_cap_allows(
-        actual_risk_amount=actual_stop_risk_amount,
-        equity_usdt=equity_usdt,
-    )
     allowlist_state = _min_qty_dynamic_allowlist_state(actual_risk_mult)
     if bool(getattr(settings, "MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED", True)):
         if allowlist_state == "blocked":

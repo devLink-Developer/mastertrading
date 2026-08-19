@@ -316,13 +316,20 @@ def run_allocator_cycle() -> str:
     meta_diag: dict = {}
     if bool(getattr(settings, "META_ALLOCATOR_ENABLED", False)):
         try:
+            pre_meta_weights = dict(weights)
             overlay = compute_meta_allocator_overlay(
                 base_weights=weights,
                 base_risk_budgets=risk_budgets,
             )
-            weights = dict(overlay.get("weights") or weights)
+            meta_weights = dict(overlay.get("weights") or weights)
             risk_budgets = dict(overlay.get("risk_budgets") or risk_budgets)
             meta_diag = dict(overlay.get("diag") or {})
+            if bool(getattr(settings, "EUDY_RECOVERY_ENABLED", False)):
+                weights = pre_meta_weights
+                meta_diag["score_weight_source"] = "pre_meta_eudy_recovery"
+            else:
+                weights = meta_weights
+                meta_diag["score_weight_source"] = "meta_overlay"
         except Exception as exc:
             logger.warning("meta allocator overlay failed: %s", exc)
             meta_diag = {"enabled": True, "reason": f"error:{type(exc).__name__}"}
@@ -442,6 +449,7 @@ def run_allocator_cycle() -> str:
                 "p4_enabled": bool(meta_diag.get("p4_enabled", False)),
                 "p4_strict_bucket_isolation": bool(meta_diag.get("p4_strict_bucket_isolation", False)),
                 "risk_budget_total": meta_diag.get("risk_budget_total"),
+                "score_weight_source": meta_diag.get("score_weight_source", ""),
                 "reason": meta_diag.get("reason", ""),
             }
         if howell_enabled:
