@@ -5081,8 +5081,41 @@ def _entry_quality_profile_precheck(
     account_alias: str = "",
 ) -> tuple[bool, str]:
     """Fail-closed allowlist for a deliberately narrow, evidence-backed live profile."""
+    eudy_recovery = is_eudy_recovery_account(account_alias)
+    payload = sig_payload if isinstance(sig_payload, dict) else {}
+    strategy = str(strategy_name or "").strip().lower()
+    signal_direction = (
+        "long"
+        if strategy == "alloc_long"
+        else "short"
+        if strategy == "alloc_short"
+        else ""
+    )
     if (
-        is_eudy_recovery_account(account_alias)
+        eudy_recovery
+        and signal_direction
+        and get_runtime_bool(
+            "EUDY_CARRY_TREND_STRONG_REQUIRED",
+            bool(getattr(settings, "EUDY_CARRY_TREND_STRONG_REQUIRED", True)),
+        )
+        and set(_signal_active_modules(payload, strategy_name)) == {"carry", "trend"}
+    ):
+        reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
+        trend_context = (
+            reasons.get("trend_context")
+            if isinstance(reasons.get("trend_context"), dict)
+            else {}
+        )
+        trend_direction = str(trend_context.get("direction", "")).strip().lower()
+        trend_is_strong = bool(trend_context.get("is_strong"))
+        if trend_direction != signal_direction or not trend_is_strong:
+            return False, (
+                f"eudy_carry_trend_not_strong:{signal_direction}:"
+                f"trend={trend_direction or 'none'}:strong={trend_is_strong}"
+            )
+
+    if (
+        eudy_recovery
         and get_runtime_bool(
             "EUDY_RECOVERY_BYPASS_STATIC_PROFILE",
             bool(getattr(settings, "EUDY_RECOVERY_BYPASS_STATIC_PROFILE", False)),
@@ -5106,7 +5139,6 @@ def _entry_quality_profile_precheck(
     if symbol not in allowed_symbols:
         return False, f"entry_quality_profile_symbol:{symbol or 'unknown'}"
 
-    payload = sig_payload if isinstance(sig_payload, dict) else {}
     reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
     signal_session = str(reasons.get("session") or current_session or "").strip().lower()
     allowed_sessions = get_runtime_str_list(

@@ -1,4 +1,5 @@
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -82,7 +83,7 @@ class EudyRecoveryClassifierTests(SimpleTestCase):
         EUDY_RECOVERY_ACCOUNT_ALIASES={"eudy"},
         MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
     )
-    def test_absolute_cap_preserves_bounded_tiny_account_exploration(self):
+    def test_absolute_cap_does_not_override_relative_exploration_limit(self):
         allowed, reason = eudy_exploration_risk_integrity_allows(
             account_alias="eudy",
             edge_status="explore",
@@ -90,8 +91,8 @@ class EudyRecoveryClassifierTests(SimpleTestCase):
             absolute_cap_allows=True,
         )
 
-        self.assertTrue(allowed)
-        self.assertIn("absolute_cap", reason)
+        self.assertFalse(allowed)
+        self.assertIn("min_qty_block", reason)
 
     @override_settings(
         EUDY_RECOVERY_ENABLED=True,
@@ -112,6 +113,41 @@ class EudyRecoveryClassifierTests(SimpleTestCase):
 
         self.assertTrue(ricardo_allowed)
         self.assertTrue(validated_allowed)
+
+    @override_settings(
+        EUDY_RECOVERY_ENABLED=True,
+        EUDY_RECOVERY_ACCOUNT_ALIASES={"eudy"},
+        EUDY_RECOVERY_BYPASS_STATIC_PROFILE=True,
+        EUDY_CARRY_TREND_STRONG_REQUIRED=True,
+    )
+    def test_eudy_static_profile_bypass_rejects_weak_carry_trend_pair(self):
+        payload = {
+            "reasons": {
+                "module_rows": [
+                    {"module": "carry", "direction": "long"},
+                    {"module": "trend", "direction": "long"},
+                ],
+                "trend_context": {
+                    "direction": "long",
+                    "is_strong": False,
+                },
+            }
+        }
+
+        with patch(
+            "execution.tasks.get_runtime_bool",
+            side_effect=lambda _key, fallback: fallback,
+        ):
+            allowed, reason = _entry_quality_profile_precheck(
+                inst=SimpleNamespace(symbol="LINKUSDT"),
+                strategy_name="alloc_long",
+                current_session="london",
+                sig_payload=payload,
+                account_alias="eudy",
+            )
+
+        self.assertFalse(allowed)
+        self.assertIn("carry_trend_not_strong", reason)
 
     def test_positive_net_sample_restores_normal_risk(self):
         decision = classify_eudy_edge_sample(

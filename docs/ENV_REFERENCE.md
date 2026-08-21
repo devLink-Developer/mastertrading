@@ -76,6 +76,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `ENTRY_QUALITY_PROFILE_MIN_NET_SCORE`: minimum absolute allocator `net_score` for the profile.
 - `EUDY_RECOVERY_ENABLED`, `EUDY_RECOVERY_ACCOUNT_ALIASES`: account-scoped recovery overlay; inert for every alias not listed.
 - `EUDY_RECOVERY_BYPASS_STATIC_PROFILE`: replaces Eudy's stale static entry allowlist with the adaptive cohort guard.
+- `EUDY_CARRY_TREND_STRONG_REQUIRED`: when Eudy bypasses the static profile, exact `carry+trend` allocator pairs still require an aligned strong trend.
 - `EUDY_EDGE_GUARD_LOOKBACK_DAYS`, `EUDY_EDGE_GUARD_MAX_TRADES`, `EUDY_EDGE_GUARD_MIN_TRADES`: rolling evidence window for each daily-regime + BTC-lead + bias + side cohort.
 - `EUDY_EDGE_GUARD_MIN_PROFIT_FACTOR`, `EUDY_EDGE_GUARD_MIN_EXPECTANCY_PCT`: net-of-fees thresholds required for normal risk.
 - `EUDY_EDGE_GUARD_EXPLORATION_RISK_MULT`: reduced sizing for contexts without enough observations; known-negative cohorts are blocked.

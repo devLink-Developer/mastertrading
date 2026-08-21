@@ -1045,6 +1045,9 @@ EUDY_RECOVERY_ACCOUNT_ALIASES = _parse_lower_set(
 EUDY_RECOVERY_BYPASS_STATIC_PROFILE = os.getenv(
     "EUDY_RECOVERY_BYPASS_STATIC_PROFILE", "false"
 ).lower() == "true"
+EUDY_CARRY_TREND_STRONG_REQUIRED = os.getenv(
+    "EUDY_CARRY_TREND_STRONG_REQUIRED", "true"
+).lower() == "true"
 EUDY_EDGE_GUARD_LOOKBACK_DAYS = max(
     1,
     int(os.getenv("EUDY_EDGE_GUARD_LOOKBACK_DAYS", "120")),
