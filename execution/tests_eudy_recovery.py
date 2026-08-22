@@ -12,7 +12,13 @@ from execution.eudy_recovery import (
     evaluate_eudy_edge_guard,
 )
 from execution.models import OperationReport
-from execution.tasks import _entry_quality_profile_precheck, _flat_signal_policy
+from execution.tasks import (
+    _attempt_entry_open,
+    _entry_quality_profile_precheck,
+    _flat_signal_policy,
+    _record_eudy_entry_block,
+)
+from risk.models import RiskEvent
 from signals.models import Signal
 from signals.multi_strategy import run_allocator_cycle
 
@@ -420,6 +426,120 @@ class EudyRecoveryIntegrationTests(TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.status, "bypass")
         self.assertEqual(decision.risk_mult, 1.0)
+
+    @override_settings(EUDY_ENTRY_BLOCK_AUDIT_ENABLED=True)
+    def test_eudy_entry_block_audit_is_persistent_deduplicated_and_scoped(self):
+        sig = Signal.objects.create(
+            instrument=self.inst,
+            strategy="alloc_long",
+            score=0.31,
+            ts=dj_tz.now(),
+            payload_json={"direction": "long"},
+        )
+
+        _record_eudy_entry_block(
+            inst=self.inst,
+            sig=sig,
+            strategy_name="alloc_long",
+            signal_direction="long",
+            reason="min_qty_exploration_risk",
+            account_alias="eudy",
+        )
+        _record_eudy_entry_block(
+            inst=self.inst,
+            sig=sig,
+            strategy_name="alloc_long",
+            signal_direction="long",
+            reason="min_qty_exploration_risk",
+            account_alias="eudy",
+        )
+        _record_eudy_entry_block(
+            inst=self.inst,
+            sig=sig,
+            strategy_name="alloc_long",
+            signal_direction="long",
+            reason="direction_policy",
+            account_alias="rortigoza",
+        )
+
+        events = RiskEvent.objects.filter(kind="entry_blocked", instrument=self.inst)
+        self.assertEqual(events.count(), 1)
+        event = events.get()
+        self.assertEqual(event.severity, RiskEvent.Severity.INFO)
+        self.assertEqual(event.details_json["signal_id"], sig.id)
+        self.assertEqual(event.details_json["strategy"], "alloc_long")
+        self.assertEqual(event.details_json["direction"], "long")
+        self.assertEqual(event.details_json["reason"], "min_qty_exploration_risk")
+
+    def test_entry_attempt_exposes_terminal_block_reason_to_audit_caller(self):
+        sig = Signal.objects.create(
+            instrument=self.inst,
+            strategy="alloc_long",
+            score=0.31,
+            ts=dj_tz.now(),
+            payload_json={"direction": "long"},
+        )
+        trace: dict[str, str] = {}
+
+        result = _attempt_entry_open(
+            adapter=SimpleNamespace(),
+            inst=self.inst,
+            sig=sig,
+            sig_payload=sig.payload_json,
+            strategy_name=sig.strategy,
+            side="buy",
+            signal_direction="long",
+            direction_allowed=True,
+            signal_expired=False,
+            can_open=False,
+            macro_active=False,
+            macro_context={},
+            macro_block_entries=False,
+            macro_risk_mult=1.0,
+            regime_blocked_symbols=set(),
+            regime_adx_by_symbol={},
+            regime_adx_min_by_symbol={},
+            regime_bias_by_symbol={},
+            regime_adx_min=17.0,
+            market_regime_adx=None,
+            mtf_symbol_snapshot={},
+            btc_lead_state="neutral",
+            btc_recommended_bias="balanced",
+            allow_scale_entry=False,
+            scale_parent_correlation="",
+            scale_add_index=0,
+            session_policy_enabled=True,
+            session_dead_zone_block=True,
+            current_session="london",
+            session_min_score=0.20,
+            session_risk_mult=1.0,
+            ml_entry_filter_enabled=False,
+            ml_entry_filter_default_min_prob=0.50,
+            ml_entry_filter_fail_open=True,
+            use_allocator_signals=True,
+            symbol=self.inst.symbol,
+            last_price=10.0,
+            contract_size=1.0,
+            market_info={},
+            atr=0.01,
+            sl_pct=0.012,
+            spread_bps_selected=1.0,
+            free_usdt=10.0,
+            equity_usdt=10.0,
+            leverage=5.0,
+            total_notional=0.0,
+            cycle_notional_added=0.0,
+            account_ai_enabled=False,
+            account_ai_config_id=None,
+            account_owner_id=None,
+            account_alias="eudy",
+            account_service="trading",
+            positions_snapshot=[],
+            decision_trace=trace,
+        )
+
+        self.assertEqual(result, (0, 0.0))
+        self.assertEqual(trace["block_reason"], "account_or_risk_gate")
 
     @override_settings(
         FLAT_SIGNAL_TIMEOUT_ENABLED=True,

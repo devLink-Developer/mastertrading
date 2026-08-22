@@ -1048,6 +1048,24 @@ EUDY_RECOVERY_BYPASS_STATIC_PROFILE = os.getenv(
 EUDY_CARRY_TREND_STRONG_REQUIRED = os.getenv(
     "EUDY_CARRY_TREND_STRONG_REQUIRED", "true"
 ).lower() == "true"
+EUDY_TREND_CARRY_CONFLICT_ESCAPE_ENABLED = os.getenv(
+    "EUDY_TREND_CARRY_CONFLICT_ESCAPE_ENABLED", "false"
+).lower() == "true"
+EUDY_TREND_CARRY_CONFLICT_ESCAPE_SYMBOLS = {
+    part.strip().upper()
+    for part in os.getenv("EUDY_TREND_CARRY_CONFLICT_ESCAPE_SYMBOLS", "").split(",")
+    if part.strip()
+}
+EUDY_TREND_CARRY_CONFLICT_ESCAPE_DIRECTIONS = {
+    part.strip().lower()
+    for part in os.getenv(
+        "EUDY_TREND_CARRY_CONFLICT_ESCAPE_DIRECTIONS", "long"
+    ).split(",")
+    if part.strip().lower() in {"long", "short"}
+}
+EUDY_ENTRY_BLOCK_AUDIT_ENABLED = os.getenv(
+    "EUDY_ENTRY_BLOCK_AUDIT_ENABLED", "false"
+).lower() == "true"
 EUDY_EDGE_GUARD_LOOKBACK_DAYS = max(
     1,
     int(os.getenv("EUDY_EDGE_GUARD_LOOKBACK_DAYS", "120")),

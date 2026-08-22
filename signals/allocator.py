@@ -471,6 +471,8 @@ def resolve_symbol_allocation(
     range_reversion_solo_module = ""
     range_reversion_solo_weight_floor = 0.0
     range_reversion_solo_weight_floor_applied = False
+    eudy_conflict_escape_applied = False
+    eudy_conflict_escape_direction = ""
 
     for sig in module_signals:
         module = str(sig.get("module", "")).strip().lower()
@@ -648,6 +650,59 @@ def resolve_symbol_allocation(
                 trend_carry_alignment_direction = trend_dir
                 break
 
+    strong_trend_volume_ok = bool(trend_ctx.get("volume_ok_for_solo", True))
+    allowed_escape_symbols = get_runtime_str_list(
+        "EUDY_TREND_CARRY_CONFLICT_ESCAPE_SYMBOLS",
+        getattr(settings, "EUDY_TREND_CARRY_CONFLICT_ESCAPE_SYMBOLS", set()) or set(),
+    )
+    allowed_escape_directions = get_runtime_str_list(
+        "EUDY_TREND_CARRY_CONFLICT_ESCAPE_DIRECTIONS",
+        getattr(settings, "EUDY_TREND_CARRY_CONFLICT_ESCAPE_DIRECTIONS", {"long"}) or {"long"},
+    )
+    contribution_modules = {
+        str(row.get("module", "")).strip().lower() for row in module_contributions
+    }
+    trend_direction = str(trend_ctx.get("direction", "flat")).strip().lower()
+    if (
+        bool(getattr(settings, "EUDY_RECOVERY_ENABLED", False))
+        and get_runtime_bool(
+            "EUDY_TREND_CARRY_CONFLICT_ESCAPE_ENABLED",
+            bool(getattr(settings, "EUDY_TREND_CARRY_CONFLICT_ESCAPE_ENABLED", False)),
+        )
+        and str(symbol or "").strip().lower() in allowed_escape_symbols
+        and trend_direction in allowed_escape_directions
+        and strong_trend
+        and strong_trend_volume_ok
+        and len(module_contributions) == 2
+        and contribution_modules == {"trend", "carry"}
+    ):
+        carry_row = next(
+            (row for row in module_contributions if row.get("module") == "carry"),
+            None,
+        )
+        carry_direction = (
+            str(carry_row.get("direction", "")).strip().lower()
+            if isinstance(carry_row, dict)
+            else ""
+        )
+        carry_contribution = (
+            float(carry_row.get("contribution", 0.0) or 0.0)
+            if isinstance(carry_row, dict)
+            else 0.0
+        )
+        if (
+            carry_direction in {"long", "short"}
+            and direction_to_sign(carry_direction) == -trend_sign
+            and carry_contribution * trend_sign < 0
+        ):
+            net_score -= carry_contribution
+            abs_capacity = max(0.0, abs_capacity - abs(carry_contribution))
+            carry_row["contribution_before_eudy_escape"] = round(carry_contribution, 6)
+            carry_row["contribution"] = 0.0
+            carry_row["eudy_conflict_escape_suppressed"] = True
+            eudy_conflict_escape_applied = True
+            eudy_conflict_escape_direction = trend_direction
+
     required_modules = max(
         1,
         int(
@@ -657,7 +712,6 @@ def resolve_symbol_allocation(
         ),
     )
     opposing_carry_present = False
-    strong_trend_volume_ok = bool(trend_ctx.get("volume_ok_for_solo", True))
     solo_disabled_sessions = get_runtime_str_list(
         "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS",
         getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS", set()) or set(),
@@ -867,6 +921,10 @@ def resolve_symbol_allocation(
                 "range_reversion_solo_weight_floor_applied": bool(
                     range_reversion_solo_weight_floor_applied
                 ),
+                "eudy_trend_carry_conflict_escape_applied": bool(
+                    eudy_conflict_escape_applied
+                ),
+                "eudy_trend_carry_conflict_escape_direction": eudy_conflict_escape_direction,
                 "trend_carry_alignment_boost_applied": bool(trend_carry_alignment_applied),
                 "trend_carry_alignment_score_mult": round(float(trend_carry_alignment_mult), 6),
                 "trend_carry_alignment_direction": trend_carry_alignment_direction,
@@ -875,7 +933,7 @@ def resolve_symbol_allocation(
 
     # --- Direction-aware score penalty (longs penalized in bear/range regimes) ---
     long_penalty = float(getattr(settings, "ALLOCATOR_LONG_SCORE_PENALTY", 1.0))
-    if net_score > 0 and long_penalty < 1.0:
+    if net_score > 0 and long_penalty < 1.0 and not eudy_conflict_escape_applied:
         net_score *= long_penalty
 
     direction_ctx_mult = 1.0
@@ -989,6 +1047,10 @@ def resolve_symbol_allocation(
             "range_reversion_solo_weight_floor_applied": bool(
                 range_reversion_solo_weight_floor_applied
             ),
+            "eudy_trend_carry_conflict_escape_applied": bool(
+                eudy_conflict_escape_applied
+            ),
+            "eudy_trend_carry_conflict_escape_direction": eudy_conflict_escape_direction,
             "trend_carry_alignment_boost_applied": bool(trend_carry_alignment_applied),
             "trend_carry_alignment_score_mult": round(float(trend_carry_alignment_mult), 6),
             "trend_carry_alignment_direction": trend_carry_alignment_direction,

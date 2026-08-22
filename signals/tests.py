@@ -750,6 +750,146 @@ class AllocatorWeightingTest(TestCase):
         self.assertAlmostEqual(float(carry_row["weight"]), 0.20, places=6)
 
     @override_settings(
+        EUDY_RECOVERY_ENABLED=True,
+        EUDY_TREND_CARRY_CONFLICT_ESCAPE_ENABLED=True,
+        EUDY_TREND_CARRY_CONFLICT_ESCAPE_SYMBOLS={"ADAUSDT"},
+        EUDY_TREND_CARRY_CONFLICT_ESCAPE_DIRECTIONS={"long"},
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=False,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.90,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM=True,
+        ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO=0.80,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED=True,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT=0.50,
+        ALLOCATOR_LONG_SCORE_PENALTY=0.70,
+    )
+    def test_eudy_ada_long_conflict_escape_uses_confirmed_strong_trend(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 35.0, "volume_ratio": 1.10},
+                },
+                {"module": "carry", "direction": "short", "confidence": 1.0},
+            ],
+            threshold=0.20,
+            base_risk_pct=0.003,
+            session_risk_mult=0.4655,
+            weights={"trend": 0.25, "meanrev": 0.0, "carry": 0.15, "grid": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 0.25, "meanrev": 0.0, "carry": 0.15, "grid": 0.0, "smc": 0.0},
+            min_active_modules=2,
+            symbol="ADAUSDT",
+            session_name="asia",
+        )
+
+        self.assertEqual(out["direction"], "long")
+        self.assertTrue(out["reasons"]["eudy_trend_carry_conflict_escape_applied"])
+        self.assertEqual(out["reasons"]["eudy_trend_carry_conflict_escape_direction"], "long")
+        carry_row = next(
+            row for row in out["reasons"]["module_contributions"] if row["module"] == "carry"
+        )
+        self.assertEqual(float(carry_row["contribution"]), 0.0)
+        self.assertTrue(carry_row["eudy_conflict_escape_suppressed"])
+        self.assertGreater(float(out["risk_budget_pct"]), 0.0)
+
+    @override_settings(
+        EUDY_RECOVERY_ENABLED=True,
+        EUDY_TREND_CARRY_CONFLICT_ESCAPE_ENABLED=True,
+        EUDY_TREND_CARRY_CONFLICT_ESCAPE_SYMBOLS={"ADAUSDT"},
+        EUDY_TREND_CARRY_CONFLICT_ESCAPE_DIRECTIONS={"long"},
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=False,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.90,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM=True,
+        ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO=0.80,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED=True,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT=0.50,
+        ALLOCATOR_LONG_SCORE_PENALTY=0.70,
+    )
+    def test_eudy_conflict_escape_stays_blocked_without_volume_confirmation(self):
+        out = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 35.0, "volume_ratio": 0.50},
+                },
+                {"module": "carry", "direction": "short", "confidence": 1.0},
+            ],
+            threshold=0.20,
+            base_risk_pct=0.003,
+            session_risk_mult=1.0,
+            weights={"trend": 0.25, "meanrev": 0.0, "carry": 0.15, "grid": 0.0, "smc": 0.0},
+            risk_budgets={"trend": 0.25, "meanrev": 0.0, "carry": 0.15, "grid": 0.0, "smc": 0.0},
+            min_active_modules=2,
+            symbol="ADAUSDT",
+            session_name="asia",
+        )
+
+        self.assertEqual(out["direction"], "flat")
+        self.assertFalse(out["reasons"]["eudy_trend_carry_conflict_escape_applied"])
+
+    @override_settings(
+        EUDY_RECOVERY_ENABLED=True,
+        EUDY_TREND_CARRY_CONFLICT_ESCAPE_ENABLED=True,
+        EUDY_TREND_CARRY_CONFLICT_ESCAPE_SYMBOLS={"ADAUSDT"},
+        EUDY_TREND_CARRY_CONFLICT_ESCAPE_DIRECTIONS={"long"},
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=False,
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.90,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM=True,
+        ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO=0.80,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_ENABLED=True,
+        ALLOCATOR_CARRY_CONTRA_TREND_DAMPEN_MULT=0.50,
+        ALLOCATOR_LONG_SCORE_PENALTY=0.70,
+    )
+    def test_eudy_conflict_escape_does_not_expand_to_other_symbols_or_shorts(self):
+        weights = {"trend": 0.25, "meanrev": 0.0, "carry": 0.15, "grid": 0.0, "smc": 0.0}
+        common = {
+            "threshold": 0.20,
+            "base_risk_pct": 0.003,
+            "session_risk_mult": 1.0,
+            "weights": weights,
+            "risk_budgets": dict(weights),
+            "min_active_modules": 2,
+            "session_name": "london",
+        }
+        link = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "long",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 35.0, "volume_ratio": 1.10},
+                },
+                {"module": "carry", "direction": "short", "confidence": 1.0},
+            ],
+            symbol="LINKUSDT",
+            **common,
+        )
+        ada_short = resolve_symbol_allocation(
+            [
+                {
+                    "module": "trend",
+                    "direction": "short",
+                    "confidence": 0.95,
+                    "reasons": {"adx_htf": 35.0, "volume_ratio": 1.10},
+                },
+                {"module": "carry", "direction": "long", "confidence": 1.0},
+            ],
+            symbol="ADAUSDT",
+            **common,
+        )
+
+        self.assertEqual(link["direction"], "flat")
+        self.assertFalse(link["reasons"]["eudy_trend_carry_conflict_escape_applied"])
+        self.assertEqual(ada_short["direction"], "flat")
+        self.assertFalse(ada_short["reasons"]["eudy_trend_carry_conflict_escape_applied"])
+
+    @override_settings(
         ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_ENABLED=True,
         ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_MULT=0.65,
         ALLOCATOR_TREND_BALANCED_TRANSITION_DAMPEN_LEAD_STATES={"transition"},

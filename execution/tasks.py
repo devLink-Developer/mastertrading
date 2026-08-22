@@ -1331,6 +1331,52 @@ def _record_min_qty_risk_guard_event(
         logger.warning("Failed to record min-qty risk guard event: %s", exc)
 
 
+def _record_eudy_entry_block(
+    *,
+    inst: Instrument,
+    sig: Signal,
+    strategy_name: str,
+    signal_direction: str,
+    reason: str,
+    account_alias: str,
+) -> None:
+    """Persist one quiet terminal block reason for each actionable Eudy signal."""
+    if not bool(getattr(settings, "EUDY_ENTRY_BLOCK_AUDIT_ENABLED", False)):
+        return
+    if not is_eudy_recovery_account(account_alias):
+        return
+    direction = str(signal_direction or "").strip().lower()
+    strategy = str(strategy_name or "").strip().lower()
+    if direction not in {"long", "short"} or not (
+        strategy.startswith("alloc_") or strategy.startswith("mod_")
+    ):
+        return
+    reason_text = str(reason or "entry_not_placed_unclassified").strip()[:255]
+    try:
+        signal_id = int(sig.id)
+        if RiskEvent.objects.filter(
+            kind="entry_blocked",
+            instrument=inst,
+            details_json__signal_id=signal_id,
+        ).exists():
+            return
+        RiskEvent.objects.create(
+            instrument=inst,
+            kind="entry_blocked",
+            severity=RiskEvent.Severity.INFO,
+            details_json={
+                "signal_id": signal_id,
+                "signal_ts": sig.ts.isoformat() if sig.ts else "",
+                "strategy": strategy,
+                "direction": direction,
+                "score": round(_to_float(getattr(sig, "score", 0.0)), 6),
+                "reason": reason_text,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to record Eudy entry block for %s: %s", inst.symbol, exc)
+
+
 def _format_risk_event_notification_details(instrument=None, details: dict | None = None) -> str:
     details_obj = details or {}
     lines: list[str] = []
@@ -6155,16 +6201,25 @@ def _attempt_entry_open(
     account_alias: str,
     account_service: str,
     positions_snapshot: list[dict] | None = None,
+    decision_trace: dict[str, str] | None = None,
 ) -> tuple[int, float]:
-    if not can_open:
+    def _deny(reason: str) -> tuple[int, float]:
+        if decision_trace is not None:
+            decision_trace["block_reason"] = str(reason or "entry_not_placed_unclassified")[:255]
         return 0, 0.0
 
+    if decision_trace is not None:
+        decision_trace["block_reason"] = "entry_not_placed_unclassified"
+
+    if not can_open:
+        return _deny("account_or_risk_gate")
+
     if signal_expired:
-        return 0, 0.0
+        return _deny("signal_expired")
     if signal_direction not in {"long", "short"}:
-        return 0, 0.0
+        return _deny("invalid_signal_direction")
     if not direction_allowed:
-        return 0, 0.0
+        return _deny("direction_policy")
 
     entry_reason = _signal_entry_reason(sig_payload, strategy_name)
     macro_override_allowed = bool(
@@ -6180,7 +6235,7 @@ def _attempt_entry_open(
             macro_context.get("hour_utc"),
             macro_context.get("weekday"),
         )
-        return 0, 0.0
+        return _deny("macro_high_impact")
     if macro_override_allowed:
         logger.info(
             "Macro high-impact window allowing microvol entry on %s with reduced risk "
@@ -6205,7 +6260,7 @@ def _attempt_entry_open(
                 regime_adx_by_symbol.get(inst.symbol, 0),
                 effective_regime_adx_min,
             )
-            return 0, 0.0
+            return _deny("market_regime_adx")
         logger.info(
             "Market regime gate bypassed on %s for range-reversion signal: "
             "1h ADX=%.1f < %.1f reason=%s",
@@ -6231,7 +6286,7 @@ def _attempt_entry_open(
                     global_cap,
                     inst.symbol,
                 )
-                return 0, 0.0
+                return _deny("global_daily_trade_cap")
             daily_count = _get_daily_trade_count(inst.symbol)
             if daily_count >= daily_limit:
                 logger.info(
@@ -6241,7 +6296,7 @@ def _attempt_entry_open(
                     daily_limit,
                     htf_adx_for_limit or 0,
                 )
-                return 0, 0.0
+                return _deny("symbol_daily_trade_cap")
         else:
             daily_count = _get_daily_trade_count()
             if daily_count >= daily_limit:
@@ -6252,7 +6307,7 @@ def _attempt_entry_open(
                     htf_adx_for_limit or 0,
                     inst.symbol,
                 )
-                return 0, 0.0
+                return _deny("daily_trade_cap")
 
     sig_score = _to_float(getattr(sig, "score", 0.0))
     if session_policy_enabled and session_dead_zone_block and is_dead_session(current_session):
@@ -6275,7 +6330,7 @@ def _attempt_entry_open(
                 current_session,
                 dead_override_reason,
             )
-            return 0, 0.0
+            return _deny(f"session_dead_zone:{dead_override_reason}")
         if dead_override_score_min is not None:
             session_min_score = float(dead_override_score_min)
         if dead_override_risk_mult is not None:
@@ -6297,7 +6352,7 @@ def _attempt_entry_open(
             exec_min_score,
             current_session if session_policy_enabled else "n/a",
         )
-        return 0, 0.0
+        return _deny("signal_score_below_execution_min")
 
     regime_bias = str(regime_bias_by_symbol.get(inst.symbol, "neutral") or "neutral").strip().lower()
     retrace_ok, retrace_reason = _bull_short_retrace_precheck(
@@ -6314,7 +6369,7 @@ def _attempt_entry_open(
             inst.symbol,
             retrace_reason,
         )
-        return 0, 0.0
+        return _deny(f"bull_short_retrace:{retrace_reason}")
 
     btc_lead_mult, btc_lead_blocked, btc_lead_reason = _btc_lead_directional_risk_mult(
         inst.symbol,
@@ -6330,7 +6385,7 @@ def _attempt_entry_open(
             btc_recommended_bias,
             btc_lead_reason,
         )
-        return 0, 0.0
+        return _deny(f"btc_lead:{btc_lead_reason}")
 
     ny_open_ok, ny_open_reason = _ny_open_weak_long_precheck(
         strategy_name=strategy_name,
@@ -6347,7 +6402,7 @@ def _attempt_entry_open(
             btc_recommended_bias,
             ny_open_reason,
         )
-        return 0, 0.0
+        return _deny(f"ny_open_weak_long:{ny_open_reason}")
 
     trend_context = (((sig_payload or {}).get("reasons", {}) or {}).get("trend_context", {}) or {})
     trend_context_direction = str(trend_context.get("direction", "")).strip().lower()
@@ -6378,7 +6433,7 @@ def _attempt_entry_open(
             btc_recommended_bias,
             weak_long_reason,
         )
-        return 0, 0.0
+        return _deny(f"weak_long:{weak_long_reason}")
 
     weak_short_ok, weak_short_reason = _asia_weak_short_precheck(
         strategy_name=strategy_name,
@@ -6404,7 +6459,7 @@ def _attempt_entry_open(
             trend_context_adx_htf,
             weak_short_reason,
         )
-        return 0, 0.0
+        return _deny(f"asia_weak_short:{weak_short_reason}")
 
     weak_short_transition_ok, weak_short_transition_reason = _weak_short_transition_precheck(
         strategy_name=strategy_name,
@@ -6428,7 +6483,7 @@ def _attempt_entry_open(
             trend_context_is_strong,
             weak_short_transition_reason,
         )
-        return 0, 0.0
+        return _deny(f"weak_short_transition:{weak_short_transition_reason}")
 
     long_bias_short_ok, long_bias_short_reason = _long_bias_short_precheck(
         strategy_name=strategy_name,
@@ -6444,7 +6499,7 @@ def _attempt_entry_open(
             btc_recommended_bias,
             long_bias_short_reason,
         )
-        return 0, 0.0
+        return _deny(f"long_bias_short:{long_bias_short_reason}")
 
     entry_quality_ok, entry_quality_reason = _entry_quality_profile_precheck(
         inst=inst,
@@ -6460,7 +6515,7 @@ def _attempt_entry_open(
             side,
             entry_quality_reason,
         )
-        return 0, 0.0
+        return _deny(f"entry_quality_profile:{entry_quality_reason}")
 
     eudy_edge = evaluate_eudy_edge_guard(
         account_alias=account_alias,
@@ -6476,7 +6531,7 @@ def _attempt_entry_open(
             side,
             eudy_edge.reason,
         )
-        return 0, 0.0
+        return _deny(f"eudy_edge:{eudy_edge.reason}")
     if eudy_edge.risk_mult < 1.0:
         logger.info(
             "Eudy edge guard reduced risk on %s %s: mult=%.2f status=%s reason=%s",
@@ -6494,7 +6549,7 @@ def _attempt_entry_open(
             inst.symbol,
             symbol_health_reason,
         )
-        return 0, 0.0
+        return _deny(f"symbol_health:{symbol_health_reason}")
 
     symbol_side_health_ok, symbol_side_health_reason = _symbol_side_health_precheck(inst, side)
     if not symbol_side_health_ok:
@@ -6504,7 +6559,7 @@ def _attempt_entry_open(
             side,
             symbol_side_health_reason,
         )
-        return 0, 0.0
+        return _deny(f"symbol_side_health:{symbol_side_health_reason}")
 
     # --- Cross-symbol correlation guard ---
     corr_risk_mult, corr_reason = _cross_symbol_correlation_guard(
@@ -6518,7 +6573,7 @@ def _attempt_entry_open(
             "Cross-symbol correlation guard blocked entry on %s %s: %s",
             inst.symbol, signal_direction, corr_reason,
         )
-        return 0, 0.0
+        return _deny(f"cross_symbol_correlation:{corr_reason}")
 
     # --- Volume delta imbalance check ---
     vd_ok, vd_bonus, vd_reason = _volume_delta_check(
@@ -6530,7 +6585,7 @@ def _attempt_entry_open(
             "Volume delta gate blocked entry on %s %s: %s",
             inst.symbol, signal_direction, vd_reason,
         )
-        return 0, 0.0
+        return _deny(f"volume_delta:{vd_reason}")
 
     ml_prob = None
     if ml_entry_filter_enabled:
@@ -6556,7 +6611,7 @@ def _attempt_entry_open(
                     inst.symbol,
                     ml_model_path,
                 )
-                return 0, 0.0
+                return _deny("ml_model_unavailable")
             logger.info(
                 "ML entry filter unavailable on %s (path=%s); fail-open",
                 inst.symbol,
@@ -6570,7 +6625,7 @@ def _attempt_entry_open(
                 ml_entry_filter_min_prob,
                 strategy_name,
             )
-            return 0, 0.0
+            return _deny("ml_probability_below_min")
 
     base_cooldown_min = settings.PER_INSTRUMENT_COOLDOWN.get(
         inst.symbol,
@@ -6633,7 +6688,7 @@ def _attempt_entry_open(
                     anchor_src,
                     last_close_reason or "n/a",
                 )
-                return 0, 0.0
+                return _deny(f"cooldown:{anchor_src}:{last_close_reason or 'n/a'}")
 
     post_tp_reentry_ok, post_tp_reentry_reason = _post_tp_alt_reentry_quality_precheck(
         inst=inst,
@@ -6647,7 +6702,7 @@ def _attempt_entry_open(
             inst.symbol,
             post_tp_reentry_reason,
         )
-        return 0, 0.0
+        return _deny(f"post_tp_reentry:{post_tp_reentry_reason}")
 
     volume_allowed, volume_ratio = _volume_gate_allowed(
         inst,
@@ -6679,7 +6734,7 @@ def _attempt_entry_open(
                 tf,
                 lookback,
             )
-        return 0, 0.0
+        return _deny("entry_volume_insufficient" if volume_ratio is None else "entry_volume_below_min")
 
     ai_market_fp = _ai_entry_market_fingerprint(
         symbol=inst.symbol,
@@ -6732,7 +6787,7 @@ def _attempt_entry_open(
             inst.symbol,
             ai_retry_reason or "ai_reject_cached",
         )
-        return 0, 0.0
+        return _deny(f"ai_retry_suppressed:{ai_retry_reason or 'ai_reject_cached'}")
 
     ai_risk_mult = 1.0
     ai_allow, ai_risk_mult, ai_reason, ai_meta = evaluate_ai_entry_gate(
@@ -6770,7 +6825,7 @@ def _attempt_entry_open(
             ai_reason,
             ai_meta.get("cfg_alias", "n/a"),
         )
-        return 0, 0.0
+        return _deny(f"ai_entry_gate:{ai_reason}")
     _ai_entry_clear_reject_cache(
         account_alias=account_alias,
         account_service=account_service,
@@ -6798,7 +6853,7 @@ def _attempt_entry_open(
             regime_bias,
             regime_reason,
         )
-        return 0, 0.0
+        return _deny(f"regime_direction:{regime_reason}")
     if regime_mult < 1.0:
         ai_risk_mult *= regime_mult
         logger.info(
@@ -6849,7 +6904,7 @@ def _attempt_entry_open(
     max_inst_notional = equity_usdt * settings.MAX_EXPOSURE_PER_INSTRUMENT_PCT * entry_leverage
     if inst_notional >= max_inst_notional and max_inst_notional > 0:
         logger.info("Per-instrument exposure cap reached for %s (%.2f >= %.2f)", symbol, inst_notional, max_inst_notional)
-        return 0, 0.0
+        return _deny("instrument_exposure_cap")
 
     is_allocator_signal = use_allocator_signals and strategy_name.startswith("alloc_")
     if is_allocator_signal:
@@ -6862,7 +6917,7 @@ def _attempt_entry_open(
                 inst_risk_pct,
                 strategy_name,
             )
-            return 0, 0.0
+            return _deny("allocator_zero_risk_budget")
         if macro_active and (not macro_block_entries or macro_override_allowed):
             inst_risk_pct *= macro_risk_mult
     else:
@@ -6878,7 +6933,7 @@ def _attempt_entry_open(
                 effective_risk_mult,
                 current_session,
             )
-            return 0, 0.0
+            return _deny("session_zero_risk")
         inst_risk_pct = settings.PER_INSTRUMENT_RISK.get(
             inst.symbol,
             settings.RISK_PER_TRADE_PCT,
@@ -6943,7 +6998,7 @@ def _attempt_entry_open(
     if eudy_edge.risk_mult < 1.0:
         effective_risk_pct *= max(0.0, min(float(eudy_edge.risk_mult), 1.0))
     if effective_risk_pct <= 0:
-        return 0, 0.0
+        return _deny("zero_effective_risk")
 
     lev_ok, lev_set_reason = _ensure_entry_leverage(adapter, symbol, entry_leverage)
     if not lev_ok:
@@ -6975,7 +7030,7 @@ def _attempt_entry_open(
             atr * 100,
             min_atr_for_entry * 100,
         )
-        return 0, 0.0
+        return _deny("atr_below_entry_min")
 
     if stop_dist and stop_dist > 0:
         qty = _risk_based_qty(
@@ -7018,7 +7073,7 @@ def _attempt_entry_open(
             qty,
             min_qty,
         )
-        return 0, 0.0
+        return _deny("computed_qty_invalid")
 
     notional_order = last_price * contract_size * qty
     effective_total_notional = total_notional + cycle_notional_added
@@ -7043,7 +7098,7 @@ def _attempt_entry_open(
                     max_new_notional,
                     min_qty,
                 )
-                return 0, 0.0
+                return _deny("effective_leverage_cap_below_min_qty")
             logger.info(
                 "Pre-trade leverage cap: %s qty %.10f -> %.10f (max_new_notional=%.2f)",
                 symbol,
@@ -7069,7 +7124,7 @@ def _attempt_entry_open(
             free_usdt,
             margin_buffer_pct * 100,
         )
-        return 0, 0.0
+        return _deny("margin_unavailable")
     max_qty_margin = _normalize_order_qty(
         adapter,
         symbol,
@@ -7084,7 +7139,7 @@ def _attempt_entry_open(
             free_usdt,
             margin_buffer_pct * 100,
         )
-        return 0, 0.0
+        return _deny("margin_cap_below_min_qty")
     if qty > max_qty_margin:
         logger.info(
             "Margin fit %s qty %s -> %s (free=%.2f buffer=%.2f%%)",
@@ -7142,7 +7197,7 @@ def _attempt_entry_open(
             target_risk_amount,
             exploration_risk_reason,
         )
-        return 0, 0.0
+        return _deny(f"min_qty_exploration_risk:{exploration_risk_reason}")
     allowlist_state = _min_qty_dynamic_allowlist_state(actual_risk_mult)
     if bool(getattr(settings, "MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED", True)):
         if allowlist_state == "blocked":
@@ -7180,7 +7235,7 @@ def _attempt_entry_open(
                     target_risk_amount,
                     actual_risk_mult,
                 )
-                return 0, 0.0
+                return _deny("dynamic_min_qty_allowlist")
         if allowlist_state == "watch":
             logger.info(
                 "Dynamic min-qty allowlist watch %s: qty=%.10f risk_qty=%.10f min_qty=%.10f risk_mult=%.2f",
@@ -7239,7 +7294,7 @@ def _attempt_entry_open(
                 actual_risk_mult,
                 stop_dist * 100,
             )
-            return 0, 0.0
+            return _deny("min_qty_risk_guard")
 
     required_margin = notional_order / entry_leverage if entry_leverage else notional_order
     if required_margin > usable_margin:
@@ -7250,7 +7305,7 @@ def _attempt_entry_open(
             usable_margin,
             free_usdt,
         )
-        return 0, 0.0
+        return _deny("insufficient_margin")
 
     if use_allocator_signals and bool(getattr(settings, "SHADOW_TRADING_ENABLED", False)):
         logger.info(
@@ -7260,7 +7315,7 @@ def _attempt_entry_open(
             side,
             qty,
         )
-        return 0, 0.0
+        return _deny("shadow_trading")
 
     tp_price, sl_price, _, _ = _compute_tp_sl_prices(
         side,
@@ -7389,6 +7444,8 @@ def _attempt_entry_open(
             current_session if session_policy_enabled else "n/a",
             "pyramid" if allow_scale_entry else ("allocator" if is_allocator_signal else "legacy"),
         )
+        if decision_trace is not None:
+            decision_trace.pop("block_reason", None)
         return 1, notional_order
     except Exception as exc:
         is_margin_error = _is_insufficient_margin_error(exc)
@@ -7444,7 +7501,7 @@ def _attempt_entry_open(
                     "err_count": 0,
                 },
             )
-            return 0, 0.0
+            return _deny(f"exchange_margin_reject:{str(exc)[:180]}")
         err_count = _track_consecutive_errors(symbol, success=False)
         notify_error(f"Order failed {inst.symbol}: {exc}")
         record_ai_feedback_event(
@@ -7473,7 +7530,7 @@ def _attempt_entry_open(
                 details={"count": err_count, "last_error": str(exc)},
             )
             notify_kill_switch(f"{symbol}: {err_count} consecutive errors - pausing")
-        return 0, 0.0
+        return _deny(f"exchange_order_error:{str(exc)[:180]}")
 
 
 def _manage_open_position(
@@ -8908,6 +8965,7 @@ def execute_orders():
             positions_snapshot,
             cycle_pending_corr_entries,
         )
+        entry_decision_trace: dict[str, str] = {}
         placed_delta, cycle_notional_delta = _attempt_entry_open(
             adapter=adapter,
             inst=inst,
@@ -8962,7 +9020,19 @@ def execute_orders():
             account_alias=account_alias,
             account_service=account_service,
             positions_snapshot=corr_positions_snapshot,
+            decision_trace=entry_decision_trace,
         )
+        if placed_delta <= 0:
+            _record_eudy_entry_block(
+                inst=inst,
+                sig=sig,
+                strategy_name=strategy_name,
+                signal_direction=signal_direction,
+                reason=entry_decision_trace.get(
+                    "block_reason", "entry_not_placed_unclassified"
+                ),
+                account_alias=account_alias,
+            )
         placed += placed_delta
         cycle_notional_added += cycle_notional_delta
         if placed_delta > 0 and signal_direction in {"long", "short"}:
