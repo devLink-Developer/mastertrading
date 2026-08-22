@@ -1,3 +1,9 @@
+x-eudy-shadow-research-env: &eudy-shadow-research-env
+  MULTI_STRATEGY_UNIVERSE: '["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT","LINKUSDT","ENAUSDT","HYPEUSDT","XMRUSDT"]'
+  PER_INSTRUMENT_DIRECTION: '{"HYPEUSDT":"disabled","XMRUSDT":"disabled"}'
+  MODULE_MICROVOL_ENABLED: "true"
+  MODULE_MICROVOL_ALLOWED_SYMBOLS: "HYPEUSDT,XMRUSDT"
+
 services:
   web:
     build: .
@@ -9,6 +15,7 @@ services:
     env_file:
       - .env.eudy
     environment:
+      <<: *eudy-shadow-research-env
       USE_SQLITE: "false"
       # Eudy-only recovery overlay. The base/Ricardo compose is intentionally unchanged.
       EUDY_RECOVERY_ENABLED: "true"
@@ -45,6 +52,7 @@ services:
     env_file:
       - .env.eudy
     environment:
+      <<: *eudy-shadow-research-env
       USE_SQLITE: "false"
       EUDY_RECOVERY_ENABLED: "true"
       EUDY_RECOVERY_ACCOUNT_ALIASES: "eudy"
@@ -80,6 +88,7 @@ services:
     env_file:
       - .env.eudy
     environment:
+      <<: *eudy-shadow-research-env
       USE_SQLITE: "false"
     depends_on:
       postgres:
@@ -96,6 +105,7 @@ services:
     env_file:
       - .env.eudy
     environment:
+      <<: *eudy-shadow-research-env
       USE_SQLITE: "false"
     depends_on:
       postgres:
@@ -112,6 +122,7 @@ services:
     env_file:
       - .env.eudy
     environment:
+      <<: *eudy-shadow-research-env
       USE_SQLITE: "false"
     depends_on:
       postgres:
