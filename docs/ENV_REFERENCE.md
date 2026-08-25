@@ -149,6 +149,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `ALLOCATOR_THRESHOLD`
 - `ALLOCATOR_MIN_MODULES_ACTIVE`
 - `ALLOCATOR_STRONG_TREND_SOLO_ENABLED`
+- `ALLOCATOR_STRONG_TREND_SOLO_ALLOWED_SYMBOLS`: optional symbol allowlist for strong-trend solo entries; empty preserves the global behavior.
 - `ALLOCATOR_STRONG_TREND_ADX_MIN`
 - `ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT` (JSON overrides: `SYMBOL:session`, `SYMBOL:*`, `*:session`, `*:*`)
 - `ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN`

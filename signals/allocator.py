@@ -716,11 +716,20 @@ def resolve_symbol_allocation(
         "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS",
         getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS", set()) or set(),
     )
+    solo_allowed_symbols = get_runtime_str_list(
+        "ALLOCATOR_STRONG_TREND_SOLO_ALLOWED_SYMBOLS",
+        getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_ALLOWED_SYMBOLS", set()) or set(),
+    )
+    solo_symbol_allowed = (
+        not solo_allowed_symbols
+        or str(symbol or "").strip().lower() in solo_allowed_symbols
+    )
     strong_trend_solo_base_allowed = (
         get_runtime_bool(
             "ALLOCATOR_STRONG_TREND_SOLO_ENABLED",
             bool(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_ENABLED", True)),
         )
+        and solo_symbol_allowed
         and strong_trend
         and trend_sign != 0
         and str(session_name or "").strip().lower() not in solo_disabled_sessions
@@ -895,6 +904,7 @@ def resolve_symbol_allocation(
                     "volume_ok_for_solo": bool(trend_ctx.get("volume_ok_for_solo", True)),
                 },
                 "strong_trend_solo_requires_no_opposing_carry": bool(requires_no_opposing_carry),
+                "strong_trend_solo_symbol_allowed": bool(solo_symbol_allowed),
                 "strong_trend_solo_blocked_by_opposing_carry": bool(
                     opposing_carry_present and requires_no_opposing_carry
                 ),
@@ -1021,6 +1031,7 @@ def resolve_symbol_allocation(
                 "volume_ok_for_solo": bool(trend_ctx.get("volume_ok_for_solo", True)),
             },
             "strong_trend_solo_requires_no_opposing_carry": bool(requires_no_opposing_carry),
+            "strong_trend_solo_symbol_allowed": bool(solo_symbol_allowed),
             "strong_trend_solo_blocked_by_opposing_carry": bool(
                 opposing_carry_present and requires_no_opposing_carry
             ),

@@ -369,6 +369,74 @@ class AllocatorWeightingTest(TestCase):
     @override_settings(
         ALLOCATOR_MIN_MODULES_ACTIVE=2,
         ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_SOLO_ALLOWED_SYMBOLS={"adausdt", "linkusdt"},
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM=True,
+        ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO=0.8,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_blocks_strong_trend_solo_outside_symbol_allowlist(self):
+        with patch("signals.runtime_overrides._redis_client", return_value=None):
+            out = resolve_symbol_allocation(
+                [
+                    {
+                        "module": "trend",
+                        "direction": "long",
+                        "confidence": 0.95,
+                        "reasons": {"adx_htf": 35.0, "volume_ratio": 1.25},
+                    }
+                ],
+                threshold=0.20,
+                base_risk_pct=0.001,
+                session_risk_mult=1.0,
+                weights={"trend": 0.35, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+                risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+                symbol="BTCUSDT",
+                session_name="london",
+            )
+
+        self.assertEqual(out["direction"], "flat")
+        self.assertEqual(out["symbol_state"], "blocked")
+        self.assertFalse(out["reasons"]["strong_trend_solo_symbol_allowed"])
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_SOLO_ALLOWED_SYMBOLS={"adausdt", "linkusdt"},
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM=True,
+        ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO=0.8,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_allocator_allows_strong_trend_solo_inside_symbol_allowlist(self):
+        with patch("signals.runtime_overrides._redis_client", return_value=None):
+            out = resolve_symbol_allocation(
+                [
+                    {
+                        "module": "trend",
+                        "direction": "long",
+                        "confidence": 0.95,
+                        "reasons": {"adx_htf": 35.0, "volume_ratio": 1.25},
+                    }
+                ],
+                threshold=0.20,
+                base_risk_pct=0.001,
+                session_risk_mult=1.0,
+                weights={"trend": 0.35, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+                risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+                symbol="ADAUSDT",
+                session_name="london",
+            )
+
+        self.assertEqual(out["direction"], "long")
+        self.assertEqual(out["symbol_state"], "open")
+        self.assertTrue(out["reasons"]["strong_trend_solo_symbol_allowed"])
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
         ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
         ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
         ALLOCATOR_LONG_SCORE_PENALTY=1.0,
