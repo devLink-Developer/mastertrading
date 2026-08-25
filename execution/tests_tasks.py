@@ -1,5 +1,7 @@
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -50,6 +52,8 @@ from execution.tasks import (
     _daily_trade_count_key,
     _get_daily_trade_count,
     _increment_daily_trade_count,
+    _release_daily_trade_slot,
+    _reserve_daily_trade_slot,
     _ny_open_weak_long_precheck,
     _long_bias_short_precheck,
     _symbol_health_precheck,
@@ -153,6 +157,35 @@ class _DummyRedis:
         return self._Pipeline(self)
 
 
+class _AtomicDummyRedis(_DummyRedis):
+    def __init__(self):
+        super().__init__()
+        self._lock = Lock()
+
+    def eval(self, script: str, numkeys: int, key: str, *args):
+        del script, numkeys
+        with self._lock:
+            if len(args) == 2:
+                cap, ttl_seconds = int(args[0]), int(args[1])
+                current = int(self.store.get(key, "0"))
+                if current >= cap:
+                    return 0
+                current += 1
+                self.store[key] = str(current)
+                self.expiry[key] = ttl_seconds
+                return current
+            current = int(self.store.get(key, "0"))
+            if current <= 0:
+                return 0
+            current -= 1
+            if current <= 0:
+                self.store.pop(key, None)
+                self.expiry.pop(key, None)
+            else:
+                self.store[key] = str(current)
+            return current
+
+
 class _DummyAdapter:
     class _Client:
         @staticmethod
@@ -224,6 +257,59 @@ class DailyTradeCounterTest(TestCase):
             self.assertEqual(_get_daily_trade_count(), 1)
             self.assertEqual(_get_daily_trade_count("BTCUSDT"), 1)
             self.assertEqual(list(redis.store.keys()), ["risk:daily_trades:2026-06-07"])
+
+    @override_settings(
+        EUDY_ATOMIC_DAILY_TRADE_CAP_ENABLED=True,
+        EUDY_ATOMIC_DAILY_TRADE_CAP_FAIL_CLOSED=True,
+        DAILY_TRADE_COUNT_TTL_SECONDS=90000,
+    )
+    def test_atomic_daily_slot_grants_only_one_concurrent_entry(self):
+        redis = _AtomicDummyRedis()
+        fixed_now = datetime(2026, 6, 7, 13, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("execution.tasks._redis_client", return_value=redis),
+            patch("execution.tasks.dj_tz.now", return_value=fixed_now),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            results = list(pool.map(lambda _: _reserve_daily_trade_slot(1), range(2)))
+
+        self.assertEqual(sum(1 for allowed, reserved, _ in results if allowed and reserved), 1)
+        self.assertEqual(sum(1 for allowed, _, reason in results if not allowed and reason == "cap_reached"), 1)
+        self.assertEqual(int(redis.store["risk:daily_trades:2026-06-07"]), 1)
+
+    @override_settings(
+        EUDY_ATOMIC_DAILY_TRADE_CAP_ENABLED=True,
+        EUDY_ATOMIC_DAILY_TRADE_CAP_FAIL_CLOSED=True,
+    )
+    def test_atomic_daily_slot_fails_closed_without_redis(self):
+        with patch("execution.tasks._redis_client", return_value=None):
+            allowed, reserved, reason = _reserve_daily_trade_slot(1)
+
+        self.assertFalse(allowed)
+        self.assertFalse(reserved)
+        self.assertEqual(reason, "redis_unavailable")
+
+    @override_settings(
+        EUDY_ATOMIC_DAILY_TRADE_CAP_ENABLED=True,
+        EUDY_ATOMIC_DAILY_TRADE_CAP_FAIL_CLOSED=True,
+        DAILY_TRADE_SYMBOL_THROTTLE_ENABLED=True,
+        DAILY_TRADE_COUNT_TTL_SECONDS=90000,
+    )
+    def test_atomic_daily_slot_can_be_released_and_symbol_count_excludes_global(self):
+        redis = _AtomicDummyRedis()
+        fixed_now = datetime(2026, 6, 7, 13, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("execution.tasks._redis_client", return_value=redis),
+            patch("execution.tasks.dj_tz.now", return_value=fixed_now),
+        ):
+            self.assertEqual(_reserve_daily_trade_slot(1)[:2], (True, True))
+            self.assertTrue(_release_daily_trade_slot())
+            self.assertEqual(_reserve_daily_trade_slot(1)[:2], (True, True))
+            _increment_daily_trade_count("ADAUSDT", include_global=False)
+            self.assertEqual(_get_daily_trade_count(), 1)
+            self.assertEqual(_get_daily_trade_count("ADAUSDT"), 1)
 
 
 class _DummyAdapterPrecisionError:

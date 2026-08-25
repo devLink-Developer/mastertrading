@@ -1958,16 +1958,103 @@ def _get_daily_trade_count(symbol: str | None = None) -> int:
         return 0
 
 
-def _increment_daily_trade_count(symbol: str | None = None) -> None:
+_DAILY_TRADE_SLOT_RESERVE_LUA = """
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+local cap = tonumber(ARGV[1])
+if current >= cap then
+    return 0
+end
+current = redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+return current
+"""
+
+
+_DAILY_TRADE_SLOT_RELEASE_LUA = """
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+if current <= 0 then
+    return 0
+end
+current = redis.call('DECR', KEYS[1])
+if current <= 0 then
+    redis.call('DEL', KEYS[1])
+end
+return current
+"""
+
+
+def _reserve_daily_trade_slot(global_cap: int) -> tuple[bool, bool, str]:
+    """Atomically reserve an account-level daily entry slot for Eudy."""
+    if not bool(getattr(settings, "EUDY_ATOMIC_DAILY_TRADE_CAP_ENABLED", False)):
+        return True, False, "disabled"
+    cap = max(0, int(global_cap or 0))
+    if cap <= 0:
+        return True, False, "cap_disabled"
+    client = _redis_client()
+    fail_closed = bool(
+        getattr(settings, "EUDY_ATOMIC_DAILY_TRADE_CAP_FAIL_CLOSED", True)
+    )
+    if client is None:
+        if fail_closed:
+            return False, False, "redis_unavailable"
+        return True, False, "redis_unavailable"
+    ttl_seconds = max(
+        60,
+        int(getattr(settings, "DAILY_TRADE_COUNT_TTL_SECONDS", 86400 + 3600) or (86400 + 3600)),
+    )
+    try:
+        reserved_count = int(
+            client.eval(
+                _DAILY_TRADE_SLOT_RESERVE_LUA,
+                1,
+                _daily_trade_count_key(),
+                cap,
+                ttl_seconds,
+            )
+            or 0
+        )
+    except Exception:
+        if fail_closed:
+            return False, False, "redis_error"
+        return True, False, "redis_error"
+    if reserved_count <= 0:
+        return False, False, "cap_reached"
+    return True, True, "reserved"
+
+
+def _release_daily_trade_slot() -> bool:
+    """Best-effort rollback for a reserved slot before a definite non-fill."""
+    client = _redis_client()
+    if client is None:
+        return False
+    try:
+        client.eval(
+            _DAILY_TRADE_SLOT_RELEASE_LUA,
+            1,
+            _daily_trade_count_key(),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _increment_daily_trade_count(
+    symbol: str | None = None,
+    *,
+    include_global: bool = True,
+) -> None:
     """Increment today's trade counter after opening a new position."""
     client = _redis_client()
     if client is None:
         return
     try:
-        keys = [_daily_trade_count_key()]
+        global_key = _daily_trade_count_key()
+        keys = [global_key] if include_global else []
         sym_key = _daily_trade_count_key(symbol)
-        if sym_key not in keys:
+        if sym_key != global_key and sym_key not in keys:
             keys.append(sym_key)
+        if not keys:
+            return
         ttl_seconds = max(
             60,
             int(getattr(settings, "DAILY_TRADE_COUNT_TTL_SECONDS", 86400 + 3600) or (86400 + 3600)),
@@ -6211,6 +6298,8 @@ def _attempt_entry_open(
     if decision_trace is not None:
         decision_trace["block_reason"] = "entry_not_placed_unclassified"
 
+    daily_global_cap = 0
+
     if not can_open:
         return _deny("account_or_risk_gate")
 
@@ -6273,17 +6362,17 @@ def _attempt_entry_open(
     if not allow_scale_entry:
         htf_adx_for_limit = regime_adx_by_symbol.get(inst.symbol, market_regime_adx)
         daily_limit = _max_daily_trades_for_adx(htf_adx_for_limit)
+        daily_global_cap = max(
+            0,
+            int(getattr(settings, "MAX_DAILY_TRADES_GLOBAL_HARD_CAP", 0) or 0),
+        )
         if bool(getattr(settings, "DAILY_TRADE_SYMBOL_THROTTLE_ENABLED", True)):
-            global_cap = max(
-                0,
-                int(getattr(settings, "MAX_DAILY_TRADES_GLOBAL_HARD_CAP", 0) or 0),
-            )
             global_count = _get_daily_trade_count()
-            if global_cap > 0 and global_count >= global_cap:
+            if daily_global_cap > 0 and global_count >= daily_global_cap:
                 logger.info(
                     "Global daily trade hard cap reached: %d/%d - blocking entry on %s",
                     global_count,
-                    global_cap,
+                    daily_global_cap,
                     inst.symbol,
                 )
                 return _deny("global_daily_trade_cap")
@@ -7343,22 +7432,42 @@ def _attempt_entry_open(
     if not parent_correlation_id:
         parent_correlation_id = correlation_id
 
-    with transaction.atomic():
-        order = Order.objects.create(
-            instrument=inst,
-            side=side,
-            type=Order.OrderType.MARKET,
-            qty=qty,
-            price=last_price,
-            status=Order.OrderStatus.NEW,
-            correlation_id=correlation_id,
-            leverage=entry_leverage,
-            margin_mode=getattr(adapter, "margin_mode", ""),
-            notional_usdt=notional_order,
-            opened_at=dj_tz.now(),
-            parent_correlation_id=parent_correlation_id,
+    daily_slot_reserved = False
+    if not allow_scale_entry:
+        slot_allowed, daily_slot_reserved, slot_reason = _reserve_daily_trade_slot(
+            daily_global_cap
         )
+        if not slot_allowed:
+            logger.warning(
+                "Atomic daily trade slot blocked entry on %s: reason=%s cap=%d",
+                inst.symbol,
+                slot_reason,
+                daily_global_cap,
+            )
+            return _deny(f"atomic_daily_trade_cap:{slot_reason}")
 
+    try:
+        with transaction.atomic():
+            order = Order.objects.create(
+                instrument=inst,
+                side=side,
+                type=Order.OrderType.MARKET,
+                qty=qty,
+                price=last_price,
+                status=Order.OrderStatus.NEW,
+                correlation_id=correlation_id,
+                leverage=entry_leverage,
+                margin_mode=getattr(adapter, "margin_mode", ""),
+                notional_usdt=notional_order,
+                opened_at=dj_tz.now(),
+                parent_correlation_id=parent_correlation_id,
+            )
+    except Exception:
+        if daily_slot_reserved:
+            _release_daily_trade_slot()
+        raise
+
+    entry_order_filled = False
     try:
         order_params = None
         if "kucoin" in str(adapter.__class__.__name__ or "").strip().lower():
@@ -7367,6 +7476,7 @@ def _attempt_entry_open(
                 "marginMode": str(getattr(adapter, "margin_mode", "cross") or "cross"),
             }
         resp = adapter.create_order(symbol, side, "market", float(order.qty), params=order_params)
+        entry_order_filled = True
         order.status = Order.OrderStatus.FILLED
         order.exchange_order_id = resp.get("id") or resp.get("orderId", "")
         order.raw_response = resp
@@ -7419,7 +7529,10 @@ def _attempt_entry_open(
         if placed is not None:
             _remember_protective_stop_price(symbol, order.opened_at, fill_price or last_price, sl_price)
         if not allow_scale_entry:
-            _increment_daily_trade_count(inst.symbol)
+            _increment_daily_trade_count(
+                inst.symbol,
+                include_global=not daily_slot_reserved,
+            )
 
         notify_trade_opened(
             inst.symbol, side, float(qty), last_price,
@@ -7450,6 +7563,12 @@ def _attempt_entry_open(
     except Exception as exc:
         is_margin_error = _is_insufficient_margin_error(exc)
         discovered_min_qty = _minimum_order_amount_from_error(exc)
+        if (
+            daily_slot_reserved
+            and not entry_order_filled
+            and (is_margin_error or discovered_min_qty > 0)
+        ):
+            _release_daily_trade_slot()
         if discovered_min_qty > 0:
             try:
                 aligned_min_qty = _align_min_order_qty(

@@ -176,6 +176,24 @@ def _trend_context(
         session_name=session_name,
         default=adx_min,
     )
+    safety_envelope_enabled = bool(
+        getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ENVELOPE_ENABLED", False)
+    )
+    if safety_envelope_enabled:
+        adx_min = max(
+            adx_min,
+            max(
+                0.0,
+                float(
+                    getattr(
+                        settings,
+                        "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ADX_MIN",
+                        0.0,
+                    )
+                    or 0.0
+                ),
+            ),
+        )
     conf_min = get_runtime_float(
         "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN",
         float(getattr(settings, "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN", 0.80)),
@@ -191,6 +209,24 @@ def _trend_context(
         session_name=session_name,
         default=conf_min,
     )
+    if safety_envelope_enabled:
+        conf_min = max(
+            conf_min,
+            max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        getattr(
+                            settings,
+                            "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_CONFIDENCE_MIN",
+                            0.0,
+                        )
+                        or 0.0
+                    ),
+                ),
+            ),
+        )
     conf_min = max(0.0, min(1.0, float(conf_min)))
     volume_min = get_runtime_float(
         "ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO",
@@ -216,10 +252,26 @@ def _trend_context(
         session_name=session_name,
         default=volume_min,
     )
+    if safety_envelope_enabled:
+        volume_min = max(
+            volume_min,
+            max(
+                0.0,
+                float(
+                    getattr(
+                        settings,
+                        "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_VOLUME_MIN_RATIO",
+                        0.0,
+                    )
+                    or 0.0
+                ),
+            ),
+        )
     require_volume = get_runtime_bool(
         "ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM",
         bool(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM", False)),
     )
+    require_volume = bool(require_volume or safety_envelope_enabled)
     volume_ratio = max(0.0, float(best.get("volume_ratio", 0.0) or 0.0))
     volume_ok = (not require_volume) or (volume_ratio > 0.0 and volume_ratio >= volume_min)
     best["adx_min_effective"] = adx_min
@@ -724,12 +776,47 @@ def resolve_symbol_allocation(
         not solo_allowed_symbols
         or str(symbol or "").strip().lower() in solo_allowed_symbols
     )
+    safety_envelope_enabled = bool(
+        getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ENVELOPE_ENABLED", False)
+    )
+    safety_allowed_symbols = {
+        str(value).strip().lower()
+        for value in (
+            getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SYMBOLS", set())
+            or set()
+        )
+        if str(value).strip()
+    }
+    safety_allowed_sessions = {
+        str(value).strip().lower()
+        for value in (
+            getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SESSIONS", set())
+            or set()
+        )
+        if str(value).strip()
+    }
+    safety_symbol_allowed = bool(
+        not safety_envelope_enabled
+        or (
+            safety_allowed_symbols
+            and str(symbol or "").strip().lower() in safety_allowed_symbols
+        )
+    )
+    safety_session_allowed = bool(
+        not safety_envelope_enabled
+        or (
+            safety_allowed_sessions
+            and str(session_name or "").strip().lower() in safety_allowed_sessions
+        )
+    )
     strong_trend_solo_base_allowed = (
         get_runtime_bool(
             "ALLOCATOR_STRONG_TREND_SOLO_ENABLED",
             bool(getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_ENABLED", True)),
         )
         and solo_symbol_allowed
+        and safety_symbol_allowed
+        and safety_session_allowed
         and strong_trend
         and trend_sign != 0
         and str(session_name or "").strip().lower() not in solo_disabled_sessions
@@ -762,6 +849,9 @@ def resolve_symbol_allocation(
                     False,
                 )
             ),
+        )
+        requires_no_opposing_carry = bool(
+            requires_no_opposing_carry or safety_envelope_enabled
         )
         if trend_present_same_dir and (
             not requires_no_opposing_carry or not opposing_carry_present
@@ -905,6 +995,9 @@ def resolve_symbol_allocation(
                 },
                 "strong_trend_solo_requires_no_opposing_carry": bool(requires_no_opposing_carry),
                 "strong_trend_solo_symbol_allowed": bool(solo_symbol_allowed),
+                "strong_trend_solo_safety_envelope_enabled": bool(safety_envelope_enabled),
+                "strong_trend_solo_safety_symbol_allowed": bool(safety_symbol_allowed),
+                "strong_trend_solo_safety_session_allowed": bool(safety_session_allowed),
                 "strong_trend_solo_blocked_by_opposing_carry": bool(
                     opposing_carry_present and requires_no_opposing_carry
                 ),
@@ -1032,6 +1125,9 @@ def resolve_symbol_allocation(
             },
             "strong_trend_solo_requires_no_opposing_carry": bool(requires_no_opposing_carry),
             "strong_trend_solo_symbol_allowed": bool(solo_symbol_allowed),
+            "strong_trend_solo_safety_envelope_enabled": bool(safety_envelope_enabled),
+            "strong_trend_solo_safety_symbol_allowed": bool(safety_symbol_allowed),
+            "strong_trend_solo_safety_session_allowed": bool(safety_session_allowed),
             "strong_trend_solo_blocked_by_opposing_carry": bool(
                 opposing_carry_present and requires_no_opposing_carry
             ),

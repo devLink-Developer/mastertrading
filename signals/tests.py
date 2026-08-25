@@ -437,6 +437,145 @@ class AllocatorWeightingTest(TestCase):
     @override_settings(
         ALLOCATOR_MIN_MODULES_ACTIVE=2,
         ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_SOLO_ALLOWED_SYMBOLS={"ADAUSDT", "BTCUSDT"},
+        ALLOCATOR_STRONG_TREND_ADX_MIN=10.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.1,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM=False,
+        ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO=0.1,
+        ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS=set(),
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY=False,
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ENVELOPE_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SYMBOLS={"ADAUSDT", "LINKUSDT", "DOGEUSDT", "XRPUSDT"},
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SESSIONS={"london", "overlap"},
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_VOLUME_MIN_RATIO=0.8,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_eudy_safety_envelope_cannot_be_relaxed_by_runtime_values(self):
+        runtime_values = {
+            "ALLOCATOR_STRONG_TREND_SOLO_ALLOWED_SYMBOLS": "BTCUSDT,ADAUSDT,LINKUSDT,DOGEUSDT,XRPUSDT",
+            "ALLOCATOR_STRONG_TREND_SOLO_DISABLED_SESSIONS": [],
+            "ALLOCATOR_STRONG_TREND_ADX_MIN": 10.0,
+            "ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT": {"ADAUSDT:london": 5.0},
+            "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN": 0.1,
+            "ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN_BY_CONTEXT": {"ADAUSDT:london": 0.05},
+            "ALLOCATOR_STRONG_TREND_SOLO_REQUIRE_VOLUME_CONFIRM": False,
+            "ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO": 0.1,
+            "ALLOCATOR_STRONG_TREND_SOLO_MIN_VOLUME_RATIO_BY_CONTEXT": {"ADAUSDT:london": 0.05},
+        }
+        for name, value in runtime_values.items():
+            StrategyConfig.objects.create(
+                name=name,
+                version=RUNTIME_OVERRIDES_VERSION,
+                enabled=True,
+                params_json={"value": value},
+            )
+
+        def allocate(symbol, session, *, adx=35.0, confidence=0.95, volume=1.25):
+            return resolve_symbol_allocation(
+                [
+                    {
+                        "module": "trend",
+                        "direction": "long",
+                        "confidence": confidence,
+                        "reasons": {"adx_htf": adx, "volume_ratio": volume},
+                    }
+                ],
+                threshold=0.20,
+                base_risk_pct=0.001,
+                session_risk_mult=1.0,
+                weights={"trend": 0.35, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+                risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 0.0, "grid": 0.0, "smc": 0.0},
+                symbol=symbol,
+                session_name=session,
+            )
+
+        with patch("signals.runtime_overrides._redis_client", return_value=None):
+            outside_symbol = allocate("BTCUSDT", "london")
+            blocked_sessions = [
+                allocate("ADAUSDT", session)
+                for session in ("asia", "ny_open", "ny", "dead")
+            ]
+            weak_adx = allocate("ADAUSDT", "london", adx=24.99)
+            weak_confidence = allocate("ADAUSDT", "london", confidence=0.799)
+            weak_volume = allocate("ADAUSDT", "london", volume=0.799)
+            allowed_boundaries = [
+                allocate(symbol, session, adx=25.0, confidence=0.8, volume=0.8)
+                for symbol in ("ADAUSDT", "LINKUSDT", "DOGEUSDT", "XRPUSDT")
+                for session in ("london", "overlap")
+            ]
+
+        for blocked in (
+            outside_symbol,
+            *blocked_sessions,
+            weak_adx,
+            weak_confidence,
+            weak_volume,
+        ):
+            self.assertEqual(blocked["direction"], "flat")
+            self.assertEqual(blocked["symbol_state"], "blocked")
+        self.assertFalse(outside_symbol["reasons"]["strong_trend_solo_safety_symbol_allowed"])
+        for outside_session in blocked_sessions:
+            self.assertFalse(
+                outside_session["reasons"]["strong_trend_solo_safety_session_allowed"]
+            )
+        self.assertEqual(weak_adx["reasons"]["trend_context"]["adx_min_effective"], 25.0)
+        self.assertEqual(weak_confidence["reasons"]["trend_context"]["confidence_min_effective"], 0.8)
+        self.assertEqual(weak_volume["reasons"]["trend_context"]["volume_min_effective"], 0.8)
+        for boundary in allowed_boundaries:
+            self.assertEqual(boundary["direction"], "long")
+            self.assertEqual(boundary["symbol_state"], "open")
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_SOLO_ALLOWED_SYMBOLS={"ADAUSDT"},
+        ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ENVELOPE_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SYMBOLS={"ADAUSDT"},
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SESSIONS={"london"},
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ADX_MIN=25.0,
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_CONFIDENCE_MIN=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_VOLUME_MIN_RATIO=0.8,
+        ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY=False,
+        ALLOCATOR_LONG_SCORE_PENALTY=1.0,
+    )
+    def test_eudy_safety_envelope_blocks_opposing_carry(self):
+        StrategyConfig.objects.create(
+            name="ALLOCATOR_STRONG_TREND_SOLO_REQUIRES_NO_OPPOSING_CARRY",
+            version=RUNTIME_OVERRIDES_VERSION,
+            enabled=True,
+            params_json={"value": False},
+        )
+        with patch("signals.runtime_overrides._redis_client", return_value=None):
+            out = resolve_symbol_allocation(
+                [
+                    {
+                        "module": "trend",
+                        "direction": "long",
+                        "confidence": 0.95,
+                        "reasons": {"adx_htf": 35.0, "volume_ratio": 1.0},
+                    },
+                    {"module": "carry", "direction": "short", "confidence": 0.90},
+                ],
+                threshold=0.20,
+                base_risk_pct=0.001,
+                session_risk_mult=1.0,
+                weights={"trend": 0.16, "meanrev": 0.0, "carry": 0.15, "grid": 0.0, "smc": 0.0},
+                risk_budgets={"trend": 1.0, "meanrev": 0.0, "carry": 1.0, "grid": 0.0, "smc": 0.0},
+                symbol="ADAUSDT",
+                session_name="london",
+            )
+
+        self.assertEqual(out["direction"], "flat")
+        self.assertFalse(out["reasons"]["strong_trend_solo_applied"])
+        self.assertTrue(out["reasons"]["strong_trend_solo_requires_no_opposing_carry"])
+
+    @override_settings(
+        ALLOCATOR_MIN_MODULES_ACTIVE=2,
+        ALLOCATOR_STRONG_TREND_SOLO_ENABLED=True,
         ALLOCATOR_STRONG_TREND_ADX_MIN=25.0,
         ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN=0.8,
         ALLOCATOR_LONG_SCORE_PENALTY=1.0,
@@ -1228,6 +1367,41 @@ class AllocatorStrongTrendSoloCycleTest(TestCase):
         self.assertEqual(reasons.get("required_modules"), 1)
         self.assertTrue(reasons.get("strong_trend_solo_applied"))
         self.assertTrue(reasons.get("strong_trend_solo_weight_floor_applied"))
+
+    @override_settings(
+        RISK_PER_TRADE_PCT=0.003,
+        PER_INSTRUMENT_RISK={"ADAUSDT": 0.001},
+    )
+    def test_allocator_cycle_uses_per_instrument_risk_budget(self):
+        inst = Instrument.objects.create(
+            symbol="ADAUSDT",
+            exchange="binance",
+            base="ADA",
+            quote="USDT",
+            enabled=True,
+        )
+        Signal.objects.create(
+            strategy="mod_trend_long",
+            instrument=inst,
+            ts=datetime.now(timezone.utc),
+            payload_json={
+                "module": "trend",
+                "direction": "long",
+                "confidence": 0.95,
+                "raw_score": 0.95,
+                "reasons": {"adx_htf": 47.0},
+            },
+            score=0.95,
+        )
+
+        with patch("signals.multi_strategy.acquire_task_lock", return_value=True):
+            out = run_allocator_cycle()
+
+        self.assertIn("allocator:emitted=1", out)
+        alloc = Signal.objects.filter(instrument=inst, strategy="alloc_long").order_by("-ts").first()
+        self.assertIsNotNone(alloc)
+        reasons = (alloc.payload_json or {}).get("reasons", {})
+        self.assertEqual(reasons.get("base_risk_pct"), 0.001)
 
 
 @override_settings(

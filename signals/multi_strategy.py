@@ -418,6 +418,12 @@ def run_allocator_cycle() -> str:
     hmm_enabled = bool(getattr(settings, "HMM_REGIME_ENABLED", False))
     for inst in instruments:
         module_rows = by_symbol.get(inst.id, [])
+        inst_base_risk = float(
+            (getattr(settings, "PER_INSTRUMENT_RISK", {}) or {}).get(
+                inst.symbol,
+                base_risk,
+            )
+        )
 
         # Regime-adjusted risk multiplier
         inst_regime_mult = 1.0
@@ -428,7 +434,7 @@ def run_allocator_cycle() -> str:
         alloc = resolve_symbol_allocation(
             module_rows,
             threshold=threshold,
-            base_risk_pct=base_risk,
+            base_risk_pct=inst_base_risk,
             session_risk_mult=session_risk_mult * inst_regime_mult,
             weights=weights,
             risk_budgets=risk_budgets,
