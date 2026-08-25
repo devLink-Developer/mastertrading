@@ -152,7 +152,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `ALLOCATOR_STRONG_TREND_SOLO_ALLOWED_SYMBOLS`: optional symbol allowlist for strong-trend solo entries; empty preserves the global behavior.
 - `ALLOCATOR_STRONG_TREND_SOLO_SAFETY_*`: non-runtime safety envelope for a bounded deployment; when enabled it requires explicit symbols/sessions and floors ADX, confidence and volume so DB overrides cannot relax them.
 - `EUDY_ATOMIC_DAILY_TRADE_CAP_ENABLED`: reserves the global daily entry slot atomically in Redis before order placement; pair with `EUDY_ATOMIC_DAILY_TRADE_CAP_FAIL_CLOSED=true` for Eudy-only bounded rollouts.
-- `PER_INSTRUMENT_RISK`: also supplies the allocator's per-symbol base risk budget; symbols absent from the map keep `RISK_PER_TRADE_PCT`.
+- `ALLOCATOR_PER_INSTRUMENT_RISK_ENABLED`: when true, `PER_INSTRUMENT_RISK` also supplies the allocator's per-symbol base risk budget; default false preserves existing stacks.
 - `ALLOCATOR_STRONG_TREND_ADX_MIN`
 - `ALLOCATOR_STRONG_TREND_ADX_MIN_BY_CONTEXT` (JSON overrides: `SYMBOL:session`, `SYMBOL:*`, `*:session`, `*:*`)
 - `ALLOCATOR_STRONG_TREND_CONFIDENCE_MIN`

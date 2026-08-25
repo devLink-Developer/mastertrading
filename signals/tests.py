@@ -1371,6 +1371,7 @@ class AllocatorStrongTrendSoloCycleTest(TestCase):
     @override_settings(
         RISK_PER_TRADE_PCT=0.003,
         PER_INSTRUMENT_RISK={"ADAUSDT": 0.001},
+        ALLOCATOR_PER_INSTRUMENT_RISK_ENABLED=True,
     )
     def test_allocator_cycle_uses_per_instrument_risk_budget(self):
         inst = Instrument.objects.create(
@@ -1402,6 +1403,42 @@ class AllocatorStrongTrendSoloCycleTest(TestCase):
         self.assertIsNotNone(alloc)
         reasons = (alloc.payload_json or {}).get("reasons", {})
         self.assertEqual(reasons.get("base_risk_pct"), 0.001)
+
+    @override_settings(
+        RISK_PER_TRADE_PCT=0.003,
+        PER_INSTRUMENT_RISK={"ADAUSDT": 0.001},
+        ALLOCATOR_PER_INSTRUMENT_RISK_ENABLED=False,
+    )
+    def test_allocator_cycle_preserves_global_risk_when_symbol_risk_flag_is_off(self):
+        inst = Instrument.objects.create(
+            symbol="ADAUSDT",
+            exchange="binance",
+            base="ADA",
+            quote="USDT",
+            enabled=True,
+        )
+        Signal.objects.create(
+            strategy="mod_trend_long",
+            instrument=inst,
+            ts=datetime.now(timezone.utc),
+            payload_json={
+                "module": "trend",
+                "direction": "long",
+                "confidence": 0.95,
+                "raw_score": 0.95,
+                "reasons": {"adx_htf": 47.0},
+            },
+            score=0.95,
+        )
+
+        with patch("signals.multi_strategy.acquire_task_lock", return_value=True):
+            out = run_allocator_cycle()
+
+        self.assertIn("allocator:emitted=1", out)
+        alloc = Signal.objects.filter(instrument=inst, strategy="alloc_long").order_by("-ts").first()
+        self.assertIsNotNone(alloc)
+        reasons = (alloc.payload_json or {}).get("reasons", {})
+        self.assertEqual(reasons.get("base_risk_pct"), 0.003)
 
 
 @override_settings(
