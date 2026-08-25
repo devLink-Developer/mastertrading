@@ -16,6 +16,8 @@ from risk.models import CircuitBreakerConfig, RiskEvent
 from signals.models import Signal, StrategyConfig
 from signals.runtime_overrides import RUNTIME_OVERRIDES_VERSION, invalidate_runtime_overrides_cache
 from execution.tasks import (
+    _DAILY_TRADE_SLOT_RELEASE_LUA,
+    _DAILY_TRADE_SLOT_RESERVE_LUA,
     _ai_entry_market_fingerprint,
     _ai_entry_mark_rejected,
     _ai_entry_reject_cache_key,
@@ -162,27 +164,37 @@ class _AtomicDummyRedis(_DummyRedis):
         super().__init__()
         self._lock = Lock()
 
-    def eval(self, script: str, numkeys: int, key: str, *args):
-        del script, numkeys
+    def eval(self, script: str, numkeys: int, *values):
+        if numkeys != 2:
+            raise AssertionError(f"unexpected numkeys={numkeys}")
+        count_key, owner_key, *args = values
         with self._lock:
-            if len(args) == 2:
+            if script == _DAILY_TRADE_SLOT_RESERVE_LUA:
                 cap, ttl_seconds = int(args[0]), int(args[1])
-                current = int(self.store.get(key, "0"))
+                current = int(self.store.get(count_key, "0"))
                 if current >= cap:
                     return 0
                 current += 1
-                self.store[key] = str(current)
-                self.expiry[key] = ttl_seconds
+                self.store[count_key] = str(current)
+                self.expiry[count_key] = ttl_seconds
+                self.store[owner_key] = "1"
+                self.expiry[owner_key] = ttl_seconds
                 return current
-            current = int(self.store.get(key, "0"))
+            if script != _DAILY_TRADE_SLOT_RELEASE_LUA:
+                raise AssertionError("unexpected Lua script")
+            if owner_key not in self.store:
+                return -1
+            self.store.pop(owner_key, None)
+            self.expiry.pop(owner_key, None)
+            current = int(self.store.get(count_key, "0"))
             if current <= 0:
                 return 0
             current -= 1
             if current <= 0:
-                self.store.pop(key, None)
-                self.expiry.pop(key, None)
+                self.store.pop(count_key, None)
+                self.expiry.pop(count_key, None)
             else:
-                self.store[key] = str(current)
+                self.store[count_key] = str(current)
             return current
 
 
@@ -274,7 +286,10 @@ class DailyTradeCounterTest(TestCase):
         ):
             results = list(pool.map(lambda _: _reserve_daily_trade_slot(1), range(2)))
 
-        self.assertEqual(sum(1 for allowed, reserved, _ in results if allowed and reserved), 1)
+        self.assertEqual(
+            sum(1 for allowed, reservation, _ in results if allowed and reservation is not None),
+            1,
+        )
         self.assertEqual(sum(1 for allowed, _, reason in results if not allowed and reason == "cap_reached"), 1)
         self.assertEqual(int(redis.store["risk:daily_trades:2026-06-07"]), 1)
 
@@ -304,12 +319,65 @@ class DailyTradeCounterTest(TestCase):
             patch("execution.tasks._redis_client", return_value=redis),
             patch("execution.tasks.dj_tz.now", return_value=fixed_now),
         ):
-            self.assertEqual(_reserve_daily_trade_slot(1)[:2], (True, True))
-            self.assertTrue(_release_daily_trade_slot())
-            self.assertEqual(_reserve_daily_trade_slot(1)[:2], (True, True))
+            allowed, reservation, _ = _reserve_daily_trade_slot(1)
+            self.assertTrue(allowed)
+            self.assertIsNotNone(reservation)
+            self.assertTrue(_release_daily_trade_slot(reservation))
+            allowed, reservation, _ = _reserve_daily_trade_slot(1)
+            self.assertTrue(allowed)
+            self.assertIsNotNone(reservation)
             _increment_daily_trade_count("ADAUSDT", include_global=False)
             self.assertEqual(_get_daily_trade_count(), 1)
             self.assertEqual(_get_daily_trade_count("ADAUSDT"), 1)
+
+    @override_settings(
+        EUDY_ATOMIC_DAILY_TRADE_CAP_ENABLED=True,
+        EUDY_ATOMIC_DAILY_TRADE_CAP_FAIL_CLOSED=True,
+        DAILY_TRADE_COUNT_TTL_SECONDS=90000,
+    )
+    def test_atomic_release_uses_original_day_and_owner_across_utc_rollover(self):
+        redis = _AtomicDummyRedis()
+        old_day = datetime(2026, 6, 7, 23, 59, 59, tzinfo=timezone.utc)
+        new_day = datetime(2026, 6, 8, 0, 0, 1, tzinfo=timezone.utc)
+
+        with patch("execution.tasks._redis_client", return_value=redis):
+            with patch("execution.tasks.dj_tz.now", return_value=old_day):
+                old_allowed, old_reservation, _ = _reserve_daily_trade_slot(1)
+            with patch("execution.tasks.dj_tz.now", return_value=new_day):
+                new_allowed, new_reservation, _ = _reserve_daily_trade_slot(1)
+                self.assertTrue(_release_daily_trade_slot(old_reservation))
+                self.assertEqual(_get_daily_trade_count(), 1)
+
+        self.assertTrue(old_allowed)
+        self.assertTrue(new_allowed)
+        self.assertIsNotNone(old_reservation)
+        self.assertIsNotNone(new_reservation)
+        self.assertNotEqual(old_reservation.count_key, new_reservation.count_key)
+        self.assertNotEqual(old_reservation.owner_key, new_reservation.owner_key)
+        self.assertNotIn(old_reservation.count_key, redis.store)
+        self.assertEqual(redis.store[new_reservation.count_key], "1")
+        self.assertIn(new_reservation.owner_key, redis.store)
+
+    @override_settings(
+        EUDY_ATOMIC_DAILY_TRADE_CAP_ENABLED=True,
+        EUDY_ATOMIC_DAILY_TRADE_CAP_FAIL_CLOSED=True,
+    )
+    def test_atomic_release_cannot_release_a_reused_slot_owned_by_another_token(self):
+        redis = _AtomicDummyRedis()
+        fixed_now = datetime(2026, 6, 7, 13, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("execution.tasks._redis_client", return_value=redis),
+            patch("execution.tasks.dj_tz.now", return_value=fixed_now),
+        ):
+            _, first_reservation, _ = _reserve_daily_trade_slot(1)
+            self.assertTrue(_release_daily_trade_slot(first_reservation))
+            _, second_reservation, _ = _reserve_daily_trade_slot(1)
+            self.assertFalse(_release_daily_trade_slot(first_reservation))
+            self.assertEqual(_get_daily_trade_count(), 1)
+
+        self.assertNotEqual(first_reservation.owner_key, second_reservation.owner_key)
+        self.assertIn(second_reservation.owner_key, redis.store)
 
 
 class _DummyAdapterPrecisionError:

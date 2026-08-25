@@ -9,7 +9,7 @@ from io import StringIO
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from datetime import datetime, timezone, timedelta
 from statistics import median
-from typing import Any
+from typing import Any, NamedTuple
 
 from celery import shared_task
 from django.db import transaction
@@ -1590,6 +1590,45 @@ def _volume_gate_allowed(
     return ratio >= min_ratio, ratio
 
 
+def _strong_trend_safety_execution_allowed(
+    *,
+    symbol: str,
+    current_session: str,
+    sig_payload: dict | None,
+) -> tuple[bool, str]:
+    """Revalidate the non-runtime strong-trend envelope at order time."""
+    if not bool(
+        getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ENVELOPE_ENABLED", False)
+    ):
+        return True, "disabled"
+    reasons = sig_payload.get("reasons", {}) if isinstance(sig_payload, dict) else {}
+    if not isinstance(reasons, dict) or not bool(
+        reasons.get("strong_trend_solo_applied", False)
+    ):
+        return True, "not_strong_trend_solo"
+    allowed_symbols = {
+        str(value).strip().upper()
+        for value in (
+            getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SYMBOLS", set())
+            or set()
+        )
+        if str(value).strip()
+    }
+    allowed_sessions = {
+        str(value).strip().lower()
+        for value in (
+            getattr(settings, "ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SESSIONS", set())
+            or set()
+        )
+        if str(value).strip()
+    }
+    if not allowed_symbols or str(symbol or "").strip().upper() not in allowed_symbols:
+        return False, "symbol"
+    if not allowed_sessions or str(current_session or "").strip().lower() not in allowed_sessions:
+        return False, "session"
+    return True, "allowed"
+
+
 def _compute_stop_distance(instrument: Instrument, side: str, entry_price: float) -> float | None:
     """
     DEPRECATED: This previously returned only ATR-based stop distance, which could
@@ -1966,11 +2005,16 @@ if current >= cap then
 end
 current = redis.call('INCR', KEYS[1])
 redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+redis.call('SET', KEYS[2], '1', 'EX', tonumber(ARGV[2]))
 return current
 """
 
 
 _DAILY_TRADE_SLOT_RELEASE_LUA = """
+if redis.call('EXISTS', KEYS[2]) == 0 then
+    return -1
+end
+redis.call('DEL', KEYS[2])
 local current = tonumber(redis.call('GET', KEYS[1]) or '0')
 if current <= 0 then
     return 0
@@ -1983,31 +2027,44 @@ return current
 """
 
 
-def _reserve_daily_trade_slot(global_cap: int) -> tuple[bool, bool, str]:
+class _DailyTradeSlotReservation(NamedTuple):
+    count_key: str
+    owner_key: str
+
+
+def _reserve_daily_trade_slot(
+    global_cap: int,
+) -> tuple[bool, _DailyTradeSlotReservation | None, str]:
     """Atomically reserve an account-level daily entry slot for Eudy."""
     if not bool(getattr(settings, "EUDY_ATOMIC_DAILY_TRADE_CAP_ENABLED", False)):
-        return True, False, "disabled"
+        return True, None, "disabled"
     cap = max(0, int(global_cap or 0))
     if cap <= 0:
-        return True, False, "cap_disabled"
+        return True, None, "cap_disabled"
     client = _redis_client()
     fail_closed = bool(
         getattr(settings, "EUDY_ATOMIC_DAILY_TRADE_CAP_FAIL_CLOSED", True)
     )
     if client is None:
         if fail_closed:
-            return False, False, "redis_unavailable"
-        return True, False, "redis_unavailable"
+            return False, None, "redis_unavailable"
+        return True, None, "redis_unavailable"
     ttl_seconds = max(
         60,
         int(getattr(settings, "DAILY_TRADE_COUNT_TTL_SECONDS", 86400 + 3600) or (86400 + 3600)),
     )
     try:
+        count_key = _daily_trade_count_key()
+        reservation = _DailyTradeSlotReservation(
+            count_key=count_key,
+            owner_key=f"{count_key}:reservation:{uuid.uuid4().hex}",
+        )
         reserved_count = int(
             client.eval(
                 _DAILY_TRADE_SLOT_RESERVE_LUA,
-                1,
-                _daily_trade_count_key(),
+                2,
+                reservation.count_key,
+                reservation.owner_key,
                 cap,
                 ttl_seconds,
             )
@@ -2015,25 +2072,32 @@ def _reserve_daily_trade_slot(global_cap: int) -> tuple[bool, bool, str]:
         )
     except Exception:
         if fail_closed:
-            return False, False, "redis_error"
-        return True, False, "redis_error"
+            return False, None, "redis_error"
+        return True, None, "redis_error"
     if reserved_count <= 0:
-        return False, False, "cap_reached"
-    return True, True, "reserved"
+        return False, None, "cap_reached"
+    return True, reservation, "reserved"
 
 
-def _release_daily_trade_slot() -> bool:
+def _release_daily_trade_slot(
+    reservation: _DailyTradeSlotReservation | None,
+) -> bool:
     """Best-effort rollback for a reserved slot before a definite non-fill."""
+    if reservation is None:
+        return False
     client = _redis_client()
     if client is None:
         return False
     try:
-        client.eval(
-            _DAILY_TRADE_SLOT_RELEASE_LUA,
-            1,
-            _daily_trade_count_key(),
+        released_count = int(
+            client.eval(
+                _DAILY_TRADE_SLOT_RELEASE_LUA,
+                2,
+                reservation.count_key,
+                reservation.owner_key,
+            )
         )
-        return True
+        return released_count >= 0
     except Exception:
         return False
 
@@ -7432,9 +7496,26 @@ def _attempt_entry_open(
     if not parent_correlation_id:
         parent_correlation_id = correlation_id
 
-    daily_slot_reserved = False
+    execution_session = get_current_session(dj_tz.now())
+    strong_trend_safety_ok, strong_trend_safety_reason = (
+        _strong_trend_safety_execution_allowed(
+            symbol=inst.symbol,
+            current_session=execution_session,
+            sig_payload=sig_payload,
+        )
+    )
+    if not strong_trend_safety_ok:
+        logger.info(
+            "Strong-trend safety envelope blocked execution on %s session=%s reason=%s",
+            inst.symbol,
+            execution_session,
+            strong_trend_safety_reason,
+        )
+        return _deny(f"strong_trend_safety_{strong_trend_safety_reason}")
+
+    daily_slot_reservation = None
     if not allow_scale_entry:
-        slot_allowed, daily_slot_reserved, slot_reason = _reserve_daily_trade_slot(
+        slot_allowed, daily_slot_reservation, slot_reason = _reserve_daily_trade_slot(
             daily_global_cap
         )
         if not slot_allowed:
@@ -7463,8 +7544,8 @@ def _attempt_entry_open(
                 parent_correlation_id=parent_correlation_id,
             )
     except Exception:
-        if daily_slot_reserved:
-            _release_daily_trade_slot()
+        if daily_slot_reservation is not None:
+            _release_daily_trade_slot(daily_slot_reservation)
         raise
 
     entry_order_filled = False
@@ -7531,7 +7612,7 @@ def _attempt_entry_open(
         if not allow_scale_entry:
             _increment_daily_trade_count(
                 inst.symbol,
-                include_global=not daily_slot_reserved,
+                include_global=daily_slot_reservation is None,
             )
 
         notify_trade_opened(
@@ -7564,11 +7645,11 @@ def _attempt_entry_open(
         is_margin_error = _is_insufficient_margin_error(exc)
         discovered_min_qty = _minimum_order_amount_from_error(exc)
         if (
-            daily_slot_reserved
+            daily_slot_reservation is not None
             and not entry_order_filled
             and (is_margin_error or discovered_min_qty > 0)
         ):
-            _release_daily_trade_slot()
+            _release_daily_trade_slot(daily_slot_reservation)
         if discovered_min_qty > 0:
             try:
                 aligned_min_qty = _align_min_order_qty(

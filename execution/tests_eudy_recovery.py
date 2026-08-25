@@ -542,6 +542,93 @@ class EudyRecoveryIntegrationTests(TestCase):
         self.assertEqual(trace["block_reason"], "account_or_risk_gate")
 
     @override_settings(
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ENVELOPE_ENABLED=True,
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SYMBOLS={"LINKUSDT"},
+        ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ALLOWED_SESSIONS={"london", "overlap"},
+    )
+    def test_entry_attempt_revalidates_strong_trend_session_at_execution_time(self):
+        sig = Signal.objects.create(
+            instrument=self.inst,
+            strategy="alloc_long",
+            score=0.95,
+            ts=dj_tz.now(),
+            payload_json={
+                "direction": "long",
+                "risk_budget_pct": 0.001,
+                "reasons": {"strong_trend_solo_applied": True},
+            },
+        )
+        trace: dict[str, str] = {}
+        adapter = SimpleNamespace(
+            client=SimpleNamespace(
+                precisionMode=4,
+                amount_to_precision=lambda _symbol, amount: str(amount),
+            ),
+            _map_symbol=lambda symbol: symbol,
+        )
+
+        with patch("execution.tasks.get_current_session", return_value="ny_open"):
+            result = _attempt_entry_open(
+                adapter=adapter,
+                inst=self.inst,
+                sig=sig,
+                sig_payload=sig.payload_json,
+                strategy_name=sig.strategy,
+                side="buy",
+                signal_direction="long",
+                direction_allowed=True,
+                signal_expired=False,
+                can_open=True,
+                macro_active=False,
+                macro_context={},
+                macro_block_entries=False,
+                macro_risk_mult=1.0,
+                regime_blocked_symbols=set(),
+                regime_adx_by_symbol={},
+                regime_adx_min_by_symbol={},
+                regime_bias_by_symbol={},
+                regime_adx_min=17.0,
+                market_regime_adx=None,
+                mtf_symbol_snapshot={},
+                btc_lead_state="neutral",
+                btc_recommended_bias="balanced",
+                allow_scale_entry=False,
+                scale_parent_correlation="",
+                scale_add_index=0,
+                session_policy_enabled=True,
+                session_dead_zone_block=True,
+                current_session="overlap",
+                session_min_score=0.20,
+                session_risk_mult=1.0,
+                ml_entry_filter_enabled=False,
+                ml_entry_filter_default_min_prob=0.50,
+                ml_entry_filter_fail_open=True,
+                use_allocator_signals=True,
+                symbol=self.inst.symbol,
+                last_price=10.0,
+                contract_size=1.0,
+                market_info={},
+                atr=0.01,
+                sl_pct=0.012,
+                spread_bps_selected=1.0,
+                free_usdt=10.0,
+                equity_usdt=10.0,
+                leverage=5.0,
+                total_notional=0.0,
+                cycle_notional_added=0.0,
+                account_ai_enabled=False,
+                account_ai_config_id=None,
+                account_owner_id=None,
+                account_alias="eudy",
+                account_service="trading",
+                positions_snapshot=[],
+                decision_trace=trace,
+            )
+
+        self.assertEqual(result, (0, 0.0))
+        self.assertEqual(trace["block_reason"], "strong_trend_safety_session")
+
+    @override_settings(
         FLAT_SIGNAL_TIMEOUT_ENABLED=True,
         FLAT_SIGNAL_TIMEOUT_MINUTES=10,
         FLAT_SIGNAL_EARLY_EXIT_ENABLED=True,
