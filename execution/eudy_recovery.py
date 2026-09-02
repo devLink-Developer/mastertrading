@@ -136,7 +136,7 @@ def eudy_exploration_risk_integrity_allows(
     actual_risk_mult: float,
     absolute_cap_allows: bool = False,
 ) -> tuple[bool, str]:
-    """Keep reduced-risk exploration from being erased by exchange min_qty."""
+    """Enforce exploratory sizing or its explicitly enabled absolute-risk cap."""
     if not is_eudy_recovery_account(account_alias):
         return True, "eudy_exploration_risk_integrity_bypass"
 
@@ -152,9 +152,18 @@ def eudy_exploration_risk_integrity_allows(
     )
     risk_mult = max(0.0, float(actual_risk_mult or 0.0))
     if risk_mult > max_risk_mult:
-        # The absolute account cap is a separate necessary limit, never an
-        # override for the relative exploratory-risk contract.
-        _ = absolute_cap_allows
+        if absolute_cap_allows and bool(
+            getattr(
+                settings,
+                "EUDY_EXPLORATION_MIN_QTY_ABSOLUTE_CAP_OVERRIDE_ENABLED",
+                False,
+            )
+        ):
+            return (
+                True,
+                "eudy_exploration_absolute_cap_override:"
+                f"risk_mult={risk_mult:.2f}>max={max_risk_mult:.2f}",
+            )
         return (
             False,
             f"eudy_exploration_min_qty_block:risk_mult={risk_mult:.2f}>max={max_risk_mult:.2f}",

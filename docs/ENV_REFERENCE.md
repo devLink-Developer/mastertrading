@@ -82,6 +82,7 @@ This document lists high-impact variables only. Keep secrets out of git.
 - `EUDY_EDGE_GUARD_LOOKBACK_DAYS`, `EUDY_EDGE_GUARD_MAX_TRADES`, `EUDY_EDGE_GUARD_MIN_TRADES`: rolling evidence window for each daily-regime + BTC-lead + bias + side cohort.
 - `EUDY_EDGE_GUARD_MIN_PROFIT_FACTOR`, `EUDY_EDGE_GUARD_MIN_EXPECTANCY_PCT`: net-of-fees thresholds required for normal risk.
 - `EUDY_EDGE_GUARD_EXPLORATION_RISK_MULT`: reduced sizing for contexts without enough observations; known-negative cohorts are blocked.
+- `EUDY_EXPLORATION_MIN_QTY_ABSOLUTE_CAP_OVERRIDE_ENABLED`: when explicitly enabled for Eudy, permits an exploratory exchange minimum only if the existing absolute account-risk cap also approves it; defaults to `false`.
 - `EUDY_EDGE_GUARD_RESET_AT`: optional ISO timestamp excluding obsolete outcomes from the Eudy cohort window.
 - `EUDY_RECOVERY_FLAT_TIMEOUT_ENABLED`, `EUDY_RECOVERY_FLAT_TIMEOUT_MINUTES`, `EUDY_RECOVERY_FLAT_EARLY_EXIT_ENABLED`: Eudy-only flat-signal exit policy.
 - `SYMBOL_HEAT_GUARD_ENABLED`: progressive risk reduction by symbol+side using recent `OperationReport.pnl_pct`.

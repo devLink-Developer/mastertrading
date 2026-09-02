@@ -1,6 +1,7 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone as dj_tz
@@ -11,7 +12,7 @@ from execution.eudy_recovery import (
     eudy_exploration_risk_integrity_allows,
     evaluate_eudy_edge_guard,
 )
-from execution.models import OperationReport
+from execution.models import OperationReport, Order
 from execution.tasks import (
     _attempt_entry_open,
     _entry_quality_profile_precheck,
@@ -95,6 +96,40 @@ class EudyRecoveryClassifierTests(SimpleTestCase):
             edge_status="explore",
             actual_risk_mult=10.25,
             absolute_cap_allows=True,
+        )
+
+        self.assertFalse(allowed)
+        self.assertIn("min_qty_block", reason)
+
+    @override_settings(
+        EUDY_RECOVERY_ENABLED=True,
+        EUDY_RECOVERY_ACCOUNT_ALIASES={"eudy"},
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+        EUDY_EXPLORATION_MIN_QTY_ABSOLUTE_CAP_OVERRIDE_ENABLED=True,
+    )
+    def test_enabled_absolute_cap_override_allows_safe_eudy_exploration(self):
+        allowed, reason = eudy_exploration_risk_integrity_allows(
+            account_alias="eudy",
+            edge_status="explore",
+            actual_risk_mult=10.25,
+            absolute_cap_allows=True,
+        )
+
+        self.assertTrue(allowed)
+        self.assertIn("absolute_cap_override", reason)
+
+    @override_settings(
+        EUDY_RECOVERY_ENABLED=True,
+        EUDY_RECOVERY_ACCOUNT_ALIASES={"eudy"},
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+        EUDY_EXPLORATION_MIN_QTY_ABSOLUTE_CAP_OVERRIDE_ENABLED=True,
+    )
+    def test_enabled_absolute_cap_override_still_blocks_unsafe_eudy_exploration(self):
+        allowed, reason = eudy_exploration_risk_integrity_allows(
+            account_alias="eudy",
+            edge_status="explore",
+            actual_risk_mult=10.25,
+            absolute_cap_allows=False,
         )
 
         self.assertFalse(allowed)
@@ -372,6 +407,7 @@ class EudyRecoveryIntegrationTests(TestCase):
         lead: str = "transition",
         bias: str = "balanced",
         side: str = "sell",
+        closed_at=None,
     ) -> None:
         pnl_abs = Decimal(str(pnl_pct * 100.0))
         OperationReport.objects.create(
@@ -392,7 +428,7 @@ class EudyRecoveryIntegrationTests(TestCase):
             daily_regime=daily_regime,
             btc_lead_state=lead,
             recommended_bias=bias,
-            closed_at=dj_tz.now(),
+            closed_at=closed_at or dj_tz.now(),
         )
 
     def test_guard_uses_exact_regime_bias_and_side_cohort(self):
@@ -413,6 +449,33 @@ class EudyRecoveryIntegrationTests(TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.status, "validated")
         self.assertEqual(decision.sample_size, 3)
+
+    @override_settings(
+        EUDY_EDGE_GUARD_RESET_AT="2026-08-25T13:50:00Z",
+        EUDY_EDGE_GUARD_MIN_TRADES=1,
+    )
+    def test_guard_reset_excludes_pre_rollout_outcomes(self):
+        self._report(
+            -0.50,
+            closed_at=datetime(2026, 8, 25, 13, 49, tzinfo=timezone.utc),
+        )
+        self._report(
+            0.004,
+            closed_at=datetime(2026, 8, 25, 13, 51, tzinfo=timezone.utc),
+        )
+
+        decision = evaluate_eudy_edge_guard(
+            account_alias="eudy",
+            side="sell",
+            daily_regime="transition",
+            btc_lead_state="transition",
+            recommended_bias="balanced",
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.status, "validated")
+        self.assertEqual(decision.sample_size, 1)
+        self.assertAlmostEqual(decision.expectancy_pct, 0.004)
 
     def test_non_eudy_account_is_always_bypassed(self):
         decision = evaluate_eudy_edge_guard(
@@ -540,6 +603,212 @@ class EudyRecoveryIntegrationTests(TestCase):
 
         self.assertEqual(result, (0, 0.0))
         self.assertEqual(trace["block_reason"], "account_or_risk_gate")
+
+    def _attempt_min_qty_entry(self, *, account_alias: str, min_qty: float):
+        sig = Signal.objects.create(
+            instrument=self.inst,
+            strategy="alloc_long",
+            score=0.95,
+            ts=dj_tz.now(),
+            payload_json={
+                "direction": "long",
+                "risk_budget_pct": 0.0003,
+            },
+        )
+        sent_orders: list[tuple] = []
+
+        def _create_order(*args, **kwargs):
+            sent_orders.append((args, kwargs))
+            return {
+                "id": f"test-{sig.id}",
+                "average": 10.0,
+                "fee": {"cost": 0.0},
+            }
+
+        adapter = SimpleNamespace(
+            client=SimpleNamespace(
+                precisionMode=4,
+                amount_to_precision=lambda _symbol, amount: str(amount),
+            ),
+            _map_symbol=lambda symbol: symbol,
+            create_order=_create_order,
+            margin_mode="cross",
+        )
+        trace: dict[str, str] = {}
+        market_info = {
+            "limits": {"amount": {"min": min_qty}},
+            "precision": {"amount": 0.1},
+        }
+
+        task_patches = {
+            "get_runtime_bool": Mock(side_effect=lambda _key, fallback: fallback),
+            "get_runtime_float": Mock(
+                side_effect=lambda _key, fallback, **_kwargs: fallback
+            ),
+            "_get_daily_trade_count": Mock(return_value=0),
+            "_bull_short_retrace_precheck": Mock(return_value=(True, "ok")),
+            "_ny_open_weak_long_precheck": Mock(return_value=(True, "ok")),
+            "_weak_long_bear_weak_precheck": Mock(return_value=(True, "ok")),
+            "_asia_weak_short_precheck": Mock(return_value=(True, "ok")),
+            "_weak_short_transition_precheck": Mock(return_value=(True, "ok")),
+            "_long_bias_short_precheck": Mock(return_value=(True, "ok")),
+            "_entry_quality_profile_precheck": Mock(return_value=(True, "ok")),
+            "_symbol_health_precheck": Mock(return_value=(True, "ok")),
+            "_symbol_side_health_precheck": Mock(return_value=(True, "ok")),
+            "_volume_delta_check": Mock(return_value=(True, 0.0, "ok")),
+            "_post_tp_alt_reentry_quality_precheck": Mock(return_value=(True, "ok")),
+            "_volume_gate_allowed": Mock(return_value=(True, 1.0)),
+            "_ai_entry_should_suppress_retry": Mock(return_value=(False, "")),
+            "_ai_entry_should_suppress_retry_from_feedback": Mock(return_value=(False, "")),
+            "evaluate_ai_entry_gate": Mock(return_value=(True, 1.0, "ok", {})),
+            "_ai_entry_clear_reject_cache": Mock(),
+            "_regime_directional_risk_mult": Mock(return_value=(1.0, False, "ok")),
+            "_symbol_heat_guard": Mock(return_value=(1.0, "ok")),
+            "_ensure_entry_leverage": Mock(return_value=(True, "cached")),
+            "_compute_tp_sl_prices": Mock(return_value=(10.08, 9.88, 0.008, 0.012)),
+            "_resolve_regime_label": Mock(return_value="transition"),
+            "_strong_trend_safety_execution_allowed": Mock(
+                return_value=(True, "not_applicable")
+            ),
+            "get_current_session": Mock(return_value="london"),
+            "_reserve_daily_trade_slot": Mock(return_value=(True, None, "ok")),
+            "_place_sl_order": Mock(return_value=None),
+            "_increment_daily_trade_count": Mock(),
+            "_record_min_qty_risk_guard_event": Mock(),
+            "notify_trade_opened": Mock(),
+            "_track_consecutive_errors": Mock(),
+        }
+        with patch.multiple("execution.tasks", **task_patches):
+            result = _attempt_entry_open(
+                adapter=adapter,
+                inst=self.inst,
+                sig=sig,
+                sig_payload=sig.payload_json,
+                strategy_name=sig.strategy,
+                side="buy",
+                signal_direction="long",
+                direction_allowed=True,
+                signal_expired=False,
+                can_open=True,
+                macro_active=False,
+                macro_context={},
+                macro_block_entries=False,
+                macro_risk_mult=1.0,
+                regime_blocked_symbols=set(),
+                regime_adx_by_symbol={},
+                regime_adx_min_by_symbol={},
+                regime_bias_by_symbol={},
+                regime_adx_min=17.0,
+                market_regime_adx=None,
+                mtf_symbol_snapshot={
+                    "daily_regime": "transition",
+                    "monthly_regime": "transition",
+                },
+                btc_lead_state="transition",
+                btc_recommended_bias="balanced",
+                allow_scale_entry=False,
+                scale_parent_correlation="",
+                scale_add_index=0,
+                session_policy_enabled=True,
+                session_dead_zone_block=True,
+                current_session="london",
+                session_min_score=0.20,
+                session_risk_mult=1.0,
+                ml_entry_filter_enabled=False,
+                ml_entry_filter_default_min_prob=0.50,
+                ml_entry_filter_fail_open=True,
+                use_allocator_signals=True,
+                symbol=self.inst.symbol,
+                last_price=10.0,
+                contract_size=1.0,
+                market_info=market_info,
+                atr=0.01,
+                sl_pct=0.012,
+                spread_bps_selected=1.0,
+                free_usdt=10.0,
+                equity_usdt=10.0,
+                leverage=5.0,
+                total_notional=0.0,
+                cycle_notional_added=0.0,
+                account_ai_enabled=False,
+                account_ai_config_id=None,
+                account_owner_id=None,
+                account_alias=account_alias,
+                account_service="trading",
+                positions_snapshot=[],
+                decision_trace=trace,
+            )
+
+        return result, trace, sent_orders
+
+    @override_settings(
+        EUDY_EXPLORATION_MIN_QTY_ABSOLUTE_CAP_OVERRIDE_ENABLED=True,
+        MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED=True,
+        MIN_QTY_RISK_ABSOLUTE_CAP_PCT=0.003,
+        MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED=True,
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+        MIN_QTY_DYNAMIC_ALLOWLIST_BLOCK_MULTIPLIER=3.0,
+        SIGNAL_COOLDOWN_MINUTES=0,
+        PER_INSTRUMENT_COOLDOWN={},
+        SHADOW_TRADING_ENABLED=False,
+    )
+    def test_entry_attempt_opens_eudy_when_min_qty_stop_risk_is_within_absolute_cap(self):
+        result, trace, sent_orders = self._attempt_min_qty_entry(
+            account_alias="eudy",
+            min_qty=0.2,
+        )
+
+        self.assertEqual(result, (1, 2.0))
+        self.assertEqual(len(sent_orders), 1)
+        self.assertNotIn("block_reason", trace)
+        self.assertTrue(
+            Order.objects.filter(
+                instrument=self.inst,
+                status=Order.OrderStatus.FILLED,
+            ).exists()
+        )
+
+    @override_settings(
+        EUDY_EXPLORATION_MIN_QTY_ABSOLUTE_CAP_OVERRIDE_ENABLED=True,
+        MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED=True,
+        MIN_QTY_RISK_ABSOLUTE_CAP_PCT=0.003,
+        MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED=True,
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+        MIN_QTY_DYNAMIC_ALLOWLIST_BLOCK_MULTIPLIER=3.0,
+        SIGNAL_COOLDOWN_MINUTES=0,
+        PER_INSTRUMENT_COOLDOWN={},
+        SHADOW_TRADING_ENABLED=False,
+    )
+    def test_entry_attempt_blocks_eudy_when_min_qty_stop_risk_exceeds_absolute_cap(self):
+        result, trace, sent_orders = self._attempt_min_qty_entry(
+            account_alias="eudy",
+            min_qty=0.3,
+        )
+
+        self.assertEqual(result, (0, 0.0))
+        self.assertEqual(sent_orders, [])
+        self.assertTrue(trace["block_reason"].startswith("min_qty_exploration_risk:"))
+
+    @override_settings(
+        EUDY_EXPLORATION_MIN_QTY_ABSOLUTE_CAP_OVERRIDE_ENABLED=True,
+        MIN_QTY_RISK_ABSOLUTE_CAP_ENABLED=True,
+        MIN_QTY_RISK_ABSOLUTE_CAP_PCT=0.003,
+        MIN_QTY_DYNAMIC_ALLOWLIST_ENABLED=True,
+        MIN_QTY_DYNAMIC_ALLOWLIST_WATCH_MULTIPLIER=2.0,
+        MIN_QTY_DYNAMIC_ALLOWLIST_BLOCK_MULTIPLIER=3.0,
+        SIGNAL_COOLDOWN_MINUTES=0,
+        PER_INSTRUMENT_COOLDOWN={},
+        SHADOW_TRADING_ENABLED=False,
+    )
+    def test_entry_attempt_does_not_apply_eudy_override_to_ricardo(self):
+        result, trace, sent_orders = self._attempt_min_qty_entry(
+            account_alias="rortigoza",
+            min_qty=0.3,
+        )
+
+        self.assertEqual(result, (0, 0.0))
+        self.assertEqual(sent_orders, [])
+        self.assertEqual(trace["block_reason"], "dynamic_min_qty_allowlist")
 
     @override_settings(
         ALLOCATOR_STRONG_TREND_SOLO_SAFETY_ENVELOPE_ENABLED=True,
