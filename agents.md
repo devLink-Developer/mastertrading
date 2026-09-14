@@ -2026,3 +2026,9 @@ Conclusion operativa:
 - Reintentos despues del cierre local, ampliaciones y carrera no_position; pendientes excluidos de aprendizaje/performance; controles separados por modo.
 - python scripts/test_close_accounting.py: 310 pruebas en SQLite memoria, sin .env ni trading, 0 intentos de red. Detalle: docs/CLOSE_ACCOUNTING_FIX_20260914.md.
 - Main DEMO y Eudy LIVE auditados por separado. No hubo deploy ni cambio de riesgo. La investigacion no encontro una estrategia con ventaja validada fuera de muestra.
+### 2026-09-14: push y deploy de contabilidad autorizados y completados
+
+- Codigo Main b5eb997 y Eudy 6ed70d8 desplegados; execution.0012 aplicada en ambas bases PostgreSQL antes de iniciar nuevos consumidores.
+- Pruebas en imagen del servidor: Main 310 y Eudy 315 (una omision privada por suite), sin red. HTTP200, workers pong, consultas contables PostgreSQL y nuevos ciclos verificados.
+- Backups completos protegidos en /opt/trading_deploy_backups/20260914-close-accounting. Env y cambios previos del servidor preservados. Detalle actualizado en docs/CLOSE_ACCOUNTING_FIX_20260914.md.
+- No revertir ciegamente a codigo anterior con esquema0012/filas NULL; conservar evidencia y preparar compatibilidad. Falta comparar la proxima operacion natural con el ledger, no forzar una orden de prueba.

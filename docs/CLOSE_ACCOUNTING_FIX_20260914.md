@@ -1,6 +1,6 @@
 # Corrección del registro de cierres — 14/09/2026 UTC
 
-Estado: implementada y validada localmente; **sin commit, push, migración ni deploy productivo**. Esta corrección mejora el registro y las decisiones que consumen PnL; no demuestra una estrategia rentable.
+Estado: **subida y desplegada en Main DEMO y Eudy LIVE**, con autorización del usuario. Se aplicó `execution.0012` en ambas bases PostgreSQL y se verificaron servicios, consultas y configuración. Esta corrección mejora el registro y las decisiones que consumen PnL; no demuestra una estrategia rentable.
 
 ## Problema y cambio
 
@@ -46,10 +46,27 @@ Casos cubiertos: ticker diferente del fill, fee ausente, rebate, duplicados, par
 - Los reportes históricos permanecen `legacy`, sin reescritura. No recupera automáticamente cierres antiguos que nunca tuvieron registro durable.
 - Datos ambiguos, fees ausentes, órdenes parcialmente ejecutadas y luego canceladas o historial insuficiente quedan pendientes; no se convierten en cero ni en ganancia.
 - Un fallo simultáneo de DB y Redis después del ACK no tiene recuperación atómica garantizada. La conciliación no envía órdenes.
-- La migración se probó en SQLite. Falta el smoke de PostgreSQL/servicios para la versión a desplegar. Revertir a código anterior con reportes NULL requiere compatibilidad; no revertir ciegamente la migración.
+- La migración se probó en SQLite y se aplicó y verificó en ambos PostgreSQL productivos. Revertir a código anterior con reportes NULL requiere compatibilidad; no revertir ciegamente la migración.
 
-El despliegue requiere cambio acotado, backup, migración antes de reiniciar consumidores y comprobación del primer cierre contra el ledger. Main usa `/opt/trading_bot` y compose base; Eudy `/opt/trading_bot_eudy`, `docker-compose.eudy.yml` y `.env.eudy`. Preservar archivos previamente modificados del servidor. **No se desplegó ni se activó una estrategia o modificó riesgo/apalancamiento.**
-# Integración local Eudy
+Se hizo backup completo, se detuvieron los consumidores antes de migrar y luego se reiniciaron. Main usa `/opt/trading_bot` y compose base; Eudy `/opt/trading_bot_eudy`, `docker-compose.eudy.yml` y `.env.eudy`. Se preservaron los archivos previamente modificados del servidor. No se activó una estrategia nueva ni se modificó el presupuesto de riesgo o apalancamiento. La próxima operación natural permitirá comparar el nuevo registro con el ledger.
+
+## Despliegue verificado
+
+| Stack | Commit de código | Finalización UTC | Pruebas en la imagen del servidor |
+|---|---|---|---|
+| Main DEMO | `b5eb99786e683881bf545f79586ab9236d770f2f` | 2026-09-14 01:22:51 | 310, una omitida |
+| Eudy LIVE | `6ed70d867ecb34cbc7ff5a9bfa6987630d4343f2` | 2026-09-14 01:26:47 | 315, una omitida |
+
+La prueba omitida requiere la exportación privada del exchange, que no se publicó. Los contenedores de prueba no tuvieron red. Además pasaron 35 pruebas locales específicas de Eudy. Dos fallos de una suite ampliada de señales fueron reproducidos en el commit Eudy anterior; no pertenecen a esta corrección.
+
+Verificaciones posteriores: HTTP 200 en ambos servicios y en la URL pública de Main; respuestas `pong` de los workers de trading y datos; esquema nullable e índice único válidos; consulta PostgreSQL de reintentos correcta; señales y velas nuevamente actualizadas. Los 824 reportes históricos de Main y 332 de Eudy permanecen `legacy`. Sin cambios de saldo, posiciones u órdenes abiertas al comprobar las cuentas. Sin errores detectados en los logs revisados posteriores al reinicio.
+
+Se conservaron `docker-compose.eudy.yml`, el calibrador agregado a `risk/tasks.py` y los archivos no versionados de Main; Eudy conserva su configuración y restricciones específicas. `.env` y `.env.eudy` coinciden por hash con sus copias previas. No se reconstruyeron imágenes: las dependencias no cambiaron y los servicios montan el código del checkout.
+
+Respaldos y logs del servidor: `/opt/trading_deploy_backups/20260914-close-accounting`, propietario root y permisos 0700. Dumps completos de aproximadamente 289 MiB y 259 MiB, con catálogo leído y SHA-256 calculado. La restauración después de actividad nueva del exchange requiere conciliación; no es un rollback automático. Evidencia local adicional: `tmp/profit_fix/verify_release_result.txt`, `state_after.txt` y resultados de ambos despliegues.
+
+## Integración Eudy
+
 
 La rama `codex/eudy-close-accounting` aplica la corrección sobre `a7b0e6792bcc3df002bcd38418974d16adefeac2` conservando configuración, Compose, umbrales y controles Eudy. El conflicto de `risk/tasks.py` conserva el resumen de cuenta y sus posiciones en español, con pendientes separados del resultado conocido. El evaluador `execution/eudy_recovery.py` excluye pendientes antes del límite de muestra mediante `with_accounted_pnl()`; no cambia sus criterios de riesgo.
 
