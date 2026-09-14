@@ -173,12 +173,14 @@ class OperationReportAdmin(admin.ModelAdmin):
         "mae_r",
         "mfe_capture_ratio",
         "outcome",
+        "accounting_status",
         "opened_at",
         "closed_at",
         "reason",
         "signal_id",
     )
-    list_filter = ("outcome", "reason", "side")
+    list_filter = ("outcome", "accounting_status", "reason", "side")
+    readonly_fields = ("accounting_key", "accounting_details")
     search_fields = ("instrument__symbol", "signal_id", "correlation_id")
 
 

@@ -124,7 +124,7 @@ def _replay_variant(op: OperationReport, grace_minutes: int, stop_price: float) 
 def build_uptrend_short_kill_variant_report(*, days: int, grace_windows: list[int]) -> dict[str, Any]:
     cutoff = dj_tz.now() - timedelta(days=max(1, int(days or 1)))
     ops = list(
-        OperationReport.objects.filter(
+        OperationReport.objects.with_accounted_pnl().filter(
             closed_at__gte=cutoff,
             reason="uptrend_short_kill",
             outcome=OperationReport.Outcome.LOSS,

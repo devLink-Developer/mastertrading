@@ -215,7 +215,7 @@ class Command(BaseCommand):
 
     def _load_trade_rows(self, days: int, symbol: str) -> list[dict[str, Any]]:
         cutoff = dj_tz.now() - timedelta(days=max(1, int(days)))
-        qs = OperationReport.objects.filter(closed_at__gte=cutoff).order_by("closed_at")
+        qs = OperationReport.objects.with_accounted_pnl().filter(closed_at__gte=cutoff).order_by("closed_at")
         if symbol:
             qs = qs.filter(instrument__symbol__iexact=symbol)
         rows = list(qs.values("pnl_pct", "closed_at", "signal_id"))

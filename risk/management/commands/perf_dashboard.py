@@ -367,7 +367,7 @@ class Command(BaseCommand):
 
     def _load_trades(self, days: int, symbol: str) -> list[dict]:
         cutoff = dj_tz.now() - timedelta(days=days)
-        qs = OperationReport.objects.filter(closed_at__gte=cutoff).select_related("instrument")
+        qs = OperationReport.objects.with_accounted_pnl().filter(closed_at__gte=cutoff).select_related("instrument")
         if symbol:
             qs = qs.filter(instrument__symbol__iexact=symbol)
         qs = qs.order_by("closed_at")

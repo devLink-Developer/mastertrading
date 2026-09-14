@@ -296,7 +296,9 @@ class Command(BaseCommand):
         backtest_trades = 0
 
         if source in {"live", "mixed"}:
-            op_qs = OperationReport.objects.select_related("instrument").filter(closed_at__gte=from_live_dt)
+            op_qs = OperationReport.objects.with_accounted_pnl().select_related("instrument").filter(
+                closed_at__gte=from_live_dt, mode=settings.MODE,
+            )
             if symbols:
                 op_qs = op_qs.filter(instrument__symbol__in=symbols)
             operations = list(op_qs.order_by("closed_at", "id"))

@@ -310,7 +310,7 @@ class Command(BaseCommand):
     def _load_ops_by_side(self, inst: Instrument, since, until) -> dict[str, list[dict[str, Any]]]:
         out = {"buy": [], "sell": []}
         qs = (
-            OperationReport.objects.filter(
+            OperationReport.objects.with_accounted_pnl().filter(
                 instrument=inst,
                 opened_at__gte=since,
                 opened_at__lte=until,

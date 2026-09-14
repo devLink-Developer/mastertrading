@@ -34,7 +34,11 @@ def _identity_key(op: OperationReport) -> tuple[Any, ...] | None:
 
 def build_operation_report_dedupe_plan(*, days: int = 30, symbol: str = "", mode: str = "") -> dict[str, Any]:
     cutoff = dj_tz.now() - timedelta(days=max(1, int(days or 1)))
-    qs = OperationReport.objects.filter(closed_at__gte=cutoff).select_related("instrument").order_by("closed_at", "id")
+    # Reconciled/pending reports are managed by accounting_key, not by the
+    # historical reason-priority heuristic. Never delete their fill evidence.
+    qs = OperationReport.objects.filter(
+        closed_at__gte=cutoff, accounting_status=OperationReport.AccountingStatus.LEGACY,
+    ).select_related("instrument").order_by("closed_at", "id")
     if symbol:
         qs = qs.filter(instrument__symbol__iexact=symbol)
     if mode:
@@ -100,7 +104,7 @@ def build_operation_report_dedupe_plan(*, days: int = 30, symbol: str = "", mode
 
 
 class Command(BaseCommand):
-    help = "Find and optionally delete duplicate OperationReport rows for the same position lifecycle."
+    help = "Find and optionally delete duplicate legacy OperationReport rows for the same position lifecycle."
 
     def add_arguments(self, parser):
         parser.add_argument("--days", type=int, default=30)

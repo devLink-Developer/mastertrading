@@ -482,7 +482,7 @@ def _collect_module_metrics(
 ) -> tuple[dict[str, ModuleMetrics], dict[str, Any]]:
     cutoff = dj_tz.now() - timedelta(days=max(1, int(lookback_days)))
     reports = list(
-        OperationReport.objects.filter(closed_at__gte=cutoff)
+        OperationReport.objects.with_accounted_pnl().filter(closed_at__gte=cutoff, mode=settings.MODE)
         .order_by("closed_at")
         .values("pnl_pct", "closed_at", "signal_id", "daily_regime")
     )
@@ -650,7 +650,8 @@ def compute_meta_allocator_overlay(
     cache_seconds = max(30, int(getattr(settings, "META_ALLOCATOR_CACHE_SECONDS", 300) or 300))
     now_ts = time.time()
     cached = _OVERLAY_CACHE.get("payload")
-    if cached and (now_ts - float(_OVERLAY_CACHE.get("ts", 0.0))) < cache_seconds:
+    if (cached and _OVERLAY_CACHE.get("mode") == settings.MODE
+            and (now_ts - float(_OVERLAY_CACHE.get("ts", 0.0))) < cache_seconds):
         return dict(cached)
 
     lookback_days = max(3, int(getattr(settings, "META_ALLOCATOR_LOOKBACK_DAYS", 21) or 21))
@@ -673,6 +674,7 @@ def compute_meta_allocator_overlay(
         }
         _OVERLAY_CACHE["ts"] = now_ts
         _OVERLAY_CACHE["payload"] = dict(payload)
+        _OVERLAY_CACHE["mode"] = settings.MODE
         return payload
 
     weight_cap = _clamp(float(getattr(settings, "META_ALLOCATOR_WEIGHT_CAP", 0.65) or 0.65), 0.10, 1.0)
@@ -746,4 +748,5 @@ def compute_meta_allocator_overlay(
     }
     _OVERLAY_CACHE["ts"] = now_ts
     _OVERLAY_CACHE["payload"] = dict(payload)
+    _OVERLAY_CACHE["mode"] = settings.MODE
     return payload

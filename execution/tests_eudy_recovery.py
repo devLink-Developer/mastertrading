@@ -450,6 +450,30 @@ class EudyRecoveryIntegrationTests(TestCase):
         self.assertEqual(decision.status, "validated")
         self.assertEqual(decision.sample_size, 3)
 
+    @override_settings(EUDY_EDGE_GUARD_MAX_TRADES=3)
+    def test_guard_excludes_pending_closes_before_limiting_its_sample(self):
+        for pnl in (0.006, 0.004, -0.002):
+            self._report(pnl)
+        for placeholder in (None, Decimal("0.50")):
+            OperationReport.objects.create(
+                instrument=self.inst, side="sell", qty=1, entry_price=100,
+                exit_price=None, pnl_abs=placeholder, pnl_pct=placeholder,
+                fee_usdt=None, outcome=OperationReport.Outcome.PENDING,
+                accounting_status=OperationReport.AccountingStatus.PENDING,
+                reason="exchange_close", mode="live", daily_regime="transition",
+                btc_lead_state="transition", recommended_bias="balanced", closed_at=dj_tz.now(),
+            )
+
+        decision = evaluate_eudy_edge_guard(
+            account_alias="eudy", side="sell", daily_regime="transition",
+            btc_lead_state="transition", recommended_bias="balanced",
+        )
+
+        self.assertEqual(decision.status, "validated")
+        self.assertEqual(decision.sample_size, 3)
+        self.assertAlmostEqual(decision.profit_factor, 5.0)
+        self.assertAlmostEqual(decision.expectancy_pct, 0.008 / 3)
+
     @override_settings(
         EUDY_EDGE_GUARD_RESET_AT="2026-08-25T13:50:00Z",
         EUDY_EDGE_GUARD_MIN_TRADES=1,

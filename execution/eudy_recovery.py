@@ -233,7 +233,7 @@ def evaluate_eudy_edge_guard(
 
     try:
         reports = list(
-            OperationReport.objects.filter(
+            OperationReport.objects.with_accounted_pnl().filter(
                 mode=str(getattr(settings, "MODE", "live") or "live"),
                 side=side_text,
                 daily_regime__iexact=day_text,

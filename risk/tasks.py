@@ -131,10 +131,13 @@ def _build_performance_report(window_minutes: int) -> str:
 
     ops_qs = OperationReport.objects.filter(closed_at__gte=since)
     ops_count = int(ops_qs.count())
-    wins = _count_outcomes(ops_qs, OperationReport.Outcome.WIN)
-    losses = _count_outcomes(ops_qs, OperationReport.Outcome.LOSS)
-    be = _count_outcomes(ops_qs, OperationReport.Outcome.BE)
-    pnl_abs = _to_float(ops_qs.aggregate(total=Sum("pnl_abs")).get("total"))
+    accounted_ops = ops_qs.with_accounted_pnl()
+    accounted_count = accounted_ops.count()
+    pending_count = ops_count - accounted_count
+    wins = _count_outcomes(accounted_ops, OperationReport.Outcome.WIN)
+    losses = _count_outcomes(accounted_ops, OperationReport.Outcome.LOSS)
+    be = _count_outcomes(accounted_ops, OperationReport.Outcome.BE)
+    pnl_abs = _to_float(accounted_ops.aggregate(total=Sum("pnl_abs")).get("total"))
     win_rate = (wins / (wins + losses) * 100.0) if (wins + losses) > 0 else 0.0
 
     open_positions_qs = Position.objects.filter(is_open=True).select_related("instrument")
@@ -183,7 +186,7 @@ def _build_performance_report(window_minutes: int) -> str:
     if not position_lines:
         position_lines.append("Sin posiciones abiertas.")
 
-    win_rate_text = f"{win_rate:.1f}%" if (wins + losses) > 0 else "\u2014"
+    win_rate_text = f"{win_rate:.1f}%" if (wins + losses) > 0 else ("pendiente" if pending_count else "\u2014")
 
     lines = [
         f"\U0001F4CA <b>Resumen {account_label} \u00B7 \u00FAltimos {window_minutes} min</b>",
@@ -198,11 +201,12 @@ def _build_performance_report(window_minutes: int) -> str:
         ),
         "",
         "\U0001F4C8 <b>Resultado</b>",
-        f"{_pnl_icon(pnl_abs)} Cerrado: {pnl_abs:+.4f} {asset}",
+        ("Cerrado: pendiente de conciliaci\u00F3n" if pending_count and not accounted_count
+         else f"{_pnl_icon(pnl_abs)} Cerrado: {pnl_abs:+.4f} {asset} (ejecuci\u00F3n antes de funding)"),
         f"{_pnl_icon(unrealized)} Abierto: {unrealized:+.4f} {asset}",
         (
             f"Operaciones cerradas: {ops_count} "
-            f"({wins} ganadas \u00B7 {losses} perdidas \u00B7 {be} neutras)"
+            f"({wins} ganadas \u00B7 {losses} perdidas \u00B7 {be} neutras) \u00B7 Pendientes: {pending_count}"
         ),
         f"Acierto: {win_rate_text}",
         "",
