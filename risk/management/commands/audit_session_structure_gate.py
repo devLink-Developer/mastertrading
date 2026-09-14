@@ -307,7 +307,7 @@ def build_session_structure_audit(
 ) -> dict[str, Any]:
     cutoff = dj_tz.now() - timedelta(days=max(1, int(days)))
     qs = (
-        OperationReport.objects.filter(closed_at__gte=cutoff)
+        OperationReport.objects.with_accounted_pnl().filter(closed_at__gte=cutoff)
         .select_related("instrument")
         .order_by("closed_at")
     )

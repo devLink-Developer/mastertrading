@@ -128,11 +128,15 @@ def _build_performance_report(window_minutes: int) -> str:
 
     ops_qs = OperationReport.objects.filter(closed_at__gte=since)
     ops_count = int(ops_qs.count())
-    wins = _count_outcomes(ops_qs, OperationReport.Outcome.WIN)
-    losses = _count_outcomes(ops_qs, OperationReport.Outcome.LOSS)
-    be = _count_outcomes(ops_qs, OperationReport.Outcome.BE)
-    pnl_abs = _to_float(ops_qs.aggregate(total=Sum("pnl_abs")).get("total"))
+    accounted_ops = ops_qs.with_accounted_pnl()
+    accounted_count = accounted_ops.count()
+    pending_count = ops_count - accounted_count
+    wins = _count_outcomes(accounted_ops, OperationReport.Outcome.WIN)
+    losses = _count_outcomes(accounted_ops, OperationReport.Outcome.LOSS)
+    be = _count_outcomes(accounted_ops, OperationReport.Outcome.BE)
+    pnl_abs = _to_float(accounted_ops.aggregate(total=Sum("pnl_abs")).get("total"))
     win_rate = (wins / (wins + losses) * 100.0) if (wins + losses) > 0 else 0.0
+    win_rate_label = f"{win_rate:.1f}%" if wins + losses else ("pendiente" if pending_count else "0.0%")
 
     open_positions_qs = Position.objects.filter(is_open=True)
     open_positions = int(open_positions_qs.count())
@@ -159,8 +163,9 @@ def _build_performance_report(window_minutes: int) -> str:
         "",
         "<b>Ejecucion</b>",
         f"orders filled={orders_filled} rejected={orders_rejected}",
-        f"ops cerradas={ops_count} ({wins}W/{losses}L/{be}BE) WR={win_rate:.1f}%",
-        f"{pnl_icon} pnl cerrada={pnl_abs:+.4f} {asset}",
+        f"ops cerradas={ops_count} ({wins}W/{losses}L/{be}BE) WR={win_rate_label} | pendientes={pending_count}",
+        ("pnl cerrada=pendiente de conciliacion" if pending_count and not accounted_count
+         else f"{pnl_icon} pnl cerrada={pnl_abs:+.4f} {asset} (ejecucion antes de funding)"),
         f"{unrealized_icon} pnl abierta={unrealized:+.4f} {asset} | open_pos={open_positions}",
         "",
         f"<b>Cuenta:</b> equity={equity:.2f} {asset} | free={free:.2f} {asset} | lev={lev:.2f}x",

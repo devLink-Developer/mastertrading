@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+from django.conf import settings
 from django.test import TestCase, override_settings
 from django.utils import timezone as dj_tz
 
@@ -366,6 +367,8 @@ class TaskHelpersTest(TestCase):
         inst: Instrument,
         pnl_abs: str,
         minutes_ago: int,
+        *,
+        mode: str | None = None,
     ) -> OperationReport:
         now = dj_tz.now()
         return OperationReport.objects.create(
@@ -381,7 +384,7 @@ class TaskHelpersTest(TestCase):
             leverage=Decimal("1"),
             equity_before=Decimal("100"),
             equity_after=Decimal("100") + Decimal(pnl_abs),
-            mode="live",
+            mode=settings.MODE if mode is None else mode,
             opened_at=now - timedelta(minutes=minutes_ago + 5),
             closed_at=now - timedelta(minutes=minutes_ago),
             outcome=OperationReport.Outcome.LOSS,
@@ -1788,6 +1791,7 @@ class TaskHelpersTest(TestCase):
         *,
         side: str = "buy",
         pnl_pct: float | None = None,
+        mode: str | None = None,
     ):
         now = dj_tz.now()
         outcome = OperationReport.Outcome.BE
@@ -1809,7 +1813,7 @@ class TaskHelpersTest(TestCase):
             notional_usdt=Decimal("10"),
             fee_usdt=Decimal("0"),
             leverage=Decimal("1"),
-            mode="live",
+            mode=settings.MODE if mode is None else mode,
             opened_at=now - timedelta(minutes=minutes_ago + 5),
             closed_at=now - timedelta(minutes=minutes_ago),
             outcome=outcome,
@@ -1891,6 +1895,35 @@ class TaskHelpersTest(TestCase):
 
         self.assertTrue(ok)
         self.assertIn("healthy:DOGEUSDT", reason)
+
+    @override_settings(
+        MODE="demo",
+        SYMBOL_HEALTH_GUARD_ENABLED=True,
+        SYMBOL_HEALTH_GUARD_LOOKBACK_DAYS=14,
+        SYMBOL_HEALTH_GUARD_MIN_TRADES=3,
+        SYMBOL_HEALTH_GUARD_MIN_PROFIT_FACTOR=0.90,
+        SYMBOL_HEALTH_GUARD_MIN_EXPECTANCY_USDT=0.0,
+        SYMBOL_HEALTH_GUARD_EXEMPT_SYMBOLS=set(),
+        SYMBOL_HEALTH_GUARD_RESET_AT="",
+        SYMBOL_SIDE_HEALTH_GUARD_ENABLED=True,
+        SYMBOL_SIDE_HEALTH_GUARD_LOOKBACK_HOURS=48,
+        SYMBOL_SIDE_HEALTH_GUARD_MIN_TRADES=3,
+        SYMBOL_SIDE_HEALTH_GUARD_MIN_PROFIT_FACTOR=0.70,
+        SYMBOL_SIDE_HEALTH_GUARD_MIN_EXPECTANCY_PCT=0.0,
+        SYMBOL_SIDE_HEALTH_GUARD_EXEMPT_SYMBOLS=set(),
+        SYMBOL_SIDE_HEALTH_GUARD_RESET_AT="",
+    )
+    def test_symbol_health_guards_do_not_mix_live_losses_into_demo(self):
+        inst = Instrument.objects.create(symbol="MODEUSDT", exchange="bingx", base="MODE", quote="USDT")
+        for index in range(1, 4):
+            self._create_symbol_health_report(inst, -0.3, index, pnl_pct=-0.03, mode="live")
+            self._create_symbol_health_report(inst, 0.01, index, pnl_pct=0.001, mode="demo")
+        symbol_ok, symbol_reason = _symbol_health_precheck(inst)
+        side_ok, side_reason = _symbol_side_health_precheck(inst, "buy")
+        self.assertTrue(symbol_ok, symbol_reason)
+        self.assertTrue(side_ok, side_reason)
+        self.assertIn("n=3", symbol_reason)
+        self.assertIn("n=3", side_reason)
 
     @override_settings(
         SYMBOL_SIDE_HEALTH_GUARD_ENABLED=True,

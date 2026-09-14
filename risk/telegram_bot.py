@@ -571,11 +571,21 @@ async def _get_operations_text() -> str:
 
     lines = [f"{E_OPS} <b>Operaciones Hoy</b>\n"]
     total_pnl = 0.0
-    wins = losses = 0
+    wins = losses = pending = accounted = 0
     for o in ops:
         side_str = "LONG" if o.side == "buy" else "SHORT"
         side_icon = E_UP if side_str == "LONG" else E_DOWN
+        if (o.accounting_status == OperationReport.AccountingStatus.PENDING
+                or o.outcome == OperationReport.Outcome.PENDING
+                or o.pnl_abs is None or o.pnl_pct is None or o.exit_price is None):
+            pending += 1
+            lines.append(
+                f"[PENDIENTE] <b>{o.instrument.symbol}</b> {side_icon} {side_str} -> {o.reason}\n"
+                "Cierre pendiente de conciliacion"
+            )
+            continue
         pnl = float(o.pnl_abs)
+        accounted += 1
         total_pnl += pnl
         if o.outcome == "win":
             wins += 1
@@ -592,10 +602,12 @@ async def _get_operations_text() -> str:
         )
     total_ops = wins + losses
     wr = (wins / total_ops * 100) if total_ops > 0 else 0
+    wr_label = f"{wr:.0f}%" if total_ops else ("pendiente" if pending else "0%")
     total_icon = E_GREEN if total_pnl >= 0 else E_RED
     lines.append(
-        f"\n\U0001F4CC <b>Resumen:</b> {wins}W / {losses}L ({wr:.0f}% WR)\n"
-        f"{total_icon} <b>PnL Total:</b> {total_pnl:+.4f} USDT"
+        f"\n\U0001F4CC <b>Resumen:</b> {wins}W / {losses}L (WR={wr_label}) | pendientes={pending}\n"
+        + ("PnL pendiente de conciliacion" if pending and not accounted
+           else f"{total_icon} <b>PnL Total:</b> {total_pnl:+.4f} USDT (ejecucion antes de funding)")
     )
     return "\n".join(lines)
 

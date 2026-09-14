@@ -148,7 +148,7 @@ class Command(BaseCommand):
         since = dj_tz.now() - timedelta(days=opts["days"])
 
         if opts["source"] == "live":
-            qs = OperationReport.objects.filter(closed_at__gte=since).select_related("instrument")
+            qs = OperationReport.objects.with_accounted_pnl().filter(closed_at__gte=since).select_related("instrument")
             if opts["symbol"]:
                 qs = qs.filter(instrument__symbol__icontains=opts["symbol"])
             qs = qs.order_by("opened_at")

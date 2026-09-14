@@ -2018,3 +2018,11 @@ Conclusion operativa:
   - mantener bloqueado `daily=bear_weak`
   - mantener bloqueado `transition` cuando la sesion es `asia/dead` o el trend/score no alcanza
   - devolver actividad solo a los `transition` mas limpios durante sesiones activas
+
+### 2026-09-14: registro de cierres con evidencia (local, pendiente de deploy)
+
+- close_evidence.py y close_accounting.py conservan fills/fees por identidad, parciales y cierre final. Ticker y fee estimado no prueban ejecucion.
+- execution.0012 agrega legacy/pending/confirmed, clave unica y valores desconocidos NULL. Confirmed es PnL de ejecucion antes de funding; el ledger conserva autoridad sobre el saldo.
+- Reintentos despues del cierre local, ampliaciones y carrera no_position; pendientes excluidos de aprendizaje/performance; controles separados por modo.
+- python scripts/test_close_accounting.py: 310 pruebas en SQLite memoria, sin .env ni trading, 0 intentos de red. Detalle: docs/CLOSE_ACCOUNTING_FIX_20260914.md.
+- Main DEMO y Eudy LIVE auditados por separado. No hubo deploy ni cambio de riesgo. La investigacion no encontro una estrategia con ventaja validada fuera de muestra.

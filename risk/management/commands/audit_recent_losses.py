@@ -122,7 +122,7 @@ def _loss_category(op: OperationReport, replay: dict[str, Any]) -> str:
 def build_recent_loss_audit(*, days: int, post_minutes: int, symbol: str = "", reason: str = "") -> dict[str, Any]:
     cutoff = dj_tz.now() - timedelta(days=max(1, int(days or 1)))
     qs = (
-        OperationReport.objects.filter(
+        OperationReport.objects.with_accounted_pnl().filter(
             closed_at__gte=cutoff,
             outcome=OperationReport.Outcome.LOSS,
         )

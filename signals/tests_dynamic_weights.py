@@ -5,6 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.conf import settings
 from django.test import TestCase, override_settings
 from django.utils import timezone as dj_tz
 
@@ -55,6 +56,7 @@ def _mk_report(inst, signal, pnl: float, dt_offset_hours: int = 0):
         pnl_pct=Decimal(str(pnl / 100)),
         outcome="win" if pnl > 0 else "loss",
         reason="signal_flip",
+        mode=settings.MODE,
         signal_id=str(signal.id) if signal else "",
         closed_at=now,
     )

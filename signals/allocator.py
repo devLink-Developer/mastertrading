@@ -291,7 +291,7 @@ def _module_rolling_stats(days: int = 7) -> dict[str, dict]:
 
     cutoff = dj_tz.now() - timedelta(days=days)
     reports = (
-        OperationReport.objects.filter(closed_at__gte=cutoff)
+        OperationReport.objects.with_accounted_pnl().filter(closed_at__gte=cutoff, mode=settings.MODE)
         .only("signal_id", "pnl_abs", "outcome")
     )
 

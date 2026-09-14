@@ -213,10 +213,10 @@ def notify_trade_opened(
 def notify_trade_closed(
     symbol: str,
     reason: str,
-    pnl_pct: float,
-    pnl_abs: float = 0,
+    pnl_pct: float | None,
+    pnl_abs: float | None = 0,
     entry_price: float = 0,
-    exit_price: float = 0,
+    exit_price: float | None = 0,
     qty: float = 0,
     equity_before: float = 0,
     duration_min: float = 0,
@@ -224,12 +224,13 @@ def notify_trade_closed(
     leverage: float = 0,
     strategy_name: str = "",
     active_modules: list[str] | None = None,
+    accounting_pending: bool = False,
+    accounting_execution_only: bool = False,
 ):
     """Alert: trade closed (TP/SL/signal_flip)."""
     env_label, asset = _runtime_context()
     direction = "LONG" if side == "buy" else "SHORT" if side == "sell" else ""
-    result = "WIN" if pnl_pct >= 0 else "LOSS"
-    result_icon = E_TROPHY if pnl_pct >= 0 else E_RED
+    accounting_pending = accounting_pending or pnl_pct is None or pnl_abs is None
     reason_labels = {
         "tp": "Take Profit",
         "sl": "Stop Loss",
@@ -239,21 +240,32 @@ def notify_trade_closed(
     }
     reason_display = reason_labels.get(reason, reason)
 
-    msg = f"{result_icon} <b>{direction} Closed</b> [{result}] - {reason_display}\n"
+    if accounting_pending:
+        msg = f"\u23f3 <b>{direction} Cierre pendiente de conciliación</b> - {reason_display}\n"
+    else:
+        result = "WIN" if pnl_pct >= 0 else "LOSS"
+        result_icon = E_TROPHY if pnl_pct >= 0 else E_RED
+        msg = f"{result_icon} <b>{direction} Closed</b> [{result}] - {reason_display}\n"
     msg += f"<b>Symbol:</b> {symbol}\n"
-    if entry_price and exit_price:
+    if accounting_pending and entry_price:
+        msg += f"<b>Entry:</b> {entry_price:.4f}\n"
+    elif entry_price and exit_price:
         msg += f"<b>Entry:</b> {entry_price:.4f} -> <b>Exit:</b> {exit_price:.4f}\n"
     if qty:
         msg += f"<b>Qty:</b> {qty}"
         if leverage:
             msg += f" ({leverage:.0f}x)"
         msg += "\n"
-    msg += f"<b>PnL:</b> {pnl_pct:+.2%}"
-    if pnl_abs:
-        msg += f" | <b>{pnl_abs:+.4f} {asset}</b>"
-    if equity_before and pnl_abs:
-        equity_pct = pnl_abs / equity_before
-        msg += f" | {equity_pct:+.2%} equity"
+    if not accounting_pending:
+        pnl_label = "PnL ejecución" if accounting_execution_only else "PnL"
+        msg += f"<b>{pnl_label}:</b> {pnl_pct:+.2%}"
+        if pnl_abs:
+            msg += f" | <b>{pnl_abs:+.4f} {asset}</b>"
+        if accounting_execution_only:
+            msg += " (comisiones incluidas; funding excluido)"
+        if equity_before and pnl_abs and not accounting_execution_only:
+            equity_pct = pnl_abs / equity_before
+            msg += f" | {equity_pct:+.2%} equity"
     if duration_min > 0:
         if duration_min >= 60:
             hours = int(duration_min // 60)
@@ -261,7 +273,7 @@ def notify_trade_closed(
             msg += f"\n<b>Duration:</b> {hours}h {mins}m"
         else:
             msg += f"\n<b>Duration:</b> {int(duration_min)}m"
-    if equity_before:
+    if equity_before and not accounting_pending and not accounting_execution_only:
         new_equity = equity_before + pnl_abs
         msg += f"\n<b>Equity:</b> {equity_before:.2f} {asset} -> {new_equity:.2f} {asset}"
     strategy_txt = _strategy_block(strategy_name, active_modules)

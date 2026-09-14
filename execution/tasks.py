@@ -206,13 +206,101 @@ def _report_pnl_for_notification(
     report: OperationReport | None,
     pnl_pct_fallback: float,
     pnl_abs_fallback: float,
-) -> tuple[float, float]:
+) -> tuple[float | None, float | None]:
     if report is None:
         return pnl_pct_fallback, pnl_abs_fallback
+    if getattr(report, "accounting_status", "legacy") == "pending":
+        return None, None
     try:
         return _to_float(report.pnl_pct), _to_float(report.pnl_abs)
     except Exception:
         return pnl_pct_fallback, pnl_abs_fallback
+
+
+def _canonical_accounting_opened_at(inst, side, correlation_id, fallback):
+    if not correlation_id:
+        return fallback
+    roots = list(Order.objects.filter(
+        instrument=inst, side=side, correlation_id=correlation_id, reduce_only=False,
+    ).values_list("opened_at", flat=True)[:2])
+    return roots[0] if len(roots) == 1 and roots[0] is not None else fallback
+
+
+def _entry_execution_evidence(adapter, inst, side, correlation_id, opened_at, contract_size, closed_at=None):
+    """Resolve root and scale-in fills once; stored fee estimates are not proof."""
+    from dataclasses import asdict, replace
+    from execution.close_evidence import resolve_close_evidence
+    from execution.close_accounting import fee_asset_for_context
+
+    if not correlation_id:
+        return None, {"reason": "missing_entry_correlation"}
+    roots = list(Order.objects.filter(
+        instrument=inst, side=side, correlation_id=correlation_id, reduce_only=False,
+    ).order_by("id")[:2])
+    if len(roots) != 1 or not roots[0].exchange_order_id or roots[0].opened_at is None:
+        return None, {"reason": "missing_or_ambiguous_entry_order"}
+    root = roots[0]
+    candidates = list(Order.objects.filter(
+        Q(correlation_id=correlation_id) | Q(parent_correlation_id=correlation_id),
+        instrument=inst, side=side, reduce_only=False, status=Order.OrderStatus.FILLED,
+    ).order_by("opened_at", "id")[:21])
+    if not candidates or len(candidates) > 20 or root not in candidates:
+        return None, {"reason": "missing_or_excessive_entry_legs"}
+    context = get_runtime_exchange_context()
+    details, evidence_rows, seen = {"entry_order_db_ids": [], "legs": []}, [], set()
+    for order in candidates:
+        if (not order.exchange_order_id or order.exchange_order_id in seen
+                or order.opened_at is None or order.opened_at < root.opened_at):
+            return None, {"reason": "invalid_entry_leg_identity"}
+        seen.add(order.exchange_order_id)
+        # Entry Order predates account-namespace metadata. Verify its exact ID
+        # through the active adapter instead of trusting another account's
+        # potentially retained response after a credential/mode switch.
+        evidence = resolve_close_evidence(
+            adapter, inst.symbol, abs(order.qty), order_response=None,
+            order_id=order.exchange_order_id, account_asset=fee_asset_for_context(context),
+            contract_size=contract_size, close_side=side,
+            position_side="long" if side == "buy" else "short",
+        )
+        details["entry_order_db_ids"].append(order.id)
+        details["verification"] = "exact_order_fetch_current_account"
+        details["legs"].append(json.loads(json.dumps(asdict(evidence), default=str)))
+        if not evidence.is_full_close or not evidence.fee_known:
+            details["reason"] = "entry_leg_evidence_incomplete"
+            return None, details
+        if evidence.filled_timestamp_ms is None:
+            details["reason"] = "missing_entry_fill_timestamp"
+            return None, details
+        filled_at = datetime.fromtimestamp(evidence.filled_timestamp_ms / 1000, tz=timezone.utc)
+        # Some venues return whole seconds: tolerate rounding only within the
+        # same second, never an execution in a preceding/following second.
+        if (filled_at.replace(microsecond=0) < order.opened_at.replace(microsecond=0)
+                or (closed_at is not None and filled_at.replace(microsecond=0) > closed_at.replace(microsecond=0))):
+            details["reason"] = "entry_fill_outside_position_lifecycle"
+            return None, details
+        evidence_rows.append(evidence)
+    quantity = sum((row.filled_qty for row in evidence_rows), Decimal("0"))
+    average = sum((row.filled_qty * row.average_price for row in evidence_rows), Decimal("0")) / quantity
+    fees = sum((row.fee for row in evidence_rows), Decimal("0"))
+    return replace(evidence_rows[0], source="entry_order_aggregate", filled_qty=quantity,
+                   average_price=average, fee=fees), details
+
+
+def _notify_accounted_close(report, symbol, reason, pnl_pct, **kwargs):
+    """Keep notification prices, quantity and net result tied to the saved report."""
+    if report is None:
+        pnl_pct = None
+        kwargs.update(accounting_pending=True, pnl_abs=None, exit_price=None)
+    else:
+        pending = getattr(report, "accounting_status", "legacy") == "pending"
+        kwargs["accounting_pending"] = pending
+        kwargs["accounting_execution_only"] = getattr(report, "accounting_status", "legacy") == "confirmed"
+        pnl_pct = None if pending else _to_float(report.pnl_pct)
+        kwargs["pnl_abs"] = None if pending else _to_float(report.pnl_abs)
+        kwargs["exit_price"] = None if pending else _to_float(report.exit_price)
+        kwargs["entry_price"] = _to_float(report.entry_price)
+        kwargs["qty"] = _to_float(report.qty)
+    return notify_trade_closed(symbol, reason, pnl_pct, **kwargs)
 
 
 def _is_no_position_error(exc: Exception) -> bool:
@@ -819,6 +907,7 @@ def _position_root_correlation(inst: Instrument, side: str) -> str:
             side=side,
             status=Order.OrderStatus.FILLED,
             opened_at__isnull=False,
+            reduce_only=False,
         )
         .order_by("-opened_at", "-id")
         .first()
@@ -840,6 +929,7 @@ def _count_pyramid_adds(inst: Instrument, side: str, root_correlation_id: str) -
             status=Order.OrderStatus.FILLED,
             parent_correlation_id=root,
             opened_at__isnull=False,
+            reduce_only=False,
         )
         .exclude(correlation_id=root)
         .count()
@@ -857,6 +947,7 @@ def _last_pyramid_add_opened_at(inst: Instrument, side: str, root_correlation_id
             status=Order.OrderStatus.FILLED,
             parent_correlation_id=root,
             opened_at__isnull=False,
+            reduce_only=False,
         )
         .exclude(correlation_id=root)
         .order_by("-opened_at")
@@ -2769,6 +2860,7 @@ def _check_trailing_stop(
     atr_pct: float | None = None,
     recommended_bias: str | None = "",
     strategy_name: str = "",
+    close_context: dict | None = None,
 ) -> tuple[bool, float]:
     """
     Profit protection:
@@ -2828,6 +2920,12 @@ def _check_trailing_stop(
         if total_abs > 0:
             partial_key = f"trail:partial_done:{state_key}"
             already_done = client.get(partial_key) if client else None
+            if close_context is not None and not already_done:
+                from execution.close_accounting import has_partial_close
+                already_done = has_partial_close(
+                    close_context["inst"], side,
+                    close_context["correlation_id"], close_context.get("accounting_opened_at", opened_at),
+                )
             if not already_done:
                 close_pct = max(
                     0.0,
@@ -2880,12 +2978,39 @@ def _check_trailing_stop(
                 if close_qty > 0 and close_qty < total_abs:
                     close_side = "sell" if is_long else "buy"
                     try:
-                        adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
-                        logger.info("Partial close %s qty=%s at R=%.2f", symbol, close_qty, r_multiple)
+                        partial_response = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
+                        # Preserve the accepted attempt even if later DB accounting fails.
+                        # The durable close record below also survives Redis restarts.
                         if client:
-                            client.set(partial_key, "1", ex=trail_state_ttl)
+                            try:
+                                client.set(partial_key, "1", ex=trail_state_ttl)
+                            except Exception:
+                                logger.warning("Partial close cache marker unavailable %s", symbol)
+                        if close_context is not None:
+                            close_context["partial_attempted"] = True
+                            from execution.close_accounting import capture_close
+                            capture_close(
+                                adapter, inst=close_context["inst"], side=side, qty=close_qty,
+                                entry_price=entry_price, reason="partial_close",
+                                signal_id=close_context["signal_id"],
+                                correlation_id=close_context["correlation_id"],
+                                leverage=close_context["leverage"],
+                                equity_before=close_context["equity_before"],
+                                opened_at=close_context.get("accounting_opened_at", opened_at), contract_size=contract_size,
+                                order_response=partial_response, is_partial=True,
+                            )
+                        logger.info("Partial close %s qty=%s at R=%.2f", symbol, close_qty, r_multiple)
                     except Exception as exc:
-                        logger.warning("Partial close failed %s: %s", symbol, exc)
+                        if close_context is not None and _is_no_position_error(exc):
+                            close_context["position_missing"] = True
+                        if close_context is not None and close_context.get("partial_attempted"):
+                            logger.warning("Partial close accepted; accounting capture pending %s type=%s", symbol, type(exc).__name__)
+                        else:
+                            logger.warning("Partial close failed %s: %s", symbol, exc)
+                    if close_context is not None and (close_context.get("partial_attempted") or close_context.get("position_missing")):
+                        # The old position size is stale after a partial attempt.
+                        # Resync before evaluating another exit in this cycle.
+                        return False, 0.0
 
     # Track favorable/adverse excursions in Redis so exits can be measured ex-post.
     max_fav = max(pnl_pct, 0.0)
@@ -3013,6 +3138,8 @@ def _check_trailing_stop(
             pass
         try:
             close_resp = adapter.create_order(symbol, close_side, "market", close_qty, params={"reduceOnly": True})
+            if close_context is not None:
+                close_context["order_response"] = close_resp
             close_fee = _resolve_order_fee_usdt(
                 close_resp,
                 _trade_notional_usdt(close_qty, last_price, contract_size),
@@ -3029,6 +3156,8 @@ def _check_trailing_stop(
             return True, close_fee
         except Exception as exc:
             if _is_no_position_error(exc):
+                if close_context is not None:
+                    close_context["position_missing"] = True
                 logger.info("Trailing close skipped %s: no open position on exchange (%s)", symbol, exc)
                 return False, 0.0
             logger.warning("Trailing stop close failed %s: %s", symbol, exc)
@@ -3086,19 +3215,76 @@ def _log_operation(
     opened_at=None,
     contract_size: float = 1.0,
     close_sub_reason: str = "",
+    adapter=None,
+    close_response=None,
+    close_record=None,
+    exchange_closed: bool = False,
 ):
+    accounting_status = OperationReport.AccountingStatus.LEGACY
+    accounting_key = ""
+    accounting_details = {}
+    accounting_pending = False
+    accounting_closed_at = None
+    close_fee_val = max(0.0, _to_float(fee_usdt))
+    entry_fee_val = _lookup_entry_order_fee_usdt(inst, side, correlation_id, opened_at)
+    if adapter is not None or close_record is not None:
+        from execution.close_accounting import capture_close, summarize_position
+
+        opened_at = _canonical_accounting_opened_at(inst, side, correlation_id, opened_at)
+
+        if close_record is None:
+            close_record, summary = capture_close(
+                adapter, inst=inst, side=side, qty=qty, entry_price=entry_price,
+                reason=reason, signal_id=signal_id, correlation_id=correlation_id,
+                leverage=leverage, equity_before=equity_before, opened_at=opened_at,
+                contract_size=contract_size, order_response=close_response,
+                exchange_closed=exchange_closed,
+            )
+        else:
+            summary = summarize_position(close_record)
+        accounting_key = summary.position_key
+        accounting_closed_at = summary.closed_at or close_record.closed_at
+        accounting_details = {
+            "version": 1, "method": "order_execution_net_before_funding",
+            "position_key": accounting_key, "close_order_db_id": close_record.id,
+            "leg_order_ids": list(summary.leg_order_ids),
+            "close_status": summary.status, "close_reason": summary.reason,
+            "funding_included": False,
+            "account_asset": summary.context.get("account_asset"),
+            "exchange_fee_asset": summary.context.get("exchange_fee_asset"),
+            "fee_asset_mapping": summary.context.get("fee_asset_mapping"),
+        }
+        entry_evidence, entry_details = _entry_execution_evidence(
+            adapter, inst, side, correlation_id, opened_at, contract_size, summary.closed_at,
+        )
+        accounting_details["entry_evidence"] = entry_details
+        accounting_pending = not (
+            summary.status == "confirmed" and entry_evidence is not None
+            and entry_evidence.is_full_close and entry_evidence.fee_known
+            and entry_evidence.filled_qty is not None and summary.filled_qty is not None
+            and abs(entry_evidence.filled_qty - summary.filled_qty) <= Decimal("0.0000000001")
+        )
+        if not accounting_pending:
+            qty = _to_float(summary.filled_qty)
+            entry_price = _to_float(entry_evidence.average_price)
+            exit_price = _to_float(summary.average_price)
+            close_fee_val = _to_float(summary.exit_fee)
+            entry_fee_val = _to_float(entry_evidence.fee)
+        accounting_status = (
+            OperationReport.AccountingStatus.PENDING if accounting_pending
+            else OperationReport.AccountingStatus.CONFIRMED
+        )
+
     # contract_size converts exchange contracts to real asset units
     # e.g. KuCoin BTC = 0.001 BTC per contract
-    pnl_abs_gross = (exit_price - entry_price) * qty * contract_size
+    pnl_abs_gross = 0.0 if accounting_pending else (exit_price - entry_price) * qty * contract_size
     # qty is positive for buy, negative for sell; adjust sign for shorts
     outcome_side = 1 if side == "buy" else -1
     pnl_abs_gross *= outcome_side
     notional = abs(qty * entry_price * contract_size)
-    close_fee_val = max(0.0, _to_float(fee_usdt))
-    entry_fee_val = _lookup_entry_order_fee_usdt(inst, side, correlation_id, opened_at)
     fee_val = close_fee_val + entry_fee_val
     pnl_abs = pnl_abs_gross - fee_val
-    pnl_pct_gross = ((exit_price - entry_price) / entry_price) * outcome_side if entry_price else 0.0
+    pnl_pct_gross = ((exit_price - entry_price) / entry_price) * outcome_side if entry_price and not accounting_pending else 0.0
     fee_pct = (fee_val / notional) if notional > 0 else 0.0
     pnl_pct = pnl_pct_gross - fee_pct
     margin_used = notional / leverage if leverage else notional
@@ -3108,9 +3294,18 @@ def _log_operation(
     elif pnl_abs < 0:
         outcome = OperationReport.Outcome.LOSS
 
-    # Small exchange closes classified as near_breakeven should not count as operational losses.
+    if accounting_pending:
+        exit_price = None
+        pnl_abs = None
+        pnl_pct = None
+        fee_val = None
+        outcome = OperationReport.Outcome.PENDING
+
+    # Preserve historical classification only for legacy callers. Verified net
+    # losses remain losses even when their exit resembles breakeven.
     if (
-        reason == "exchange_close"
+        accounting_status == OperationReport.AccountingStatus.LEGACY
+        and reason == "exchange_close"
         and str(close_sub_reason or "").strip().lower() == "near_breakeven"
         and pnl_pct < 0
         and abs(pnl_pct)
@@ -3148,8 +3343,8 @@ def _log_operation(
         if sl_ref > 0:
             mfe_r = max_fav / sl_ref if max_fav > 0 else 0.0
             mae_r = max_adv / sl_ref if max_adv > 0 else 0.0
-            realized_r = pnl_pct / sl_ref
-            if mfe_r and mfe_r > 0:
+            realized_r = pnl_pct / sl_ref if pnl_pct is not None else None
+            if mfe_r and mfe_r > 0 and realized_r is not None:
                 mfe_capture_ratio = realized_r / mfe_r
     except Exception:
         mfe_r = None
@@ -3158,96 +3353,124 @@ def _log_operation(
 
     regime_snapshot = _operation_regime_snapshot(inst)
 
-    existing_op = None
-    identity_qs = OperationReport.objects.filter(
-        instrument=inst,
-        side=side,
-        mode=settings.MODE,
-    )
-    if correlation_id:
-        identity_qs = identity_qs.filter(correlation_id=correlation_id)
-    elif signal_id:
-        identity_qs = identity_qs.filter(signal_id=str(signal_id or ""))
-    if opened_at is not None:
-        identity_qs = identity_qs.filter(opened_at=opened_at)
-    else:
-        identity_qs = identity_qs.filter(opened_at__isnull=True)
-    existing_op = identity_qs.order_by("-closed_at", "-id").first()
-
-    incoming_priority = _operation_reason_priority(reason, close_sub_reason)
-    existing_priority = (
-        _operation_reason_priority(existing_op.reason, existing_op.close_sub_reason)
-        if existing_op is not None else -1
-    )
-
-    if existing_op is not None and incoming_priority < existing_priority:
-        logger.info(
-            "Skipping lower-priority OperationReport update for %s corr=%s existing=%s:%s incoming=%s:%s",
-            inst.symbol,
-            correlation_id or "",
-            existing_op.reason,
-            existing_op.close_sub_reason,
-            reason,
-            close_sub_reason,
-        )
-        return existing_op
-
-    report_payload = {
-        "qty": qty,
-        "entry_price": entry_price,
-        "exit_price": exit_price,
-        "pnl_abs": pnl_abs,
-        "pnl_pct": pnl_pct,
-        "notional_usdt": notional,
-        "margin_used_usdt": margin_used,
-        "fee_usdt": fee_val,
-        "leverage": leverage or 0,
-        "equity_before": equity_before,
-        "equity_after": equity_after,
-        "mode": settings.MODE,
-        "opened_at": opened_at,
-        "outcome": outcome,
-        "reason": reason,
-        "close_sub_reason": close_sub_reason,
-        "signal_id": str(signal_id or ""),
-        "correlation_id": correlation_id or "",
-        "mfe_r": mfe_r,
-        "mae_r": mae_r,
-        "mfe_capture_ratio": mfe_capture_ratio,
-        "monthly_regime": str(regime_snapshot.get("monthly_regime", "") or ""),
-        "weekly_regime": str(regime_snapshot.get("weekly_regime", "") or ""),
-        "daily_regime": str(regime_snapshot.get("daily_regime", "") or ""),
-        "btc_lead_state": str(regime_snapshot.get("btc_lead_state", "") or ""),
-        "recommended_bias": str(regime_snapshot.get("recommended_bias", "") or ""),
-        "closed_at": dj_tz.now(),
-    }
-
-    if existing_op is None:
-        report = OperationReport.objects.create(
+    with transaction.atomic():
+        if accounting_key:
+            Instrument.objects.select_for_update().get(pk=inst.pk)
+        existing_op = None
+        identity_qs = OperationReport.objects.filter(
             instrument=inst,
             side=side,
-            **report_payload,
+            mode=settings.MODE,
         )
-    else:
-        for field_name, value in report_payload.items():
-            setattr(existing_op, field_name, value)
-        existing_op.save()
-        report = existing_op
-    try:
-        client = _redis_client()
-        if client is not None:
-            for key in (
-                f"trail:max_fav:{state_key}",
-                f"trail:max_adv:{state_key}",
-                f"trail:sl_pct:{state_key}",
-                _trail_stop_price_key(state_key),
-                f"trail:partial_done:{state_key}",
-            ):
-                client.delete(key)
-    except Exception:
-        pass
-    _queue_ml_retrain_after_operation(inst.symbol, settings.MODE, reason)
-    return report
+        if accounting_key:
+            accounting_identity = Q(accounting_key=accounting_key)
+            if correlation_id and opened_at is not None:
+                accounting_identity |= Q(accounting_key="", correlation_id=correlation_id, opened_at=opened_at)
+            identity_qs = identity_qs.filter(accounting_identity)
+        else:
+            if correlation_id:
+                identity_qs = identity_qs.filter(correlation_id=correlation_id)
+            elif signal_id:
+                identity_qs = identity_qs.filter(signal_id=str(signal_id or ""))
+            if opened_at is not None:
+                identity_qs = identity_qs.filter(opened_at=opened_at)
+            else:
+                identity_qs = identity_qs.filter(opened_at__isnull=True)
+        existing_op = identity_qs.order_by("-closed_at", "-id").first()
+
+        incoming_priority = _operation_reason_priority(reason, close_sub_reason)
+        existing_priority = (
+            _operation_reason_priority(existing_op.reason, existing_op.close_sub_reason)
+            if existing_op is not None else -1
+        )
+
+        if existing_op is not None and incoming_priority < existing_priority and not accounting_key:
+            logger.info(
+                "Skipping lower-priority OperationReport update for %s corr=%s existing=%s:%s incoming=%s:%s",
+                inst.symbol,
+                correlation_id or "",
+                existing_op.reason,
+                existing_op.close_sub_reason,
+                reason,
+                close_sub_reason,
+            )
+            return existing_op
+
+        if existing_op is not None and accounting_key:
+            if existing_op.accounting_status == OperationReport.AccountingStatus.CONFIRMED and accounting_pending:
+                return existing_op
+            if incoming_priority < existing_priority:
+                reason, close_sub_reason = existing_op.reason, existing_op.close_sub_reason
+
+        report_payload = {
+            "qty": qty,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "pnl_abs": pnl_abs,
+            "pnl_pct": pnl_pct,
+            "notional_usdt": notional,
+            "margin_used_usdt": margin_used,
+            "fee_usdt": fee_val,
+            "leverage": leverage or 0,
+            "equity_before": equity_before,
+            "equity_after": equity_after,
+            "mode": settings.MODE,
+            "opened_at": opened_at,
+            "outcome": outcome,
+            "reason": reason,
+            "close_sub_reason": close_sub_reason,
+            "signal_id": str(signal_id or ""),
+            "correlation_id": correlation_id or "",
+            "mfe_r": mfe_r,
+            "mae_r": mae_r,
+            "mfe_capture_ratio": mfe_capture_ratio,
+            "monthly_regime": str(regime_snapshot.get("monthly_regime", "") or ""),
+            "weekly_regime": str(regime_snapshot.get("weekly_regime", "") or ""),
+            "daily_regime": str(regime_snapshot.get("daily_regime", "") or ""),
+            "btc_lead_state": str(regime_snapshot.get("btc_lead_state", "") or ""),
+            "recommended_bias": str(regime_snapshot.get("recommended_bias", "") or ""),
+            "closed_at": accounting_closed_at or dj_tz.now(),
+            "accounting_status": accounting_status,
+            "accounting_key": accounting_key,
+            "accounting_details": accounting_details,
+        }
+
+        if existing_op is not None and accounting_key and accounting_closed_at is None:
+            report_payload["closed_at"] = existing_op.closed_at
+        was_confirmed = existing_op is not None and existing_op.accounting_status == OperationReport.AccountingStatus.CONFIRMED
+
+        if existing_op is None:
+            report = OperationReport.objects.create(
+                instrument=inst,
+                side=side,
+                **report_payload,
+            )
+        else:
+            for field_name, value in report_payload.items():
+                setattr(existing_op, field_name, value)
+            existing_op.save()
+            report = existing_op
+        report.accounting_transitioned = accounting_status == OperationReport.AccountingStatus.CONFIRMED and not was_confirmed
+        if accounting_pending:
+            return report
+        try:
+            client = _redis_client()
+            if client is not None:
+                for key in (
+                    f"trail:max_fav:{state_key}",
+                    f"trail:max_adv:{state_key}",
+                    f"trail:sl_pct:{state_key}",
+                    _trail_stop_price_key(state_key),
+                    f"trail:partial_done:{state_key}",
+                ):
+                    client.delete(key)
+        except Exception:
+            pass
+        if accounting_status == OperationReport.AccountingStatus.LEGACY:
+            _queue_ml_retrain_after_operation(inst.symbol, settings.MODE, reason)
+        elif report.accounting_transitioned:
+            transaction.on_commit(lambda: _queue_ml_retrain_after_operation(inst.symbol, settings.MODE, reason))
+        return report
 
 
 def _operation_reason_priority(reason_text: str, sub_reason_text: str) -> int:
@@ -3321,6 +3544,7 @@ def _classify_exchange_close(
     sl_pct_hint: float | None = None,
     tp_pct_hint: float | None = None,
     protective_stop_price_hint: float | None = None,
+    accounting_key: str = "",
 ) -> str:
     """
     Best-effort classification of WHY a position disappeared from the exchange.
@@ -3338,10 +3562,15 @@ def _classify_exchange_close(
     )
     try:
         # 1. Check if a recent OperationReport (non-exchange_close) already covers this
-        recent_bot_close = OperationReport.objects.filter(
+        recent_bot_close_qs = OperationReport.objects.filter(
             instrument__symbol__iexact=symbol.replace("/USDT:USDT", "USDT"),
             closed_at__gte=dj_tz.now() - timedelta(minutes=recent_bot_close_minutes),
-        ).exclude(reason="exchange_close").exists()
+        ).exclude(reason="exchange_close")
+        if accounting_key:
+            recent_bot_close_qs = recent_bot_close_qs.with_accounted_pnl().filter(
+                accounting_key=accounting_key, mode=settings.MODE,
+            )
+        recent_bot_close = recent_bot_close_qs.exists()
         if recent_bot_close:
             return "bot_close_missed"
     except Exception:
@@ -3439,6 +3668,35 @@ def _classify_exchange_close(
     return "unknown"
 
 
+def _retry_pending_close_accounting(adapter):
+    """Reconcile persisted acknowledgements even after Position has been cleared."""
+    from execution.close_accounting import get_pending_closes, refresh_close
+
+    for order in get_pending_closes(limit=10):
+        try:
+            order, summary = refresh_close(adapter, order)
+            context = summary.context
+            if context.get("is_partial") and summary.final_order_id is None:
+                continue
+            if summary.final_order_id is not None and order.pk != summary.final_order_id:
+                order = Order.objects.get(pk=summary.final_order_id)
+            report = _log_operation(
+                order.instrument, context["side"], _to_float(context["requested_qty"]),
+                _to_float(context["entry_price"]), 0.0,
+                reason=context["reason"], signal_id=context["signal_id"],
+                correlation_id=context["correlation_id"], leverage=_to_float(context["leverage"]),
+                equity_before=_to_float(context["equity_before"]) if context.get("equity_before") is not None else None,
+                opened_at=parse_datetime(context["opened_at"]) if context.get("opened_at") else None,
+                contract_size=_to_float(context["contract_size"]), adapter=adapter,
+                close_record=order,
+            )
+            if getattr(report, "accounting_transitioned", False):
+                _notify_accounted_close(report, order.instrument.symbol, report.reason, None,
+                                        side=context["side"], leverage=_to_float(context["leverage"]))
+        except Exception as exc:
+            logger.warning("Close accounting retry failed order=%s type=%s", order.pk, type(exc).__name__)
+
+
 def _sync_positions(
     adapter,
     positions: list | None = None,
@@ -3463,6 +3721,8 @@ def _sync_positions(
         except Exception as exc:  # pragma: no cover
             logger.warning("Could not sync positions: %s", exc)
             return
+
+    _retry_pending_close_accounting(adapter)
 
     inst_map = {}
     for inst in Instrument.objects.all():
@@ -3541,7 +3801,7 @@ def _sync_positions(
         _cleanup_orphan_reduce_only_orders(adapter, symbol)
 
     # Mark others as closed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â detect transitions and notify
-    newly_closed = Position.objects.filter(is_open=True).exclude(instrument_id__in=touched)
+    newly_closed = Position.objects.filter(is_open=True, mode=settings.MODE).exclude(instrument_id__in=touched)
     for pos in newly_closed:
         try:
             entry = _to_float(pos.avg_price)
@@ -3564,13 +3824,15 @@ def _sync_positions(
                         side=trade_side,
                         status=Order.OrderStatus.FILLED,
                         opened_at__isnull=False,
+                        reduce_only=False,
                     )
                     .order_by("-opened_at")
                     .first()
                 )
                 if entry_order and entry_order.opened_at and (dj_tz.now() - entry_order.opened_at) <= timedelta(hours=48):
                     opened_at = opened_at or entry_order.opened_at
-                    corr_id = entry_order.correlation_id or ""
+                    corr_id = entry_order.parent_correlation_id or entry_order.correlation_id or ""
+                    opened_at = _canonical_accounting_opened_at(pos.instrument, trade_side, corr_id, opened_at)
                     head = corr_id.split("-", 1)[0] if corr_id else ""
                     if head.isdigit():
                         sig_id = head
@@ -3605,27 +3867,28 @@ def _sync_positions(
                 except Exception:
                     continue
 
-            # Compute PnL absoluto with contract_size
+            from execution.close_accounting import capture_close
+            close_record, close_summary = capture_close(
+                adapter, inst=pos.instrument, side=trade_side, qty=qty_abs,
+                entry_price=entry, reason="exchange_close", signal_id=sig_id,
+                correlation_id=corr_id, leverage=leverage_val,
+                equity_before=equity_total or None, opened_at=opened_at,
+                contract_size=cs, exchange_closed=True,
+            )
+            if close_summary.average_price is not None:
+                last = _to_float(close_summary.average_price)
+            elif close_record.price is not None:
+                last = _to_float(close_record.price)
+
+            # This provisional value is never emitted when accounting is pending.
             pnl_abs_val = (last - entry) * qty_abs * cs * (1 if trade_side == "buy" else -1) if entry else 0.0
             # Duration
             dur_min = 0.0
             if opened_at:
                 dur_min = (dj_tz.now() - opened_at).total_seconds() / 60
 
-            # Dedup: if we already logged a close for this instrument very recently,
-            # don't emit a second "exchange_close" report.
-            recent_close_minutes = max(
-                1,
-                int(getattr(settings, "EXCHANGE_CLOSE_DEDUP_MINUTES", 3) or 3),
-            )
-            recent_close = OperationReport.objects.filter(
-                instrument=pos.instrument,
-                side=trade_side,
-                closed_at__gte=dj_tz.now() - timedelta(minutes=recent_close_minutes),
-            ).exists()
-            if recent_close:
-                logger.info("Skipping exchange_close log for %s: recent OperationReport exists", pos.instrument.symbol)
-                continue
+            # Deduplication uses the position identity, not another recent trade
+            # of the same symbol. Accounting can upgrade a pending record.
 
             # Classify sub-reason for exchange_close
             liq_est = _to_float(pos.liq_price_est) if hasattr(pos, "liq_price_est") else 0.0
@@ -3646,6 +3909,7 @@ def _sync_positions(
                 sl_pct_hint=sl_pct_hint,
                 tp_pct_hint=tp_pct_hint,
                 protective_stop_price_hint=protective_stop_price_hint,
+                accounting_key=close_summary.position_key,
             )
             logger.info(
                 "exchange_close sub-reason for %s: %s (entry=%.4f exit=%.4f liq_est=%.4f stop_hint=%.4f)",
@@ -3659,7 +3923,7 @@ def _sync_positions(
                 continue
 
             # Log operation
-            _log_operation(
+            report = _log_operation(
                 pos.instrument, trade_side, qty_abs, entry, last,
                 reason="exchange_close",
                 signal_id=sig_id,
@@ -3667,12 +3931,14 @@ def _sync_positions(
                 leverage=leverage_val,
                 equity_before=equity_total or None,
                 equity_after=None,
-                fee_usdt=0.0,
+                fee_usdt=0.0,  # Ignored by the verified close-record path.
                 opened_at=opened_at,
                 contract_size=cs,
                 close_sub_reason=sub_reason,
+                adapter=adapter,
+                close_record=close_record,
             )
-            notify_trade_closed(
+            _notify_accounted_close(report,
                 pos.instrument.symbol, "exchange_close", pnl_pct_val,
                 pnl_abs=pnl_abs_val, entry_price=entry,
                 exit_price=last, qty=qty_abs,
@@ -4250,7 +4516,7 @@ def _apply_circuit_breaker_gate(
                         or 24.0
                     ),
                 )
-                recent_ops_qs = OperationReport.objects.order_by("-closed_at")
+                recent_ops_qs = OperationReport.objects.with_accounted_pnl().filter(mode=settings.MODE).order_by("-closed_at")
                 if window_hours > 0:
                     recent_ops_qs = recent_ops_qs.filter(
                         closed_at__gte=dj_tz.now() - timedelta(hours=window_hours)
@@ -4958,8 +5224,9 @@ def _symbol_health_precheck(inst: Instrument) -> tuple[bool, str]:
         cutoff = reset_at
 
     reports = list(
-        OperationReport.objects.filter(
+        OperationReport.objects.with_accounted_pnl().filter(
             instrument=inst,
+            mode=settings.MODE,
             closed_at__gte=cutoff,
         )
         .order_by("-closed_at")
@@ -5036,8 +5303,9 @@ def _symbol_side_health_precheck(inst: Instrument, side: str) -> tuple[bool, str
         cutoff = reset_at
 
     reports = list(
-        OperationReport.objects.filter(
+        OperationReport.objects.with_accounted_pnl().filter(
             instrument=inst,
+            mode=settings.MODE,
             side=side_txt,
             closed_at__gte=cutoff,
         )
@@ -5745,7 +6013,7 @@ def _symbol_heat_guard(symbol: str, side: str = "") -> tuple[float, str]:
         if inst is None:
             return 1.0, ""
 
-        op_qs = OperationReport.objects.filter(instrument=inst)
+        op_qs = OperationReport.objects.with_accounted_pnl().filter(instrument=inst, mode=settings.MODE)
         side_txt = str(side or "").strip().lower()
         if side_txt in {"buy", "sell"}:
             op_qs = op_qs.filter(side=side_txt)
@@ -6484,6 +6752,7 @@ def _attempt_entry_open(
                 instrument=inst,
                 status=Order.OrderStatus.FILLED,
                 opened_at__isnull=False,
+                reduce_only=False,
             )
             .order_by("-opened_at")
             .values_list("opened_at", flat=True)
@@ -7395,8 +7664,7 @@ def _manage_open_position(
         live_positions = adapter.fetch_positions([symbol])
         live_qty, live_entry, live_opened_at = _current_position(adapter, symbol, positions=live_positions)
         if abs(live_qty) <= float(getattr(settings, "POSITION_QTY_EPSILON", 1e-12)):
-            logger.info("Position already closed on exchange for %s; syncing local state", symbol)
-            _mark_position_closed(inst)
+            logger.info("Position already closed on exchange for %s; awaiting close reconciliation", symbol)
             return True, allow_scale_entry, scale_parent_correlation, scale_add_index
         current_qty = live_qty
         if live_entry > 0:
@@ -7422,6 +7690,7 @@ def _manage_open_position(
                 instrument=inst,
                 side=pos_side,
                 status=Order.OrderStatus.FILLED,
+                reduce_only=False,
             )
             .order_by("-opened_at")
             .values_list("leverage", flat=True)
@@ -7447,6 +7716,7 @@ def _manage_open_position(
                     side=pos_side,
                     status=Order.OrderStatus.FILLED,
                     opened_at__isnull=False,
+                    reduce_only=False,
                 )
                 .order_by("-opened_at")
                 .values_list("opened_at", flat=True)
@@ -7475,6 +7745,12 @@ def _manage_open_position(
 
     # Trailing stop check (runs before regular TP/SL).
     if last and entry_price:
+        trailing_close_context = {
+            "inst": inst, "signal_id": origin_signal_id,
+            "correlation_id": origin_correlation_id, "leverage": leverage,
+            "equity_before": equity_usdt,
+            "accounting_opened_at": _canonical_accounting_opened_at(inst, pos_side, origin_correlation_id, pos_opened_at),
+        }
         was_trailed, trail_fee = _check_trailing_stop(
             adapter,
             symbol,
@@ -7488,7 +7764,10 @@ def _manage_open_position(
             atr_pct=atr,
             recommended_bias=btc_recommended_bias,
             strategy_name=position_strategy_name,
+            close_context=trailing_close_context,
         )
+        if trailing_close_context.get("partial_attempted") or trailing_close_context.get("position_missing"):
+            return True, allow_scale_entry, scale_parent_correlation, scale_add_index
         if was_trailed:
             pnl_trail = (last - entry_price) / entry_price * (1 if current_qty > 0 else -1)
             pnl_abs_trail = (last - entry_price) * abs(current_qty) * contract_size * (1 if current_qty > 0 else -1)
@@ -7509,9 +7788,11 @@ def _manage_open_position(
                 fee_usdt=trail_fee,
                 opened_at=pos_opened_at,
                 contract_size=contract_size,
+                adapter=adapter,
+                close_response=trailing_close_context.get("order_response"),
             )
             notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(report, pnl_trail, pnl_abs_trail)
-            notify_trade_closed(
+            _notify_accounted_close(report,
                 inst.symbol,
                 "trailing_stop",
                 notify_pnl_pct,
@@ -7566,13 +7847,15 @@ def _manage_open_position(
                     fee_usdt=close_fee,
                     opened_at=pos_opened_at,
                     contract_size=contract_size,
+                    adapter=adapter,
+                    close_response=close_resp,
                 )
                 notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                     report,
                     pnl_pct_timeout,
                     pnl_abs_timeout,
                 )
-                notify_trade_closed(
+                _notify_accounted_close(report,
                     inst.symbol,
                     "microvol_timeout",
                     notify_pnl_pct,
@@ -7591,7 +7874,8 @@ def _manage_open_position(
                 return True, allow_scale_entry, scale_parent_correlation, scale_add_index
             except Exception as exc:
                 if _is_no_position_error(exc):
-                    _mark_position_closed(inst)
+                    # Preserve quantity/context for exchange-close reconciliation next cycle.
+                    logger.info("Position missing on exchange; awaiting close reconciliation %s", symbol)
                     return True, allow_scale_entry, scale_parent_correlation, scale_add_index
                 logger.warning("Microvol timeout close failed %s: %s", symbol, exc)
 
@@ -7632,13 +7916,15 @@ def _manage_open_position(
                     fee_usdt=close_fee,
                     opened_at=pos_opened_at,
                     contract_size=contract_size,
+                    adapter=adapter,
+                    close_response=close_resp,
                 )
                 notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                     report,
                     pnl_pct_stale,
                     pnl_abs_stale,
                 )
-                notify_trade_closed(
+                _notify_accounted_close(report,
                     inst.symbol,
                     "stale_cleanup",
                     notify_pnl_pct,
@@ -7656,7 +7942,8 @@ def _manage_open_position(
                 _mark_position_closed(inst)
             except Exception as exc:
                 if _is_no_position_error(exc):
-                    _mark_position_closed(inst)
+                    # Preserve quantity/context for exchange-close reconciliation next cycle.
+                    logger.info("Position missing on exchange; awaiting close reconciliation %s", symbol)
                 else:
                     logger.warning("Stale cleanup failed %s: %s", symbol, exc)
             return True, allow_scale_entry, scale_parent_correlation, scale_add_index
@@ -7724,13 +8011,15 @@ def _manage_open_position(
                         fee_usdt=close_fee,
                         opened_at=pos_opened_at,
                         contract_size=contract_size,
+                        adapter=adapter,
+                        close_response=close_resp,
                     )
                     notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                         report,
                         pnl_pct_kill,
                         pnl_abs_kill,
                     )
-                    notify_trade_closed(
+                    _notify_accounted_close(report,
                         inst.symbol,
                         "uptrend_short_kill",
                         notify_pnl_pct,
@@ -7813,13 +8102,15 @@ def _manage_open_position(
                         fee_usdt=close_fee,
                         opened_at=pos_opened_at,
                         contract_size=contract_size,
+                        adapter=adapter,
+                        close_response=close_resp,
                     )
                     notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                         report,
                         pnl_pct_kill,
                         pnl_abs_kill,
                     )
-                    notify_trade_closed(
+                    _notify_accounted_close(report,
                         inst.symbol,
                         "downtrend_long_kill",
                         notify_pnl_pct,
@@ -7895,13 +8186,15 @@ def _manage_open_position(
                     opened_at=pos_opened_at,
                     contract_size=contract_size,
                     close_sub_reason=progress_reason,
+                    adapter=adapter,
+                    close_response=close_resp,
                 )
                 notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                     report,
                     pnl_pct_exit,
                     pnl_abs_exit,
                 )
-                notify_trade_closed(
+                _notify_accounted_close(report,
                     inst.symbol,
                     "tp_progress_exit",
                     notify_pnl_pct,
@@ -7922,7 +8215,8 @@ def _manage_open_position(
             except Exception as exc:
                 if _is_no_position_error(exc):
                     logger.info("TP progress exit skipped %s: no open position (%s)", symbol, exc)
-                    _mark_position_closed(inst)
+                    # Preserve quantity/context for exchange-close reconciliation next cycle.
+                    logger.info("Position missing on exchange; awaiting close reconciliation %s", symbol)
                     _track_consecutive_errors(symbol, success=True)
                     return True, allow_scale_entry, scale_parent_correlation, scale_add_index
                 logger.warning("Failed TP progress exit %s: %s", symbol, exc)
@@ -8040,13 +8334,15 @@ def _manage_open_position(
                             fee_usdt=close_fee,
                             opened_at=pos_opened_at,
                             contract_size=contract_size,
+                            adapter=adapter,
+                            close_response=close_resp,
                         )
                         notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                             report,
                             pnl_pct_live_gross,
                             pnl_abs_exit,
                         )
-                        notify_trade_closed(
+                        _notify_accounted_close(report,
                             inst.symbol,
                             "ai_tp_early_exit",
                             notify_pnl_pct,
@@ -8067,7 +8363,8 @@ def _manage_open_position(
                     except Exception as exc:
                         if _is_no_position_error(exc):
                             logger.info("AI early exit skipped %s: no open position (%s)", symbol, exc)
-                            _mark_position_closed(inst)
+                            # Preserve quantity/context for exchange-close reconciliation next cycle.
+                            logger.info("Position missing on exchange; awaiting close reconciliation %s", symbol)
                             _track_consecutive_errors(symbol, success=True)
                             return True, allow_scale_entry, scale_parent_correlation, scale_add_index
                         logger.warning("Failed AI early exit %s: %s", symbol, exc)
@@ -8119,13 +8416,15 @@ def _manage_open_position(
                     fee_usdt=close_fee,
                     opened_at=pos_opened_at,
                     contract_size=contract_size,
+                    adapter=adapter,
+                    close_response=close_resp,
                 )
                 notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                     report,
                     pnl_pct_live_gross,
                     pnl_abs_tpsl,
                 )
-                notify_trade_closed(
+                _notify_accounted_close(report,
                     inst.symbol,
                     reason,
                     notify_pnl_pct,
@@ -8145,7 +8444,8 @@ def _manage_open_position(
             except Exception as exc:
                 if _is_no_position_error(exc):
                     logger.info("Close TP/SL skipped %s: no open position (%s)", symbol, exc)
-                    _mark_position_closed(inst)
+                    # Preserve quantity/context for exchange-close reconciliation next cycle.
+                    logger.info("Position missing on exchange; awaiting close reconciliation %s", symbol)
                     _track_consecutive_errors(symbol, success=True)
                     return True, allow_scale_entry, scale_parent_correlation, scale_add_index
                 logger.warning("Failed close TP/SL %s: %s", symbol, exc)
@@ -8224,13 +8524,15 @@ def _manage_open_position(
                     fee_usdt=close_fee,
                     opened_at=pos_opened_at,
                     contract_size=contract_size,
+                    adapter=adapter,
+                    close_response=close_resp,
                 )
                 notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                     report,
                     pnl_flip,
                     pnl_abs_flip,
                 )
-                notify_trade_closed(
+                _notify_accounted_close(report,
                     inst.symbol,
                     "signal_flip",
                     notify_pnl_pct,
@@ -8247,12 +8549,15 @@ def _manage_open_position(
                 )
             _mark_position_closed(inst)
             _track_consecutive_errors(symbol, success=True)
-            # Preserve existing behavior: after a successful flip close, caller may open new side.
-            return False, allow_scale_entry, scale_parent_correlation, scale_add_index
+            # A mere acknowledgement is not proof the old exposure disappeared.
+            # Wait for a fresh position snapshot before opening the other side.
+            close_pending = report is None or report.accounting_status == OperationReport.AccountingStatus.PENDING
+            return close_pending, allow_scale_entry, scale_parent_correlation, scale_add_index
         except Exception as exc:
             if _is_no_position_error(exc):
                 logger.info("Flip close skipped %s: no open position (%s)", symbol, exc)
-                _mark_position_closed(inst)
+                # Preserve quantity/context for exchange-close reconciliation next cycle.
+                logger.info("Position missing on exchange; awaiting close reconciliation %s", symbol)
                 _track_consecutive_errors(symbol, success=True)
                 return True, allow_scale_entry, scale_parent_correlation, scale_add_index
             logger.warning("Failed flip close %s: %s", symbol, exc)
@@ -8376,13 +8681,15 @@ def _manage_open_position(
                         opened_at=pos_opened_at,
                         contract_size=contract_size,
                         close_sub_reason=flat_close_sub_reason,
+                        adapter=adapter,
+                        close_response=close_resp,
                     )
                     notify_pnl_pct, notify_pnl_abs = _report_pnl_for_notification(
                         report,
                         pnl_flat,
                         pnl_abs_flat,
                     )
-                    notify_trade_closed(
+                    _notify_accounted_close(report,
                         inst.symbol,
                         "flat_signal_timeout",
                         notify_pnl_pct,
@@ -8401,7 +8708,8 @@ def _manage_open_position(
                     _clear_flat_signal(symbol)
                 except Exception as exc:
                     if _is_no_position_error(exc):
-                        _mark_position_closed(inst)
+                        # Preserve quantity/context for exchange-close reconciliation next cycle.
+                        logger.info("Position missing on exchange; awaiting close reconciliation %s", symbol)
                         _clear_flat_signal(symbol)
                     else:
                         logger.warning("Flat signal timeout close failed %s: %s", symbol, exc)
@@ -8834,6 +9142,3 @@ def execute_orders():
 
     _release_task_lock(lock_client, lock_key, lock_token)
     return f"orders_placed={placed}"
-
-
-

@@ -96,22 +96,49 @@ class Position(TimeStampedModel):
         return f"{self.instrument.symbol} pos {self.qty}"
 
 
+class OperationReportQuerySet(models.QuerySet):
+    def with_accounted_pnl(self):
+        """Known execution PnL only, retaining compatible legacy history.
+
+        Pending lifecycle/activity rows remain visible through the normal
+        manager; only callers computing performance should use this filter.
+        Confirmed execution PnL does not imply reconciled funding.
+        """
+        return self.filter(pnl_abs__isnull=False, pnl_pct__isnull=False).exclude(
+            accounting_status="pending"
+        ).exclude(outcome="pending")
+
+
 class OperationReport(TimeStampedModel):
+    class AccountingStatus(models.TextChoices):
+        LEGACY = "legacy", "Legacy"
+        PENDING = "pending", "Pending reconciliation"
+        CONFIRMED = "confirmed", "Confirmed execution net before funding"
+
     class Outcome(models.TextChoices):
         WIN = "win", "Win"
         LOSS = "loss", "Loss"
         BE = "breakeven", "Breakeven"
+        PENDING = "pending", "Pending reconciliation"
+
+    objects = OperationReportQuerySet.as_manager()
+    accounting_status = models.CharField(
+        max_length=12, choices=AccountingStatus.choices,
+        default=AccountingStatus.LEGACY, db_index=True,
+    )
+    accounting_details = models.JSONField(default=dict, blank=True)
+    accounting_key = models.CharField(max_length=64, default="", blank=True, db_index=True)
 
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE)
     side = models.CharField(max_length=4, choices=Order.OrderSide.choices)
     qty = models.DecimalField(max_digits=28, decimal_places=10)
     entry_price = models.DecimalField(max_digits=28, decimal_places=10)
-    exit_price = models.DecimalField(max_digits=28, decimal_places=10)
-    pnl_abs = models.DecimalField(max_digits=28, decimal_places=10)
-    pnl_pct = models.DecimalField(max_digits=10, decimal_places=6)
+    exit_price = models.DecimalField(max_digits=28, decimal_places=10, null=True, blank=True)
+    pnl_abs = models.DecimalField(max_digits=28, decimal_places=10, null=True, blank=True)
+    pnl_pct = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
     notional_usdt = models.DecimalField(max_digits=28, decimal_places=10, default=0)
     margin_used_usdt = models.DecimalField(max_digits=28, decimal_places=10, default=0)
-    fee_usdt = models.DecimalField(max_digits=18, decimal_places=10, default=0)
+    fee_usdt = models.DecimalField(max_digits=18, decimal_places=10, null=True, blank=True)
     leverage = models.DecimalField(max_digits=10, decimal_places=4, default=0)
     equity_before = models.DecimalField(max_digits=28, decimal_places=10, null=True, blank=True)
     equity_after = models.DecimalField(max_digits=28, decimal_places=10, null=True, blank=True)
@@ -137,6 +164,12 @@ class OperationReport(TimeStampedModel):
 
     class Meta:
         ordering = ["-closed_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["accounting_key"], condition=~models.Q(accounting_key=""),
+                name="unique_operation_accounting_key",
+            ),
+        ]
         indexes = [
             models.Index(fields=["instrument", "closed_at"]),
         ]

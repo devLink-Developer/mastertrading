@@ -145,7 +145,7 @@ def main() -> int:
     fallback_tf = (args.fallback_timeframe or "").strip() or None
 
     losses = (
-        OperationReport.objects.select_related("instrument")
+        OperationReport.objects.with_accounted_pnl().select_related("instrument")
         .filter(outcome=OperationReport.Outcome.LOSS, closed_at__gte=start, closed_at__lte=now)
         .order_by("-closed_at")
     )
