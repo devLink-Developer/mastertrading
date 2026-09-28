@@ -5314,6 +5314,8 @@ def _long_bias_short_precheck(
     btc_recommended_bias: str,
     sig_score: float,
     sig_payload: dict[str, Any] | None,
+    symbol: str = "",
+    current_session: str = "",
 ) -> tuple[bool, str]:
     if _strategy_is_microvol(strategy_name):
         return True, "microvol_exempt"
@@ -5349,7 +5351,73 @@ def _long_bias_short_precheck(
         int(getattr(settings, "LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES", 1) or 1),
         minimum=1,
     )
-    active_modules = set(_signal_active_modules(sig_payload if isinstance(sig_payload, dict) else {}, strategy_name))
+    payload = sig_payload if isinstance(sig_payload, dict) else {}
+    active_modules = set(_signal_active_modules(payload, strategy_name))
+    if get_runtime_bool(
+        "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ENABLED",
+        bool(getattr(settings, "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ENABLED", False)),
+    ):
+        allowed_symbols = get_runtime_str_list(
+            "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ALLOWED_SYMBOLS",
+            getattr(settings, "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ALLOWED_SYMBOLS", set()),
+        )
+        allowed_sessions = get_runtime_str_list(
+            "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ALLOWED_SESSIONS",
+            getattr(settings, "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ALLOWED_SESSIONS", set()),
+        )
+        reasons = payload.get("reasons") if isinstance(payload.get("reasons"), dict) else {}
+        signal_session = str(current_session or reasons.get("session") or "").strip().lower()
+        signal_symbol = str(symbol or "").strip().lower()
+        trend_context = (
+            reasons.get("trend_context")
+            if isinstance(reasons.get("trend_context"), dict)
+            else {}
+        )
+        min_adx = get_runtime_float(
+            "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_MIN_ADX",
+            float(getattr(settings, "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_MIN_ADX", 25.0) or 25.0),
+            minimum=0.0,
+        )
+        min_confidence = get_runtime_float(
+            "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_MIN_CONFIDENCE",
+            float(
+                getattr(settings, "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_MIN_CONFIDENCE", 0.80)
+                or 0.80
+            ),
+            minimum=0.0,
+            maximum=1.0,
+        )
+        require_volume = get_runtime_bool(
+            "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_REQUIRE_VOLUME_CONFIRM",
+            bool(
+                getattr(
+                    settings,
+                    "LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_REQUIRE_VOLUME_CONFIRM",
+                    True,
+                )
+            ),
+        )
+        module_rows = reasons.get("module_rows") if isinstance(reasons.get("module_rows"), list) else []
+        aligned_modules = {
+            str(row.get("module") or "").strip().lower()
+            for row in module_rows
+            if isinstance(row, dict)
+            and str(row.get("direction") or "").strip().lower() == "short"
+        }
+        volume_confirmed = bool(trend_context.get("volume_ok_for_solo"))
+        if (
+            score >= min_score
+            and active_modules == {"carry", "trend"}
+            and {"carry", "trend"}.issubset(aligned_modules)
+            and signal_symbol in allowed_symbols
+            and signal_session in allowed_sessions
+            and str(trend_context.get("direction") or "").strip().lower() == "short"
+            and bool(trend_context.get("is_strong"))
+            and _to_float(trend_context.get("adx_htf")) >= min_adx
+            and _to_float(trend_context.get("confidence")) >= min_confidence
+            and (volume_confirmed or not require_volume)
+        ):
+            return True, f"long_bias_trend_carry_escape:{signal_symbol}:{signal_session}"
     matched_modules = active_modules & allowed_modules
     if score >= min_score and len(matched_modules) >= needed:
         return True, (
@@ -6912,6 +6980,8 @@ def _attempt_entry_open(
         btc_recommended_bias=btc_recommended_bias,
         sig_score=sig_score,
         sig_payload=sig_payload if isinstance(sig_payload, dict) else {},
+        symbol=inst.symbol,
+        current_session=current_session,
     )
     if not long_bias_short_ok:
         logger.info(

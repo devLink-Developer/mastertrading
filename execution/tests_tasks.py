@@ -1937,6 +1937,199 @@ class TaskHelpersTest(TestCase):
         self.assertTrue(ok)
         self.assertIn("countertrend_short_ok", reason)
 
+    @override_settings(
+        LONG_BIAS_SHORT_BLOCK_ENABLED=True,
+        LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES={"long_bias"},
+        LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES={"meanrev", "smc"},
+        LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES=2,
+        LONG_BIAS_SHORT_BLOCK_COUNTERTREND_MIN_SCORE=0.95,
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ENABLED=True,
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ALLOWED_SYMBOLS={"linkusdt"},
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ALLOWED_SESSIONS={"london", "overlap"},
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_MIN_ADX=25.0,
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_MIN_CONFIDENCE=0.80,
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_REQUIRE_VOLUME_CONFIRM=True,
+    )
+    @patch("signals.runtime_overrides._redis_client", return_value=None)
+    def test_long_bias_short_precheck_allows_scoped_strong_trend_carry_escape(self, _redis_client):
+        ok, reason = _long_bias_short_precheck(
+            strategy_name="alloc_short",
+            signal_direction="short",
+            btc_recommended_bias="long_bias",
+            sig_score=1.0,
+            sig_payload={
+                "reasons": {
+                    "session": "london",
+                    "module_rows": [
+                        {"module": "trend", "direction": "short"},
+                        {"module": "carry", "direction": "short"},
+                    ],
+                    "trend_context": {
+                        "direction": "short",
+                        "is_strong": True,
+                        "adx_htf": 31.0,
+                        "confidence": 0.86,
+                        "volume_ok_for_solo": True,
+                    },
+                }
+            },
+            symbol="LINKUSDT",
+            current_session="london",
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(reason, "long_bias_trend_carry_escape:linkusdt:london")
+
+    @override_settings(
+        LONG_BIAS_SHORT_BLOCK_ENABLED=True,
+        LONG_BIAS_SHORT_BLOCK_RECOMMENDED_BIASES={"long_bias"},
+        LONG_BIAS_SHORT_BLOCK_ALLOWED_MODULES={"meanrev", "smc"},
+        LONG_BIAS_SHORT_BLOCK_MIN_ALLOWED_MODULES=2,
+        LONG_BIAS_SHORT_BLOCK_COUNTERTREND_MIN_SCORE=0.95,
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ENABLED=True,
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ALLOWED_SYMBOLS={"linkusdt"},
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_ALLOWED_SESSIONS={"london", "overlap"},
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_MIN_ADX=25.0,
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_MIN_CONFIDENCE=0.80,
+        LONG_BIAS_SHORT_TREND_CARRY_ESCAPE_REQUIRE_VOLUME_CONFIRM=True,
+    )
+    @patch("signals.runtime_overrides._redis_client", return_value=None)
+    def test_long_bias_short_precheck_keeps_trend_carry_escape_scoped(self, _redis_client):
+        payload = {
+            "reasons": {
+                "session": "london",
+                "module_rows": [
+                    {"module": "trend", "direction": "short"},
+                    {"module": "carry", "direction": "short"},
+                ],
+                "trend_context": {
+                    "direction": "short",
+                    "is_strong": True,
+                    "adx_htf": 31.0,
+                    "confidence": 0.86,
+                    "volume_ok_for_solo": True,
+                },
+            }
+        }
+        cases = (
+            ("BTCUSDT", "london", payload),
+            ("LINKUSDT", "ny", payload),
+            (
+                "LINKUSDT",
+                "london",
+                {
+                    "reasons": {
+                        "session": "london",
+                        "module_rows": [
+                            {"module": "trend", "direction": "short"},
+                            {"module": "carry", "direction": "short"},
+                        ],
+                        "trend_context": {
+                            "direction": "short",
+                            "is_strong": False,
+                            "adx_htf": 31.0,
+                            "confidence": 0.86,
+                            "volume_ok_for_solo": True,
+                        },
+                    }
+                },
+            ),
+            (
+                "LINKUSDT",
+                "london",
+                {
+                    "reasons": {
+                        "session": "london",
+                        "module_rows": [
+                            {"module": "trend", "direction": "short"},
+                            {"module": "carry", "direction": "short"},
+                        ],
+                        "trend_context": {
+                            "direction": "short",
+                            "is_strong": True,
+                            "adx_htf": 31.0,
+                            "confidence": 0.79,
+                            "volume_ok_for_solo": True,
+                        },
+                    }
+                },
+            ),
+            (
+                "LINKUSDT",
+                "london",
+                {
+                    "reasons": {
+                        "session": "london",
+                        "module_rows": [
+                            {"module": "trend", "direction": "short"},
+                            {"module": "carry", "direction": "short"},
+                        ],
+                        "trend_context": {
+                            "direction": "short",
+                            "is_strong": True,
+                            "adx_htf": 24.9,
+                            "confidence": 0.86,
+                            "volume_ok_for_solo": True,
+                        },
+                    }
+                },
+            ),
+            (
+                "LINKUSDT",
+                "london",
+                {
+                    "reasons": {
+                        "session": "london",
+                        "module_rows": [
+                            {"module": "trend", "direction": "short"},
+                            {"module": "carry", "direction": "short"},
+                        ],
+                        "trend_context": {
+                            "direction": "short",
+                            "is_strong": True,
+                            "adx_htf": 31.0,
+                            "confidence": 0.86,
+                            "volume_ok_for_solo": False,
+                        },
+                    }
+                },
+            ),
+            (
+                "LINKUSDT",
+                "london",
+                {
+                    "reasons": {
+                        "session": "london",
+                        "module_rows": [
+                            {"module": "trend", "direction": "short"},
+                            {"module": "carry", "direction": "long"},
+                        ],
+                        "trend_context": {
+                            "direction": "short",
+                            "is_strong": True,
+                            "adx_htf": 31.0,
+                            "confidence": 0.86,
+                            "volume_ok_for_solo": True,
+                        },
+                    }
+                },
+            ),
+        )
+
+        for symbol, session, candidate_payload in cases:
+            with self.subTest(symbol=symbol, session=session):
+                ok, reason = _long_bias_short_precheck(
+                    strategy_name="alloc_short",
+                    signal_direction="short",
+                    btc_recommended_bias="long_bias",
+                    sig_score=1.0,
+                    sig_payload=candidate_payload,
+                    symbol=symbol,
+                    current_session=session,
+                )
+                self.assertFalse(ok)
+                self.assertIn("long_bias_short_block", reason)
+
     def _create_symbol_health_report(
         self,
         inst,
